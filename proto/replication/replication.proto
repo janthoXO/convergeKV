@@ -1,0 +1,37 @@
+syntax = "proto3";
+package replication;
+option go_package = "github.com/janthoXO/convergeKV/gen/replication";
+
+import "kv/kv.proto";
+
+// CausalContext is a compact summary of what a replica has already seen.
+// Keys are replica_ids; values are the highest HLC timestamp seen FROM that replica.
+message CausalContext {
+  map<string, kv.HLCTimestamp> seen = 1;
+}
+
+// DeltaEntry is the unit of replication: one field of one key.
+message DeltaEntry {
+  string          key        = 1;
+  string          field      = 2;
+  bytes           value_json = 3;  // raw JSON bytes for this field's value
+  kv.HLCTimestamp timestamp  = 4;
+  string          replica_id = 5;
+  bool            deleted    = 6;  // true = tombstone
+}
+
+message SyncRequest {
+  string        replica_id = 1;
+  CausalContext context    = 2;
+}
+
+message SyncResponse {
+  repeated DeltaEntry deltas  = 1;
+  CausalContext       context = 2;  // sender's context so receiver can update its view
+}
+
+service ReplicationService {
+  // Sync is called by a peer during anti-entropy. The caller sends its
+  // causal context; the responder replies with all deltas the caller hasn't seen.
+  rpc Sync (SyncRequest) returns (SyncResponse);
+}
