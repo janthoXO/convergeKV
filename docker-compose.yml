@@ -1,0 +1,59 @@
+version: "3.9"
+
+x-node-defaults: &node-defaults
+  build: .
+  restart: unless-stopped
+  networks:
+    - hostnet
+    - convergekv
+
+networks:
+  hostnet:
+    driver: bridge
+  convergekv:
+    driver: bridge
+
+services:
+  replica1:
+    <<: *node-defaults
+    container_name: replica1
+    environment:
+      REPLICA_ID: "replica1"
+      PEERS:      "replica2:50051,replica3:50051"
+      GRPC_PORT:  "50051"
+      DATA_DIR:   "/data"
+    volumes:
+      - replica1-data:/data
+    ports:
+      - "50051:50051"   # expose to host for manual testing
+
+  replica2:
+    <<: *node-defaults
+    container_name: replica2
+    environment:
+      REPLICA_ID: "replica2"
+      PEERS:      "replica1:50051,replica3:50051"
+      GRPC_PORT:  "50051"
+      DATA_DIR:   "/data"
+    volumes:
+      - replica2-data:/data
+    ports:
+      - "50052:50051"
+
+  replica3:
+    <<: *node-defaults
+    container_name: replica3
+    environment:
+      REPLICA_ID: "replica3"
+      PEERS:      "replica1:50051,replica2:50051"
+      GRPC_PORT:  "50051"
+      DATA_DIR:   "/data"
+    volumes:
+      - replica3-data:/data
+    ports:
+      - "50053:50051"
+
+volumes:
+  replica1-data:
+  replica2-data:
+  replica3-data:
