@@ -19,16 +19,16 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ReplicationService_Sync_FullMethodName = "/replication.ReplicationService/Sync"
+	ReplicationService_HashSync_FullMethodName  = "/replication.ReplicationService/HashSync"
+	ReplicationService_DeltaSync_FullMethodName = "/replication.ReplicationService/DeltaSync"
 )
 
 // ReplicationServiceClient is the client API for ReplicationService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ReplicationServiceClient interface {
-	// Sync is called by a peer during anti-entropy. The caller sends its
-	// causal context; the responder replies with all deltas the caller hasn't seen.
-	Sync(ctx context.Context, in *SyncRequest, opts ...grpc.CallOption) (*SyncResponse, error)
+	HashSync(ctx context.Context, in *HashSyncRequest, opts ...grpc.CallOption) (*HashSyncResponse, error)
+	DeltaSync(ctx context.Context, in *DeltaSyncRequest, opts ...grpc.CallOption) (*DeltaSyncResponse, error)
 }
 
 type replicationServiceClient struct {
@@ -39,10 +39,20 @@ func NewReplicationServiceClient(cc grpc.ClientConnInterface) ReplicationService
 	return &replicationServiceClient{cc}
 }
 
-func (c *replicationServiceClient) Sync(ctx context.Context, in *SyncRequest, opts ...grpc.CallOption) (*SyncResponse, error) {
+func (c *replicationServiceClient) HashSync(ctx context.Context, in *HashSyncRequest, opts ...grpc.CallOption) (*HashSyncResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SyncResponse)
-	err := c.cc.Invoke(ctx, ReplicationService_Sync_FullMethodName, in, out, cOpts...)
+	out := new(HashSyncResponse)
+	err := c.cc.Invoke(ctx, ReplicationService_HashSync_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *replicationServiceClient) DeltaSync(ctx context.Context, in *DeltaSyncRequest, opts ...grpc.CallOption) (*DeltaSyncResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeltaSyncResponse)
+	err := c.cc.Invoke(ctx, ReplicationService_DeltaSync_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -53,9 +63,8 @@ func (c *replicationServiceClient) Sync(ctx context.Context, in *SyncRequest, op
 // All implementations must embed UnimplementedReplicationServiceServer
 // for forward compatibility.
 type ReplicationServiceServer interface {
-	// Sync is called by a peer during anti-entropy. The caller sends its
-	// causal context; the responder replies with all deltas the caller hasn't seen.
-	Sync(context.Context, *SyncRequest) (*SyncResponse, error)
+	HashSync(context.Context, *HashSyncRequest) (*HashSyncResponse, error)
+	DeltaSync(context.Context, *DeltaSyncRequest) (*DeltaSyncResponse, error)
 	mustEmbedUnimplementedReplicationServiceServer()
 }
 
@@ -66,8 +75,11 @@ type ReplicationServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedReplicationServiceServer struct{}
 
-func (UnimplementedReplicationServiceServer) Sync(context.Context, *SyncRequest) (*SyncResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Sync not implemented")
+func (UnimplementedReplicationServiceServer) HashSync(context.Context, *HashSyncRequest) (*HashSyncResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method HashSync not implemented")
+}
+func (UnimplementedReplicationServiceServer) DeltaSync(context.Context, *DeltaSyncRequest) (*DeltaSyncResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeltaSync not implemented")
 }
 func (UnimplementedReplicationServiceServer) mustEmbedUnimplementedReplicationServiceServer() {}
 func (UnimplementedReplicationServiceServer) testEmbeddedByValue()                            {}
@@ -90,20 +102,38 @@ func RegisterReplicationServiceServer(s grpc.ServiceRegistrar, srv ReplicationSe
 	s.RegisterService(&ReplicationService_ServiceDesc, srv)
 }
 
-func _ReplicationService_Sync_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SyncRequest)
+func _ReplicationService_HashSync_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HashSyncRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ReplicationServiceServer).Sync(ctx, in)
+		return srv.(ReplicationServiceServer).HashSync(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ReplicationService_Sync_FullMethodName,
+		FullMethod: ReplicationService_HashSync_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ReplicationServiceServer).Sync(ctx, req.(*SyncRequest))
+		return srv.(ReplicationServiceServer).HashSync(ctx, req.(*HashSyncRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReplicationService_DeltaSync_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeltaSyncRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReplicationServiceServer).DeltaSync(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReplicationService_DeltaSync_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReplicationServiceServer).DeltaSync(ctx, req.(*DeltaSyncRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -116,8 +146,12 @@ var ReplicationService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*ReplicationServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "Sync",
-			Handler:    _ReplicationService_Sync_Handler,
+			MethodName: "HashSync",
+			Handler:    _ReplicationService_HashSync_Handler,
+		},
+		{
+			MethodName: "DeltaSync",
+			Handler:    _ReplicationService_DeltaSync_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

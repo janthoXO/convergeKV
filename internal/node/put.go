@@ -39,7 +39,14 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, error) {
 			ReplicaID: n.replicaID,
 			Deleted:   false,
 		}
+		
+		// Capture old entry before overwriting so we can remove its hash.
+		old, hadOld := m.Fields[field]
 		crdt.Apply(&m, field, entry)
+		if hadOld {
+			n.removeTree(key, field, old)
+		}
+		n.updateTree(key, field, entry)
 		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: entry})
 	}
 

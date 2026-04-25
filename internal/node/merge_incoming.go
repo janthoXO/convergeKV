@@ -24,7 +24,12 @@ func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, er
 		return false, nil // local entry already wins; no change
 	}
 
+	// incoming wins — update the Merkle tree.
+	if exists {
+		n.removeTree(key, field, existing)
+	}
 	crdt.Apply(&m, field, incoming)
+	n.updateTree(key, field, incoming)
 	n.commitKey(key, m)
 
 	err := n.store.SaveBatch([]storage.FieldUpdate{

@@ -6,20 +6,18 @@ import (
 
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
 	"github.com/janthoXO/convergeKV/internal/node"
-	"github.com/janthoXO/convergeKV/internal/replication"
 )
 
 // Handler implements kvpb.KVServiceServer.
 type Handler struct {
 	kvpb.UnimplementedKVServiceServer
-	node   *node.Node
-	peers  []string
-	causal *replication.CausalContext
+	node  *node.Node
+	peers []string
 }
 
 // NewHandler returns a ready-to-register Handler.
-func NewHandler(n *node.Node, peers []string, causal *replication.CausalContext) *Handler {
-	return &Handler{node: n, peers: peers, causal: causal}
+func NewHandler(n *node.Node, peers []string) *Handler {
+	return &Handler{node: n, peers: peers}
 }
 
 // Put writes a JSON object to the given key on this node.
@@ -28,8 +26,6 @@ func (h *Handler) Put(_ context.Context, req *kvpb.PutRequest) (*kvpb.PutRespons
 	if err != nil {
 		return nil, err
 	}
-	// Record own write in causal context.
-	h.causal.Update(h.node.ReplicaID(), ts)
 	return &kvpb.PutResponse{
 		Timestamp: &kvpb.HLCTimestamp{PhysicalMs: ts.PhysicalMs, Logical: ts.Logical},
 	}, nil

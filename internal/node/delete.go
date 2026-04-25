@@ -26,6 +26,7 @@ func (n *Node) Delete(key string) (hlc.Timestamp, error) {
 
 	var batch []storage.FieldUpdate
 	for field := range m.Fields {
+		old := m.Fields[field] // capture old live entry
 		tombstone := crdt.FieldEntry{
 			Value:     nil,
 			Timestamp: ts,
@@ -33,6 +34,8 @@ func (n *Node) Delete(key string) (hlc.Timestamp, error) {
 			Deleted:   true,
 		}
 		m.Fields[field] = tombstone
+		n.removeTree(key, field, old)
+		n.updateTree(key, field, tombstone)
 		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: tombstone})
 	}
 
