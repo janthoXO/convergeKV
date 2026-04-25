@@ -3,7 +3,9 @@ module github.com/janthoXO/convergeKV
 go 1.26.2
 
 require (
+	github.com/caarlos0/env/v11 v11.4.0
 	github.com/dgraph-io/badger/v4 v4.9.1
+	github.com/joho/godotenv v1.5.1
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11
 )

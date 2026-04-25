@@ -9,9 +9,10 @@ import (
 	"log"
 	"net"
 	"os"
-	"strings"
 	"time"
 
+	cenv "github.com/caarlos0/env/v11"
+	"github.com/joho/godotenv"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
@@ -23,31 +24,41 @@ import (
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
-func main() {
-	replicaID := mustEnv("REPLICA_ID")
-	peersRaw  := os.Getenv("PEERS") // comma-separated host:port, may be empty
-	grpcPort  := envOr("GRPC_PORT", "50051")
-	dataDir   := envOr("DATA_DIR", "/data")
-	syncMs    := 2000 // anti-entropy interval in ms
+// config holds all server configuration parsed from environment variables.
+// Required fields cause a fatal error if unset; optional fields fall back
+// to the value specified in the envDefault struct tag.
+type config struct {
+	ReplicaID string   `env:"REPLICA_ID,required"`
+	Peers     []string `env:"PEERS"     envSeparator:","`
+	GRPCPort  string   `env:"GRPC_PORT" envDefault:"50051"`
+	DataDir   string   `env:"DATA_DIR"  envDefault:"/data"`
+	SyncMs    int      `env:"SYNC_MS"   envDefault:"2000"`
+}
 
-	peers := []string{}
-	if peersRaw != "" {
-		for _, p := range strings.Split(peersRaw, ",") {
-			if t := strings.TrimSpace(p); t != "" {
-				peers = append(peers, t)
-			}
-		}
+func main() {
+	// Load .env if present; silently ignored when the file doesn't exist.
+	// Real environment variables (Docker Compose, systemd, etc.) always take
+	// precedence because godotenv.Load does NOT overwrite existing vars.
+	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
+		log.Printf("[config] .env not loaded: %v", err)
 	}
 
+	var cfg config
+	if err := cenv.Parse(&cfg); err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	log.Printf("[config] replica=%s port=%s peers=%v dataDir=%s syncMs=%d",
+		cfg.ReplicaID, cfg.GRPCPort, cfg.Peers, cfg.DataDir, cfg.SyncMs)
+
 	// Storage
-	store, err := storage.Open(dataDir)
+	store, err := storage.Open(cfg.DataDir)
 	if err != nil {
 		log.Fatalf("open storage: %v", err)
 	}
 	defer store.Close()
 
 	// Node
-	n, err := node.New(replicaID, store)
+	n, err := node.New(cfg.ReplicaID, store)
 	if err != nil {
 		log.Fatalf("create node: %v", err)
 	}
@@ -57,19 +68,19 @@ func main() {
 
 	// gRPC server
 	srv := grpc.NewServer()
-	kvpb.RegisterKVServiceServer(srv, api.NewHandler(n, peers, causal))
+	kvpb.RegisterKVServiceServer(srv, api.NewHandler(n, cfg.Peers, causal))
 	repb.RegisterReplicationServiceServer(srv, replication.NewHandler(n, causal))
 	// Register reflection so grpcurl and other tools can discover services.
 	reflection.Register(srv)
 
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", grpcPort))
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", cfg.GRPCPort))
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
-	log.Printf("[%s] listening on :%s  peers=%v", replicaID, grpcPort, peers)
+	log.Printf("[%s] listening on :%s  peers=%v", cfg.ReplicaID, cfg.GRPCPort, cfg.Peers)
 
 	// Anti-entropy
-	ae := replication.NewAntiEntropy(n, peers, causal, time.Duration(syncMs)*time.Millisecond)
+	ae := replication.NewAntiEntropy(n, cfg.Peers, causal, time.Duration(cfg.SyncMs)*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go ae.Run(ctx)
@@ -78,21 +89,4 @@ func main() {
 	if err := srv.Serve(lis); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
-}
-
-// mustEnv returns the value of an environment variable or fatals if unset.
-func mustEnv(key string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		log.Fatalf("required env var %s is not set", key)
-	}
-	return v
-}
-
-// envOr returns the environment variable value or the provided default.
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }

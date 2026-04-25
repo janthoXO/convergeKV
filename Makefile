@@ -11,7 +11,8 @@ proto:
 	       $(PROTO_KV) $(PROTO_REP)
 
 build:
-	go build ./...
+	mkdir -p dist
+	go build -o dist/ ./cmd/...
 
 test:
 	go test ./... -race -count=1
