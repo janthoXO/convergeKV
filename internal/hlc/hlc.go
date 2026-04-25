@@ -17,7 +17,7 @@ type Timestamp struct {
 
 // HLC is a thread-safe Hybrid Logical Clock.
 type HLC struct {
-	mu      sync.Mutex
+	mu               sync.Mutex
 	currentTimestamp Timestamp
 }
 
@@ -61,7 +61,7 @@ func (h *HLC) Receive(remoteTimestamp Timestamp) Timestamp {
 			h.currentTimestamp = Timestamp{PhysicalMs: maxPhys, Logical: remoteTimestamp.Logical + 1}
 		}
 	}
-	
+
 	return h.currentTimestamp
 }
 

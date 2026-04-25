@@ -26,7 +26,7 @@ func NewCausalContext() *CausalContext {
 func (c *CausalContext) Update(replicaID string, ts hlc.Timestamp) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	if cur, ok := c.seen[replicaID]; !ok || hlc.Less(cur, ts) {
 		c.seen[replicaID] = ts
 	}
@@ -39,7 +39,7 @@ func (c *CausalContext) Snapshot() map[string]hlc.Timestamp {
 
 	out := make(map[string]hlc.Timestamp, len(c.seen))
 	maps.Copy(out, c.seen)
-	
+
 	return out
 }
 

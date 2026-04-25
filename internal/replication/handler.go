@@ -3,8 +3,8 @@ package replication
 import (
 	"context"
 
-	kvpb  "github.com/janthoXO/convergeKV/gen/kv"
-	repb  "github.com/janthoXO/convergeKV/gen/replication"
+	kvpb "github.com/janthoXO/convergeKV/gen/kv"
+	repb "github.com/janthoXO/convergeKV/gen/replication"
 	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/node"
 )

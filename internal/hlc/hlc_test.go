@@ -62,9 +62,9 @@ func TestLessAndEqual(t *testing.T) {
 	d := Timestamp{PhysicalMs: 10, Logical: 0}
 
 	cases := []struct {
-		name    string
-		fn      func() bool
-		want    bool
+		name string
+		fn   func() bool
+		want bool
 	}{
 		{"a < b (same phys, lower logical)", func() bool { return Less(a, b) }, true},
 		{"b < a (same phys, higher logical)", func() bool { return Less(b, a) }, false},

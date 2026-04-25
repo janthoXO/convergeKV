@@ -40,6 +40,6 @@ func WinsOver(candidate, existing FieldEntry) bool {
 	if hlc.Equal(existing.Timestamp, candidate.Timestamp) {
 		return candidate.ReplicaID > existing.ReplicaID
 	}
-	
+
 	return false
 }

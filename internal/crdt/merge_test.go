@@ -58,10 +58,10 @@ func mapWith(fields map[string]FieldEntry) AWLWWMap {
 // TestMergeTableDriven covers all acceptance-criteria rows.
 func TestMergeTableDriven(t *testing.T) {
 	tests := []struct {
-		name   string
-		a      AWLWWMap
-		b      AWLWWMap
-		check  func(t *testing.T, result AWLWWMap)
+		name  string
+		a     AWLWWMap
+		b     AWLWWMap
+		check func(t *testing.T, result AWLWWMap)
 	}{
 		{
 			name: "Field only in A",
