@@ -1,0 +1,16 @@
+info:
+  name: Put Item
+  type: grpc
+  seq: 1
+
+grpc:
+  url: "{{base_url}}"
+  method: /kv.KVService/Put
+  methodType: unary
+  protoFilePath: ../../proto/kv/kv.proto
+  message: |-
+    {
+      "key": "user:1",
+      "value_json": "{\"neu\":30}"
+    }
+  auth: inherit

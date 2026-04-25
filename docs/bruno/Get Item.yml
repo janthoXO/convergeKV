@@ -1,0 +1,15 @@
+info:
+  name: Get Item
+  type: grpc
+  seq: 2
+
+grpc:
+  url: "{{base_url}}"
+  method: /kv.KVService/Get
+  methodType: unary
+  protoFilePath: ../../proto/kv/kv.proto
+  message: |-
+    {
+      "key": "user:1"
+    }
+  auth: inherit
