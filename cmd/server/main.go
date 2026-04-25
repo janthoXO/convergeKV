@@ -68,8 +68,8 @@ func main() {
 
 	// gRPC server
 	srv := grpc.NewServer()
-	kvpb.RegisterKVServiceServer(srv, api.NewHandler(n, cfg.Peers, causal))
-	repb.RegisterReplicationServiceServer(srv, replication.NewHandler(n, causal))
+	kvpb.RegisterKVServiceServer(srv, api.NewHandler(n, cfg.Peers))
+	repb.RegisterReplicationServiceServer(srv, replication.NewHandler(n))
 	// Register reflection so grpcurl and other tools can discover services.
 	reflection.Register(srv)
 

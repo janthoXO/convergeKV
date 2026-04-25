@@ -22,68 +22,21 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// CausalContext is a compact summary of what a replica has already seen.
-// Keys are replica_ids; values are the highest HLC timestamp seen FROM that replica.
-type CausalContext struct {
-	state         protoimpl.MessageState      `protogen:"open.v1"`
-	Seen          map[string]*kv.HLCTimestamp `protobuf:"bytes,1,rep,name=seen,proto3" json:"seen,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CausalContext) Reset() {
-	*x = CausalContext{}
-	mi := &file_replication_replication_proto_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CausalContext) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CausalContext) ProtoMessage() {}
-
-func (x *CausalContext) ProtoReflect() protoreflect.Message {
-	mi := &file_replication_replication_proto_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CausalContext.ProtoReflect.Descriptor instead.
-func (*CausalContext) Descriptor() ([]byte, []int) {
-	return file_replication_replication_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *CausalContext) GetSeen() map[string]*kv.HLCTimestamp {
-	if x != nil {
-		return x.Seen
-	}
-	return nil
-}
-
-// DeltaEntry is the unit of replication: one field of one key.
 type DeltaEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 	Field         string                 `protobuf:"bytes,2,opt,name=field,proto3" json:"field,omitempty"`
-	ValueJson     []byte                 `protobuf:"bytes,3,opt,name=value_json,json=valueJson,proto3" json:"value_json,omitempty"` // raw JSON bytes for this field's value
+	ValueJson     []byte                 `protobuf:"bytes,3,opt,name=value_json,json=valueJson,proto3" json:"value_json,omitempty"`
 	Timestamp     *kv.HLCTimestamp       `protobuf:"bytes,4,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
 	ReplicaId     string                 `protobuf:"bytes,5,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
-	Deleted       bool                   `protobuf:"varint,6,opt,name=deleted,proto3" json:"deleted,omitempty"` // true = tombstone
+	Deleted       bool                   `protobuf:"varint,6,opt,name=deleted,proto3" json:"deleted,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DeltaEntry) Reset() {
 	*x = DeltaEntry{}
-	mi := &file_replication_replication_proto_msgTypes[1]
+	mi := &file_replication_replication_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -95,7 +48,7 @@ func (x *DeltaEntry) String() string {
 func (*DeltaEntry) ProtoMessage() {}
 
 func (x *DeltaEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_replication_replication_proto_msgTypes[1]
+	mi := &file_replication_replication_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -108,7 +61,7 @@ func (x *DeltaEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeltaEntry.ProtoReflect.Descriptor instead.
 func (*DeltaEntry) Descriptor() ([]byte, []int) {
-	return file_replication_replication_proto_rawDescGZIP(), []int{1}
+	return file_replication_replication_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *DeltaEntry) GetKey() string {
@@ -153,29 +106,29 @@ func (x *DeltaEntry) GetDeleted() bool {
 	return false
 }
 
-type SyncRequest struct {
+type HashSyncRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ReplicaId     string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
-	Context       *CausalContext         `protobuf:"bytes,2,opt,name=context,proto3" json:"context,omitempty"`
+	BucketHashes  [][]byte               `protobuf:"bytes,2,rep,name=bucket_hashes,json=bucketHashes,proto3" json:"bucket_hashes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *SyncRequest) Reset() {
-	*x = SyncRequest{}
-	mi := &file_replication_replication_proto_msgTypes[2]
+func (x *HashSyncRequest) Reset() {
+	*x = HashSyncRequest{}
+	mi := &file_replication_replication_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SyncRequest) String() string {
+func (x *HashSyncRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SyncRequest) ProtoMessage() {}
+func (*HashSyncRequest) ProtoMessage() {}
 
-func (x *SyncRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_replication_replication_proto_msgTypes[2]
+func (x *HashSyncRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_replication_replication_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -186,47 +139,99 @@ func (x *SyncRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SyncRequest.ProtoReflect.Descriptor instead.
-func (*SyncRequest) Descriptor() ([]byte, []int) {
-	return file_replication_replication_proto_rawDescGZIP(), []int{2}
+// Deprecated: Use HashSyncRequest.ProtoReflect.Descriptor instead.
+func (*HashSyncRequest) Descriptor() ([]byte, []int) {
+	return file_replication_replication_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *SyncRequest) GetReplicaId() string {
+func (x *HashSyncRequest) GetReplicaId() string {
 	if x != nil {
 		return x.ReplicaId
 	}
 	return ""
 }
 
-func (x *SyncRequest) GetContext() *CausalContext {
+func (x *HashSyncRequest) GetBucketHashes() [][]byte {
 	if x != nil {
-		return x.Context
+		return x.BucketHashes
 	}
 	return nil
 }
 
-type SyncResponse struct {
+type HashSyncResponse struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	DivergentBuckets []int32                `protobuf:"varint,1,rep,packed,name=divergent_buckets,json=divergentBuckets,proto3" json:"divergent_buckets,omitempty"`
+	BucketHashes     [][]byte               `protobuf:"bytes,2,rep,name=bucket_hashes,json=bucketHashes,proto3" json:"bucket_hashes,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *HashSyncResponse) Reset() {
+	*x = HashSyncResponse{}
+	mi := &file_replication_replication_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HashSyncResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HashSyncResponse) ProtoMessage() {}
+
+func (x *HashSyncResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_replication_replication_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HashSyncResponse.ProtoReflect.Descriptor instead.
+func (*HashSyncResponse) Descriptor() ([]byte, []int) {
+	return file_replication_replication_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *HashSyncResponse) GetDivergentBuckets() []int32 {
+	if x != nil {
+		return x.DivergentBuckets
+	}
+	return nil
+}
+
+func (x *HashSyncResponse) GetBucketHashes() [][]byte {
+	if x != nil {
+		return x.BucketHashes
+	}
+	return nil
+}
+
+type DeltaSyncRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Deltas        []*DeltaEntry          `protobuf:"bytes,1,rep,name=deltas,proto3" json:"deltas,omitempty"`
-	Context       *CausalContext         `protobuf:"bytes,2,opt,name=context,proto3" json:"context,omitempty"` // sender's context so receiver can update its view
+	ReplicaId     string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
+	Buckets       []int32                `protobuf:"varint,2,rep,packed,name=buckets,proto3" json:"buckets,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *SyncResponse) Reset() {
-	*x = SyncResponse{}
+func (x *DeltaSyncRequest) Reset() {
+	*x = DeltaSyncRequest{}
 	mi := &file_replication_replication_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SyncResponse) String() string {
+func (x *DeltaSyncRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SyncResponse) ProtoMessage() {}
+func (*DeltaSyncRequest) ProtoMessage() {}
 
-func (x *SyncResponse) ProtoReflect() protoreflect.Message {
+func (x *DeltaSyncRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_replication_replication_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -238,21 +243,65 @@ func (x *SyncResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SyncResponse.ProtoReflect.Descriptor instead.
-func (*SyncResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use DeltaSyncRequest.ProtoReflect.Descriptor instead.
+func (*DeltaSyncRequest) Descriptor() ([]byte, []int) {
 	return file_replication_replication_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *SyncResponse) GetDeltas() []*DeltaEntry {
+func (x *DeltaSyncRequest) GetReplicaId() string {
 	if x != nil {
-		return x.Deltas
+		return x.ReplicaId
+	}
+	return ""
+}
+
+func (x *DeltaSyncRequest) GetBuckets() []int32 {
+	if x != nil {
+		return x.Buckets
 	}
 	return nil
 }
 
-func (x *SyncResponse) GetContext() *CausalContext {
+type DeltaSyncResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Deltas        []*DeltaEntry          `protobuf:"bytes,1,rep,name=deltas,proto3" json:"deltas,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeltaSyncResponse) Reset() {
+	*x = DeltaSyncResponse{}
+	mi := &file_replication_replication_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeltaSyncResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeltaSyncResponse) ProtoMessage() {}
+
+func (x *DeltaSyncResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_replication_replication_proto_msgTypes[4]
 	if x != nil {
-		return x.Context
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeltaSyncResponse.ProtoReflect.Descriptor instead.
+func (*DeltaSyncResponse) Descriptor() ([]byte, []int) {
+	return file_replication_replication_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *DeltaSyncResponse) GetDeltas() []*DeltaEntry {
+	if x != nil {
+		return x.Deltas
 	}
 	return nil
 }
@@ -261,12 +310,7 @@ var File_replication_replication_proto protoreflect.FileDescriptor
 
 const file_replication_replication_proto_rawDesc = "" +
 	"\n" +
-	"\x1dreplication/replication.proto\x12\vreplication\x1a\vkv/kv.proto\"\x94\x01\n" +
-	"\rCausalContext\x128\n" +
-	"\x04seen\x18\x01 \x03(\v2$.replication.CausalContext.SeenEntryR\x04seen\x1aI\n" +
-	"\tSeenEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12&\n" +
-	"\x05value\x18\x02 \x01(\v2\x10.kv.HLCTimestampR\x05value:\x028\x01\"\xbc\x01\n" +
+	"\x1dreplication/replication.proto\x12\vreplication\x1a\vkv/kv.proto\"\xbc\x01\n" +
 	"\n" +
 	"DeltaEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -276,16 +320,23 @@ const file_replication_replication_proto_rawDesc = "" +
 	"\ttimestamp\x18\x04 \x01(\v2\x10.kv.HLCTimestampR\ttimestamp\x12\x1d\n" +
 	"\n" +
 	"replica_id\x18\x05 \x01(\tR\treplicaId\x12\x18\n" +
-	"\adeleted\x18\x06 \x01(\bR\adeleted\"b\n" +
-	"\vSyncRequest\x12\x1d\n" +
+	"\adeleted\x18\x06 \x01(\bR\adeleted\"U\n" +
+	"\x0fHashSyncRequest\x12\x1d\n" +
 	"\n" +
-	"replica_id\x18\x01 \x01(\tR\treplicaId\x124\n" +
-	"\acontext\x18\x02 \x01(\v2\x1a.replication.CausalContextR\acontext\"u\n" +
-	"\fSyncResponse\x12/\n" +
-	"\x06deltas\x18\x01 \x03(\v2\x17.replication.DeltaEntryR\x06deltas\x124\n" +
-	"\acontext\x18\x02 \x01(\v2\x1a.replication.CausalContextR\acontext2Q\n" +
-	"\x12ReplicationService\x12;\n" +
-	"\x04Sync\x12\x18.replication.SyncRequest\x1a\x19.replication.SyncResponseB0Z.github.com/janthoXO/convergeKV/gen/replicationb\x06proto3"
+	"replica_id\x18\x01 \x01(\tR\treplicaId\x12#\n" +
+	"\rbucket_hashes\x18\x02 \x03(\fR\fbucketHashes\"d\n" +
+	"\x10HashSyncResponse\x12+\n" +
+	"\x11divergent_buckets\x18\x01 \x03(\x05R\x10divergentBuckets\x12#\n" +
+	"\rbucket_hashes\x18\x02 \x03(\fR\fbucketHashes\"K\n" +
+	"\x10DeltaSyncRequest\x12\x1d\n" +
+	"\n" +
+	"replica_id\x18\x01 \x01(\tR\treplicaId\x12\x18\n" +
+	"\abuckets\x18\x02 \x03(\x05R\abuckets\"D\n" +
+	"\x11DeltaSyncResponse\x12/\n" +
+	"\x06deltas\x18\x01 \x03(\v2\x17.replication.DeltaEntryR\x06deltas2\xa9\x01\n" +
+	"\x12ReplicationService\x12G\n" +
+	"\bHashSync\x12\x1c.replication.HashSyncRequest\x1a\x1d.replication.HashSyncResponse\x12J\n" +
+	"\tDeltaSync\x12\x1d.replication.DeltaSyncRequest\x1a\x1e.replication.DeltaSyncResponseB0Z.github.com/janthoXO/convergeKV/gen/replicationb\x06proto3"
 
 var (
 	file_replication_replication_proto_rawDescOnce sync.Once
@@ -301,27 +352,25 @@ func file_replication_replication_proto_rawDescGZIP() []byte {
 
 var file_replication_replication_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_replication_replication_proto_goTypes = []any{
-	(*CausalContext)(nil),   // 0: replication.CausalContext
-	(*DeltaEntry)(nil),      // 1: replication.DeltaEntry
-	(*SyncRequest)(nil),     // 2: replication.SyncRequest
-	(*SyncResponse)(nil),    // 3: replication.SyncResponse
-	nil,                     // 4: replication.CausalContext.SeenEntry
-	(*kv.HLCTimestamp)(nil), // 5: kv.HLCTimestamp
+	(*DeltaEntry)(nil),        // 0: replication.DeltaEntry
+	(*HashSyncRequest)(nil),   // 1: replication.HashSyncRequest
+	(*HashSyncResponse)(nil),  // 2: replication.HashSyncResponse
+	(*DeltaSyncRequest)(nil),  // 3: replication.DeltaSyncRequest
+	(*DeltaSyncResponse)(nil), // 4: replication.DeltaSyncResponse
+	(*kv.HLCTimestamp)(nil),   // 5: kv.HLCTimestamp
 }
 var file_replication_replication_proto_depIdxs = []int32{
-	4, // 0: replication.CausalContext.seen:type_name -> replication.CausalContext.SeenEntry
-	5, // 1: replication.DeltaEntry.timestamp:type_name -> kv.HLCTimestamp
-	0, // 2: replication.SyncRequest.context:type_name -> replication.CausalContext
-	1, // 3: replication.SyncResponse.deltas:type_name -> replication.DeltaEntry
-	0, // 4: replication.SyncResponse.context:type_name -> replication.CausalContext
-	5, // 5: replication.CausalContext.SeenEntry.value:type_name -> kv.HLCTimestamp
-	2, // 6: replication.ReplicationService.Sync:input_type -> replication.SyncRequest
-	3, // 7: replication.ReplicationService.Sync:output_type -> replication.SyncResponse
-	7, // [7:8] is the sub-list for method output_type
-	6, // [6:7] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	5, // 0: replication.DeltaEntry.timestamp:type_name -> kv.HLCTimestamp
+	0, // 1: replication.DeltaSyncResponse.deltas:type_name -> replication.DeltaEntry
+	1, // 2: replication.ReplicationService.HashSync:input_type -> replication.HashSyncRequest
+	3, // 3: replication.ReplicationService.DeltaSync:input_type -> replication.DeltaSyncRequest
+	2, // 4: replication.ReplicationService.HashSync:output_type -> replication.HashSyncResponse
+	4, // 5: replication.ReplicationService.DeltaSync:output_type -> replication.DeltaSyncResponse
+	4, // [4:6] is the sub-list for method output_type
+	2, // [2:4] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_replication_replication_proto_init() }

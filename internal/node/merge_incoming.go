@@ -24,7 +24,12 @@ func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, er
 		return false, nil // local entry already wins; no change
 	}
 
+	// incoming wins — update the Merkle tree.
+	if exists {
+		n.removeTree(key, field, existing)
+	}
 	crdt.Apply(&m, field, incoming)
+	n.updateTree(key, field, incoming)
 	n.commitKey(key, m)
 
 	err := n.store.SaveBatch([]storage.FieldUpdate{
@@ -32,28 +37,4 @@ func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, er
 	})
 
 	return true, err
-}
-
-// Snapshot returns a flat list of every (key, field, FieldEntry) the node holds.
-// Used by the anti-entropy sender to compute deltas for a peer.
-// It holds stateMu.RLock for the duration of the iteration, which is acceptable
-// since Snapshot is called infrequently (every anti-entropy interval).
-func (n *Node) Snapshot() []DeltaRecord {
-	n.stateMu.RLock()
-	defer n.stateMu.RUnlock()
-
-	var out []DeltaRecord
-	for key, m := range n.state {
-		for field, entry := range m.Fields {
-			out = append(out, DeltaRecord{Key: key, Field: field, Entry: entry})
-		}
-	}
-	return out
-}
-
-// DeltaRecord is a flat (key, field, entry) triple used in replication.
-type DeltaRecord struct {
-	Key   string
-	Field string
-	Entry crdt.FieldEntry
 }

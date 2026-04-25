@@ -9,6 +9,7 @@ import (
 
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
+	"github.com/janthoXO/convergeKV/internal/merkle"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
@@ -40,6 +41,7 @@ type Node struct {
 	keyLocks map[string]*sync.RWMutex
 
 	store *storage.Store
+	tree  *merkle.MerkleTree // live Merkle tree over all (key, field) entries
 }
 
 // New constructs a Node, loading existing state from the store.
@@ -49,12 +51,21 @@ func New(replicaID string, store *storage.Store) (*Node, error) {
 		return nil, err
 	}
 
+	// Rebuild the Merkle tree from persisted state.
+	tree := merkle.NewMerkleTree()
+	for key, m := range existing {
+		for field, e := range m.Fields {
+			tree.Update(key, field, e.ReplicaID, e.Timestamp.PhysicalMs, e.Timestamp.Logical)
+		}
+	}
+
 	return &Node{
 		replicaID: replicaID,
 		hlc:       hlc.New(),
 		state:     existing,
 		keyLocks:  make(map[string]*sync.RWMutex),
 		store:     store,
+		tree:      tree,
 	}, nil
 }
 
@@ -67,6 +78,49 @@ func (n *Node) HLCNow() hlc.Timestamp { return n.hlc.Now() }
 // ReceiveHLC advances the node's HLC with a remote timestamp.
 func (n *Node) ReceiveHLC(remote hlc.Timestamp) hlc.Timestamp {
 	return n.hlc.Receive(remote)
+}
+
+// MerkleTree returns the node's live Merkle tree.
+// The replication layer reads from this to build sync messages.
+func (n *Node) MerkleTree() *merkle.MerkleTree {
+	return n.tree
+}
+
+// SnapshotBuckets returns all DeltaRecords whose key maps to one of the given buckets.
+// Used by the replication handler to answer Phase 2 requests.
+func (n *Node) SnapshotBuckets(buckets []int) []KeyFieldEntryTuple {
+	// Build a set for O(1) lookup.
+	wanted := make(map[int]struct{}, len(buckets))
+	for _, b := range buckets {
+		wanted[b] = struct{}{}
+	}
+
+	n.stateMu.RLock()
+	defer n.stateMu.RUnlock()
+
+	var out []KeyFieldEntryTuple
+	for key, m := range n.state {
+		if _, ok := wanted[merkle.BucketIndex(key)]; !ok {
+			continue
+		}
+		for field, entry := range m.Fields {
+			out = append(out, KeyFieldEntryTuple{Key: key, Field: field, Entry: entry})
+		}
+	}
+	return out
+}
+
+// updateTree adds the hash of entry to the tree.
+// Must be called under n.mu write lock.
+// If replacing an existing entry, call removeTree first.
+func (n *Node) updateTree(key, field string, e crdt.FieldEntry) {
+	n.tree.Update(key, field, e.ReplicaID, e.Timestamp.PhysicalMs, e.Timestamp.Logical)
+}
+
+// removeTree removes the hash of entry from the tree.
+// Must be called under n.mu write lock.
+func (n *Node) removeTree(key, field string, e crdt.FieldEntry) {
+	n.tree.Remove(key, field, e.ReplicaID, e.Timestamp.PhysicalMs, e.Timestamp.Logical)
 }
 
 // getKeyLock returns the per-key RWMutex for key, creating it lazily.

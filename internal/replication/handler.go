@@ -3,61 +3,84 @@ package replication
 import (
 	"context"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
 	repb "github.com/janthoXO/convergeKV/gen/replication"
-	"github.com/janthoXO/convergeKV/internal/hlc"
+	"github.com/janthoXO/convergeKV/internal/merkle"
 	"github.com/janthoXO/convergeKV/internal/node"
 )
 
 // Handler implements repb.ReplicationServiceServer.
 type Handler struct {
 	repb.UnimplementedReplicationServiceServer
-	node    *node.Node
-	context *CausalContext
+	node *node.Node
 }
 
 // NewHandler returns a ready-to-register Handler.
-func NewHandler(n *node.Node, ctx *CausalContext) *Handler {
-	return &Handler{node: n, context: ctx}
+func NewHandler(n *node.Node) *Handler {
+	return &Handler{node: n}
 }
 
-// Sync is called by a peer during anti-entropy.
-// It returns all delta entries that the caller's causal context indicates it hasn't seen.
-func (h *Handler) Sync(_ context.Context, req *repb.SyncRequest) (*repb.SyncResponse, error) {
-	// Build the peer's seen map from the request.
-	peerSeen := make(map[string]hlc.Timestamp)
-	for rid, pts := range req.Context.GetSeen() {
-		peerSeen[rid] = hlc.Timestamp{
-			PhysicalMs: pts.GetPhysicalMs(),
-			Logical:    pts.GetLogical(),
+// HashSync handles Phase 1. The caller sends its bucket hashes; we reply with
+// which buckets differ (so the caller knows what to request from us) and our
+// own bucket hashes (so the caller can tell us what WE are missing from them).
+func (h *Handler) HashSync(_ context.Context, req *repb.HashSyncRequest) (*repb.HashSyncResponse, error) {
+	if len(req.BucketHashes) != merkle.NumBuckets {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"expected %d bucket hashes, got %d", merkle.NumBuckets, len(req.BucketHashes))
+	}
+
+	// Convert wire format ([][]byte) to []merkle.Hash.
+	peerHashes := make([]merkle.Hash, merkle.NumBuckets)
+	for i, b := range req.BucketHashes {
+		if len(b) != 32 {
+			return nil, status.Errorf(codes.InvalidArgument, "bucket hash %d: want 32 bytes, got %d", i, len(b))
 		}
+		copy(peerHashes[i][:], b)
 	}
 
-	// Collect all local entries the peer hasn't seen yet.
-	snapshot := h.node.Snapshot()
-	var deltas []*repb.DeltaEntry
-	for _, rec := range snapshot {
-		peerHWM, ok := peerSeen[rec.Entry.ReplicaID]
-		if !ok || hlc.Less(peerHWM, rec.Entry.Timestamp) {
-			deltas = append(deltas, encodeEntry(rec))
-		}
+	// Find which of our buckets differ from the peer's.
+	divergent := h.node.MerkleTree().DivergentBuckets(peerHashes)
+	divergentInt32 := make([]int32, len(divergent))
+	for i, d := range divergent {
+		divergentInt32[i] = int32(d)
 	}
 
-	// Return our own causal context so the peer can update its view.
-	localCtx := h.context.Snapshot()
-	seenPb := make(map[string]*kvpb.HLCTimestamp, len(localCtx))
-	for rid, ts := range localCtx {
-		seenPb[rid] = &kvpb.HLCTimestamp{PhysicalMs: ts.PhysicalMs, Logical: ts.Logical}
+	// Send back our own bucket hashes so the peer can find what IT is missing.
+	myHashes := h.node.MerkleTree().AllBucketHashes()
+	myHashesBytes := make([][]byte, merkle.NumBuckets)
+	for i, bh := range myHashes {
+		cp := make([]byte, 32)
+		copy(cp, bh[:])
+		myHashesBytes[i] = cp
 	}
 
-	return &repb.SyncResponse{
-		Deltas:  deltas,
-		Context: &repb.CausalContext{Seen: seenPb},
+	return &repb.HashSyncResponse{
+		DivergentBuckets: divergentInt32,
+		BucketHashes:     myHashesBytes,
 	}, nil
 }
 
+// DeltaSync handles Phase 2. The caller lists the buckets it needs entries for.
+func (h *Handler) DeltaSync(_ context.Context, req *repb.DeltaSyncRequest) (*repb.DeltaSyncResponse, error) {
+	buckets := make([]int, len(req.Buckets))
+	for i, b := range req.Buckets {
+		buckets[i] = int(b)
+	}
+
+	records := h.node.SnapshotBuckets(buckets)
+	deltas := make([]*repb.DeltaEntry, 0, len(records))
+	for _, rec := range records {
+		deltas = append(deltas, encodeEntry(rec))
+	}
+
+	return &repb.DeltaSyncResponse{Deltas: deltas}, nil
+}
+
 // encodeEntry converts a DeltaRecord into a protobuf DeltaEntry for the wire.
-func encodeEntry(rec node.DeltaRecord) *repb.DeltaEntry {
+func encodeEntry(rec node.KeyFieldEntryTuple) *repb.DeltaEntry {
 	return &repb.DeltaEntry{
 		Key:       rec.Key,
 		Field:     rec.Field,
