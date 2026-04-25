@@ -144,7 +144,7 @@ func entryHash(key, field, replicaID string, physMs uint64, logical uint32) Hash
 
 	var out Hash
 	copy(out[:], h.Sum(nil))
-	
+
 	return out
 }
 

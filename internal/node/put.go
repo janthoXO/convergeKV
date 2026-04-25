@@ -49,7 +49,7 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, error) {
 			n.removeTree(key, field, old)
 		}
 		n.updateTree(key, field, entry)
-		
+
 		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: entry})
 	}
 
