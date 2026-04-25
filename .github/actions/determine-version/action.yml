@@ -1,0 +1,51 @@
+name: Determine Version
+description: Determines the version for a release - uses tag if available, otherwise auto-increments patch version from latest release
+
+outputs:
+  version:
+    description: The determined version number (without v prefix)
+    value: ${{ steps.set-version.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Determine Version
+      id: set-version
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # Check if triggered by a tag push
+        if [[ "${{ github.ref_type }}" == "tag" ]]; then
+          TAG="${{ github.ref_name }}"
+          echo "Triggered by tag: $TAG"
+          # Strip 'v' prefix for npm version compatibility
+          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # Fetch the latest release and increment patch version
+        echo "Fetching latest release to determine next version..."
+        LATEST_RELEASE=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
+
+        if [ -z "$LATEST_RELEASE" ]; then
+          echo "No previous release found. Starting at 0.0.1"
+          echo "version=0.0.1" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        echo "Latest release: $LATEST_RELEASE"
+
+        # Remove 'v' prefix and parse
+        VERSION_NO_V=${LATEST_RELEASE#v}
+        IFS='.' read -r -a parts <<< "$VERSION_NO_V"
+        MAJOR=${parts[0]:-0}
+        MINOR=${parts[1]:-0}
+        PATCH=${parts[2]:-0}
+
+        # Increment patch version
+        NEW_PATCH=$((PATCH + 1))
+        NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
+
+        echo "New version: $NEW_VERSION"
+        echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT

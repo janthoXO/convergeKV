@@ -1,0 +1,42 @@
+syntax = "proto3";
+package kv;
+option go_package = "github.com/janthoXO/convergeKV/gen/kv";
+
+// HLCTimestamp captures a Hybrid Logical Clock value.
+message HLCTimestamp {
+  uint64 physical_ms = 1;  // wall-clock milliseconds
+  uint32 logical     = 2;  // logical counter
+}
+
+// PutRequest carries a key and a flat JSON object as a UTF-8 string.
+// Example value: {"name":"Alice","age":30}
+message PutRequest {
+  string key        = 1;
+  string value_json = 2;   // must be a JSON object (not array/scalar)
+}
+message PutResponse {
+  HLCTimestamp timestamp = 1;  // HLC assigned to this write
+}
+
+message GetRequest  { string key = 1; }
+message GetResponse {
+  string       value_json = 1;  // merged JSON object; empty string if key absent
+  bool         found      = 2;
+}
+
+message DeleteRequest  { string key = 1; }
+message DeleteResponse { HLCTimestamp timestamp = 1; }
+
+message StatusRequest {}
+message StatusResponse {
+  string       replica_id = 1;
+  HLCTimestamp hlc        = 2;
+  repeated string peers   = 3;
+}
+
+service KVService {
+  rpc Put    (PutRequest)    returns (PutResponse);
+  rpc Get    (GetRequest)    returns (GetResponse);
+  rpc Delete (DeleteRequest) returns (DeleteResponse);
+  rpc Status (StatusRequest) returns (StatusResponse);
+}
