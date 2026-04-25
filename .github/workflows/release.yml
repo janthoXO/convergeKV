@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - 'Makefile'
+      - '.github/workflows/build.yml'
+      - '.github/workflows/package.yml'
+      - '.github/workflows/release.yml'
+
+jobs:
+  versioning:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Version
+        id: version
+        uses: ./.github/actions/determine-version
+
+  package:
+    needs: versioning
+    uses: ./.github/workflows/package.yml
+    with:
+      version: ${{ needs.versioning.outputs.version }}
+
+  release:
+    needs: [ versioning, package ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-${{ needs.versioning.outputs.version }}
+          path: ./artifacts
+
+      - name: Load Docker Image
+        run: |
+          docker load -i ./artifacts/convergekv-${{ needs.versioning.outputs.version }}.tar
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to GHCR
+        run: |
+          IMAGE_ID=ghcr.io/${{ github.repository }}/convergekv
+          # Change all uppercase to lowercase
+          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
+          VERSION=${{ needs.versioning.outputs.version }}
+
+          echo IMAGE_ID=$IMAGE_ID
+          echo VERSION=$VERSION
+
+          docker tag convergekv:latest $IMAGE_ID:$VERSION
+          docker tag convergekv:latest $IMAGE_ID:latest
+
+          docker push $IMAGE_ID:$VERSION
+          docker push $IMAGE_ID:latest
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.versioning.outputs.version }}
+          name: v${{ needs.versioning.outputs.version }}
+          files: ./artifacts/*.tar
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
