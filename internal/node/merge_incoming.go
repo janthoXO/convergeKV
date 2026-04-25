@@ -8,16 +8,16 @@ import (
 // ApplyDelta merges a single incoming field entry from a peer into local state.
 // It advances the HLC with the remote timestamp.
 // Returns true if the incoming entry actually changed local state.
+//
+// Concurrent ApplyDelta calls for different keys proceed without blocking each other.
 func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, error) {
-	_ = n.hlc.Receive(incoming.Timestamp) // advance HLC
+	_ = n.hlc.Receive(incoming.Timestamp) // advance HLC; has its own internal mutex
 
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	kl := n.getKeyLock(key)
+	kl.Lock()
+	defer kl.Unlock()
 
-	m, ok := n.state[key]
-	if !ok {
-		m = crdt.NewAWLWWMap()
-	}
+	m := n.snapshotKey(key)
 
 	existing, exists := m.Fields[field]
 	if exists && !crdt.WinsOver(incoming, existing) {
@@ -25,20 +25,23 @@ func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, er
 	}
 
 	crdt.Apply(&m, field, incoming)
-	n.state[key] = m
+	n.commitKey(key, m)
 
 	err := n.store.SaveBatch([]storage.FieldUpdate{
 		{Key: key, Field: field, Entry: incoming},
 	})
-	
+
 	return true, err
 }
 
 // Snapshot returns a flat list of every (key, field, FieldEntry) the node holds.
 // Used by the anti-entropy sender to compute deltas for a peer.
+// It holds stateMu.RLock for the duration of the iteration, which is acceptable
+// since Snapshot is called infrequently (every anti-entropy interval).
 func (n *Node) Snapshot() []DeltaRecord {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
+	n.stateMu.RLock()
+	defer n.stateMu.RUnlock()
+
 	var out []DeltaRecord
 	for key, m := range n.state {
 		for field, entry := range m.Fields {

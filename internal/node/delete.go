@@ -10,14 +10,17 @@ import (
 
 // Delete marks all current fields of key as tombstones.
 // Fields added after the delete timestamp are NOT affected (they will win on merge).
+//
+// Concurrent Deletes to different keys proceed without blocking each other.
 func (n *Node) Delete(key string) (hlc.Timestamp, error) {
 	ts := n.hlc.Send()
 
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	kl := n.getKeyLock(key)
+	kl.Lock()
+	defer kl.Unlock()
 
-	m, ok := n.state[key]
-	if !ok {
+	m := n.snapshotKey(key)
+	if len(m.Fields) == 0 {
 		return ts, nil // nothing to delete
 	}
 
@@ -32,10 +35,12 @@ func (n *Node) Delete(key string) (hlc.Timestamp, error) {
 		m.Fields[field] = tombstone
 		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: tombstone})
 	}
-	n.state[key] = m
+
+	n.commitKey(key, m)
 
 	if err := n.store.SaveBatch(batch); err != nil {
 		return hlc.Timestamp{}, fmt.Errorf("delete: storage error: %w", err)
 	}
+
 	return ts, nil
 }
