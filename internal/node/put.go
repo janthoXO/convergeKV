@@ -12,6 +12,9 @@ import (
 // Put writes a JSON object value to key. The value must be a JSON object
 // (i.e., start with '{'). Each field is stored independently.
 // Returns the HLC timestamp assigned to this write.
+//
+// Concurrent Puts to different keys proceed without blocking each other.
+// Concurrent Puts to the same key are serialised by the per-key lock.
 func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, error) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(valueJSON), &obj); err != nil {
@@ -20,13 +23,13 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, error) {
 
 	ts := n.hlc.Send()
 
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	// Serialise writes to this key; writes to other keys are unaffected.
+	kl := n.getKeyLock(key)
+	kl.Lock()
+	defer kl.Unlock()
 
-	m, ok := n.state[key]
-	if !ok {
-		m = crdt.NewAWLWWMap()
-	}
+	// Deep copy current state so we can modify it freely.
+	m := n.snapshotKey(key)
 
 	var batch []storage.FieldUpdate
 	for field, raw := range obj {
@@ -40,8 +43,10 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, error) {
 		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: entry})
 	}
 
-	n.state[key] = m
-	
+	// Commit the new map (brief lock) before the Badger write so readers
+	// immediately see the updated in-memory state.
+	n.commitKey(key, m)
+
 	if err := n.store.SaveBatch(batch); err != nil {
 		return hlc.Timestamp{}, fmt.Errorf("put: storage error: %w", err)
 	}

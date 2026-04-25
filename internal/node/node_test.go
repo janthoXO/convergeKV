@@ -2,6 +2,8 @@ package node
 
 import (
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/janthoXO/convergeKV/internal/crdt"
@@ -169,3 +171,44 @@ func TestApplyDeltaLowerTimestampIsNoop(t *testing.T) {
 		t.Errorf("expected name=Alice (unchanged), got %s", string(obj["name"]))
 	}
 }
+
+// TestConcurrentWritesDifferentKeys verifies that writes to distinct keys
+// proceed concurrently without data races. The -race detector will flag any
+// violation. It also checks that every key is readable after all goroutines
+// complete, confirming no write was lost.
+func TestConcurrentWritesDifferentKeys(t *testing.T) {
+	n := openNode(t, "r1")
+	const numKeys = 50
+
+	var wg sync.WaitGroup
+	wg.Add(numKeys)
+	for i := 0; i < numKeys; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			key := fmt.Sprintf("key:%d", i)
+			val := fmt.Sprintf(`{"n":%d}`, i)
+			if _, err := n.Put(key, val); err != nil {
+				t.Errorf("Put %s: %v", key, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("key:%d", i)
+		v, found := n.Get(key)
+		if !found {
+			t.Errorf("key %s not found after concurrent writes", key)
+			continue
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(v), &obj); err != nil {
+			t.Errorf("key %s: unmarshal: %v", key, err)
+		}
+		if string(obj["n"]) != fmt.Sprintf("%d", i) {
+			t.Errorf("key %s: n=%s, want %d", key, string(obj["n"]), i)
+		}
+	}
+}
+
