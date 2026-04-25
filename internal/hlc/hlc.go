@@ -18,7 +18,7 @@ type Timestamp struct {
 // HLC is a thread-safe Hybrid Logical Clock.
 type HLC struct {
 	mu      sync.Mutex
-	current Timestamp
+	currentTimestamp Timestamp
 }
 
 // New returns an HLC initialised to the current wall time.
@@ -30,44 +30,46 @@ func (h *HLC) Send() Timestamp {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	pt := wallMs()
-	if pt > h.current.PhysicalMs {
-		h.current = Timestamp{PhysicalMs: pt, Logical: 0}
+	if pt > h.currentTimestamp.PhysicalMs {
+		h.currentTimestamp = Timestamp{PhysicalMs: pt, Logical: 0}
 	} else {
-		h.current.Logical++
+		h.currentTimestamp.Logical++
 	}
-	return h.current
+
+	return h.currentTimestamp
 }
 
 // Receive is called when a message carrying remote timestamp r arrives.
 // It advances the local clock to be strictly greater than both the local
 // state and the remote timestamp, then returns the new timestamp.
-func (h *HLC) Receive(r Timestamp) Timestamp {
+func (h *HLC) Receive(remoteTimestamp Timestamp) Timestamp {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	pt := wallMs()
-	maxPhys := max3(pt, h.current.PhysicalMs, r.PhysicalMs)
+	maxPhys := max(pt, max(h.currentTimestamp.PhysicalMs, remoteTimestamp.PhysicalMs))
 	switch {
-	case maxPhys > h.current.PhysicalMs && maxPhys > r.PhysicalMs:
-		h.current = Timestamp{PhysicalMs: maxPhys, Logical: 0}
-	case maxPhys == h.current.PhysicalMs && maxPhys > r.PhysicalMs:
-		h.current.Logical++
-	case maxPhys == r.PhysicalMs && maxPhys > h.current.PhysicalMs:
-		h.current = Timestamp{PhysicalMs: maxPhys, Logical: r.Logical + 1}
+	case maxPhys > h.currentTimestamp.PhysicalMs && maxPhys > remoteTimestamp.PhysicalMs:
+		h.currentTimestamp = Timestamp{PhysicalMs: maxPhys, Logical: 0}
+	case maxPhys == h.currentTimestamp.PhysicalMs && maxPhys > remoteTimestamp.PhysicalMs:
+		h.currentTimestamp.Logical++
+	case maxPhys == remoteTimestamp.PhysicalMs && maxPhys > h.currentTimestamp.PhysicalMs:
+		h.currentTimestamp = Timestamp{PhysicalMs: maxPhys, Logical: remoteTimestamp.Logical + 1}
 	default: // maxPhys == both physical parts
-		if h.current.Logical >= r.Logical {
-			h.current.Logical++
+		if h.currentTimestamp.Logical >= remoteTimestamp.Logical {
+			h.currentTimestamp.Logical++
 		} else {
-			h.current = Timestamp{PhysicalMs: maxPhys, Logical: r.Logical + 1}
+			h.currentTimestamp = Timestamp{PhysicalMs: maxPhys, Logical: remoteTimestamp.Logical + 1}
 		}
 	}
-	return h.current
+	
+	return h.currentTimestamp
 }
 
 // Now returns the current clock value without advancing it.
 func (h *HLC) Now() Timestamp {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.current
+	return h.currentTimestamp
 }
 
 // Less returns true if a is strictly less than b.
@@ -75,6 +77,7 @@ func Less(a, b Timestamp) bool {
 	if a.PhysicalMs != b.PhysicalMs {
 		return a.PhysicalMs < b.PhysicalMs
 	}
+
 	return a.Logical < b.Logical
 }
 
@@ -84,14 +87,3 @@ func Equal(a, b Timestamp) bool {
 }
 
 func wallMs() uint64 { return uint64(time.Now().UnixMilli()) }
-
-func max3(a, b, c uint64) uint64 {
-	m := a
-	if b > m {
-		m = b
-	}
-	if c > m {
-		m = c
-	}
-	return m
-}

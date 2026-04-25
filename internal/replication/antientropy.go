@@ -79,6 +79,7 @@ func (ae *AntiEntropy) syncWithPeer(ctx context.Context, addr string) {
 			PhysicalMs: d.GetTimestamp().GetPhysicalMs(),
 			Logical:    d.GetTimestamp().GetLogical(),
 		}
+		
 		entry := crdt.FieldEntry{
 			Value:     d.GetValueJson(),
 			Timestamp: ts,
@@ -88,6 +89,7 @@ func (ae *AntiEntropy) syncWithPeer(ctx context.Context, addr string) {
 		if _, err := ae.node.ApplyDelta(d.GetKey(), d.GetField(), entry); err != nil {
 			log.Printf("[antientropy] apply delta: %v", err)
 		}
+
 		// Update our causal context with the newly seen entry.
 		ae.context.Update(d.GetReplicaId(), ts)
 	}

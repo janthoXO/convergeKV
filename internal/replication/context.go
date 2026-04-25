@@ -4,6 +4,7 @@
 package replication
 
 import (
+	"maps"
 	"sync"
 
 	"github.com/janthoXO/convergeKV/internal/hlc"
@@ -25,6 +26,7 @@ func NewCausalContext() *CausalContext {
 func (c *CausalContext) Update(replicaID string, ts hlc.Timestamp) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	
 	if cur, ok := c.seen[replicaID]; !ok || hlc.Less(cur, ts) {
 		c.seen[replicaID] = ts
 	}
@@ -34,10 +36,10 @@ func (c *CausalContext) Update(replicaID string, ts hlc.Timestamp) {
 func (c *CausalContext) Snapshot() map[string]hlc.Timestamp {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+
 	out := make(map[string]hlc.Timestamp, len(c.seen))
-	for k, v := range c.seen {
-		out[k] = v
-	}
+	maps.Copy(out, c.seen)
+	
 	return out
 }
 
@@ -46,9 +48,11 @@ func (c *CausalContext) Snapshot() map[string]hlc.Timestamp {
 func (c *CausalContext) NeedsEntry(replicaID string, ts hlc.Timestamp) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+
 	cur, ok := c.seen[replicaID]
 	if !ok {
 		return true
 	}
+
 	return hlc.Less(cur, ts)
 }
