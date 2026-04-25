@@ -41,8 +41,10 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, error) {
 	}
 
 	n.state[key] = m
+	
 	if err := n.store.SaveBatch(batch); err != nil {
 		return hlc.Timestamp{}, fmt.Errorf("put: storage error: %w", err)
 	}
+
 	return ts, nil
 }

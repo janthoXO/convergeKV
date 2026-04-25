@@ -30,6 +30,7 @@ func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, er
 	err := n.store.SaveBatch([]storage.FieldUpdate{
 		{Key: key, Field: field, Entry: incoming},
 	})
+	
 	return true, err
 }
 

@@ -26,6 +26,7 @@ func New(replicaID string, store *storage.Store) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	
 	return &Node{
 		replicaID: replicaID,
 		hlc:       hlc.New(),
@@ -50,10 +51,12 @@ func (n *Node) ReceiveHLC(remote hlc.Timestamp) hlc.Timestamp {
 func (n *Node) getMap(key string) crdt.AWLWWMap {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
+
 	m, ok := n.state[key]
 	if !ok {
 		return crdt.NewAWLWWMap()
 	}
+
 	// shallow copy: Fields map reference is safe because we only read it
 	return m
 }

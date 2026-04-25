@@ -33,6 +33,7 @@ func Open(dir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	
 	return &Store{db: db}, nil
 }
 
@@ -50,6 +51,7 @@ func decodeKey(b []byte) (key, field string) {
 	if len(parts) != 2 {
 		return string(b), ""
 	}
+
 	return parts[0], parts[1]
 }
 
@@ -62,10 +64,12 @@ func (s *Store) SaveField(key, field string, entry crdt.FieldEntry) error {
 		ReplicaID:  entry.ReplicaID,
 		Deleted:    entry.Deleted,
 	}
+
 	b, err := json.Marshal(se)
 	if err != nil {
 		return err
 	}
+
 	return s.db.Update(func(txn *badger.Txn) error {
 		return txn.Set(badgerKey(key, field), b)
 	})
@@ -75,10 +79,11 @@ func (s *Store) SaveField(key, field string, entry crdt.FieldEntry) error {
 // in-memory state as map[key]AWLWWMap. Called once at node startup.
 func (s *Store) LoadAll() (map[string]crdt.AWLWWMap, error) {
 	result := make(map[string]crdt.AWLWWMap)
+
 	err := s.db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		it := txn.NewIterator(opts)
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
+
 		for it.Rewind(); it.Valid(); it.Next() {
 			item := it.Item()
 			k := item.KeyCopy(nil)
@@ -86,15 +91,18 @@ func (s *Store) LoadAll() (map[string]crdt.AWLWWMap, error) {
 			if err != nil {
 				return err
 			}
+
 			var se StoredEntry
 			if err := json.Unmarshal(v, &se); err != nil {
 				return err
 			}
+
 			mapKey, field := decodeKey(k)
 			m, ok := result[mapKey]
 			if !ok {
 				m = crdt.NewAWLWWMap()
 			}
+
 			m.Fields[field] = crdt.FieldEntry{
 				Value:     se.ValueJSON,
 				Timestamp: hlc.Timestamp{PhysicalMs: se.PhysicalMs, Logical: se.Logical},
@@ -103,8 +111,10 @@ func (s *Store) LoadAll() (map[string]crdt.AWLWWMap, error) {
 			}
 			result[mapKey] = m
 		}
+
 		return nil
 	})
+
 	return result, err
 }
 
@@ -113,6 +123,7 @@ func (s *Store) LoadAll() (map[string]crdt.AWLWWMap, error) {
 func (s *Store) SaveBatch(entries []FieldUpdate) error {
 	wb := s.db.NewWriteBatch()
 	defer wb.Cancel()
+
 	for _, u := range entries {
 		se := StoredEntry{
 			ValueJSON:  u.Entry.Value,
@@ -121,14 +132,17 @@ func (s *Store) SaveBatch(entries []FieldUpdate) error {
 			ReplicaID:  u.Entry.ReplicaID,
 			Deleted:    u.Entry.Deleted,
 		}
+
 		b, err := json.Marshal(se)
 		if err != nil {
 			return err
 		}
+
 		if err := wb.Set(badgerKey(u.Key, u.Field), b); err != nil {
 			return err
 		}
 	}
+
 	return wb.Flush()
 }
 
