@@ -14,7 +14,7 @@ import (
 
 // StoredEntry is the on-disk representation of a single FieldEntry.
 type StoredEntry struct {
-	ValueJSON  []byte `json:"value"`      // raw JSON bytes
+	ValueJSON  []byte `json:"value"` // raw JSON bytes
 	PhysicalMs uint64 `json:"phys_ms"`
 	Logical    uint32 `json:"logical"`
 	ReplicaID  string `json:"replica_id"`
@@ -33,7 +33,7 @@ func Open(dir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &Store{db: db}, nil
 }
 

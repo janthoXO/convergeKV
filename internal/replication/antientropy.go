@@ -79,7 +79,7 @@ func (ae *AntiEntropy) syncWithPeer(ctx context.Context, addr string) {
 			PhysicalMs: d.GetTimestamp().GetPhysicalMs(),
 			Logical:    d.GetTimestamp().GetLogical(),
 		}
-		
+
 		entry := crdt.FieldEntry{
 			Value:     d.GetValueJson(),
 			Timestamp: ts,

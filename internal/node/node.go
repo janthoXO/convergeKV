@@ -98,7 +98,7 @@ func (n *Node) snapshotKey(key string) crdt.AWLWWMap {
 	if ok {
 		maps.Copy(dst.Fields, m.Fields)
 	}
-	
+
 	return dst
 }
 
