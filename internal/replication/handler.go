@@ -80,7 +80,7 @@ func (h *Handler) DeltaSync(_ context.Context, req *repb.DeltaSyncRequest) (*rep
 }
 
 // encodeEntry converts a DeltaRecord into a protobuf DeltaEntry for the wire.
-func encodeEntry(rec node.DeltaRecord) *repb.DeltaEntry {
+func encodeEntry(rec node.KeyFieldEntryTuple) *repb.DeltaEntry {
 	return &repb.DeltaEntry{
 		Key:       rec.Key,
 		Field:     rec.Field,

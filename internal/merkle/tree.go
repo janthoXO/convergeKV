@@ -36,15 +36,17 @@ func (t *MerkleTree) Root() Hash {
 }
 
 // Update incorporates a single field entry into the tree.
-// Call this on every Put, ApplyDelta, and Delete — with the *new* entry values.
-// If you are replacing an existing entry, call Remove first, then Update.
+// If replacing an existing entry, call Remove first, then Update.
 func (t *MerkleTree) Update(key, field, replicaID string, physMs uint64, logical uint32) {
 	h := entryHash(key, field, replicaID, physMs, logical)
 	bucket := BucketIndex(key)
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
 	leaf := NumBuckets + bucket
 	t.nodes[leaf] = xorHash(t.nodes[leaf], h)
+
 	t.bubbleUp(leaf)
 }
 
@@ -53,10 +55,13 @@ func (t *MerkleTree) Update(key, field, replicaID string, physMs uint64, logical
 func (t *MerkleTree) Remove(key, field, replicaID string, physMs uint64, logical uint32) {
 	h := entryHash(key, field, replicaID, physMs, logical)
 	bucket := BucketIndex(key)
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
 	leaf := NumBuckets + bucket
 	t.nodes[leaf] = xorHash(t.nodes[leaf], h) // XOR cancels
+
 	t.bubbleUp(leaf)
 }
 
@@ -65,6 +70,7 @@ func (t *MerkleTree) Remove(key, field, replicaID string, physMs uint64, logical
 func (t *MerkleTree) BucketHash(bucket int) Hash {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+
 	return t.nodes[NumBuckets+bucket]
 }
 
@@ -76,6 +82,7 @@ func (t *MerkleTree) BucketHash(bucket int) Hash {
 func (t *MerkleTree) DivergentBuckets(peerBuckets []Hash) []int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+
 	var out []int
 	for i, ph := range peerBuckets {
 		if i >= NumBuckets {
@@ -85,6 +92,7 @@ func (t *MerkleTree) DivergentBuckets(peerBuckets []Hash) []int {
 			out = append(out, i)
 		}
 	}
+
 	return out
 }
 
@@ -93,8 +101,10 @@ func (t *MerkleTree) DivergentBuckets(peerBuckets []Hash) []int {
 func (t *MerkleTree) AllBucketHashes() []Hash {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+
 	out := make([]Hash, NumBuckets)
 	copy(out, t.nodes[NumBuckets:])
+
 	return out
 }
 
@@ -125,12 +135,16 @@ func entryHash(key, field, replicaID string, physMs uint64, logical uint32) Hash
 	h.Write([]byte(field))
 	h.Write([]byte{0})
 	h.Write([]byte(replicaID))
+
 	var buf [12]byte
 	binary.BigEndian.PutUint64(buf[:8], physMs)
 	binary.BigEndian.PutUint32(buf[8:], logical)
+
 	h.Write(buf[:])
+
 	var out Hash
 	copy(out[:], h.Sum(nil))
+	
 	return out
 }
 

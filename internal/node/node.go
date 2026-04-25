@@ -88,7 +88,7 @@ func (n *Node) MerkleTree() *merkle.MerkleTree {
 
 // SnapshotBuckets returns all DeltaRecords whose key maps to one of the given buckets.
 // Used by the replication handler to answer Phase 2 requests.
-func (n *Node) SnapshotBuckets(buckets []int) []DeltaRecord {
+func (n *Node) SnapshotBuckets(buckets []int) []KeyFieldEntryTuple {
 	// Build a set for O(1) lookup.
 	wanted := make(map[int]struct{}, len(buckets))
 	for _, b := range buckets {
@@ -98,13 +98,13 @@ func (n *Node) SnapshotBuckets(buckets []int) []DeltaRecord {
 	n.stateMu.RLock()
 	defer n.stateMu.RUnlock()
 
-	var out []DeltaRecord
+	var out []KeyFieldEntryTuple
 	for key, m := range n.state {
 		if _, ok := wanted[merkle.BucketIndex(key)]; !ok {
 			continue
 		}
 		for field, entry := range m.Fields {
-			out = append(out, DeltaRecord{Key: key, Field: field, Entry: entry})
+			out = append(out, KeyFieldEntryTuple{Key: key, Field: field, Entry: entry})
 		}
 	}
 	return out

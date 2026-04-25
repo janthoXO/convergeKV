@@ -12,8 +12,6 @@ import (
 	"github.com/janthoXO/convergeKV/internal/hlc"
 )
 
-
-
 // Store wraps a BadgerDB instance with CRDT-aware read/write helpers.
 type Store struct {
 	db *badger.DB

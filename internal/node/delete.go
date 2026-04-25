@@ -33,9 +33,13 @@ func (n *Node) Delete(key string) (hlc.Timestamp, error) {
 			ReplicaID: n.replicaID,
 			Deleted:   true,
 		}
+
 		m.Fields[field] = tombstone
+
+		// replace old tree entry with tombstone
 		n.removeTree(key, field, old)
 		n.updateTree(key, field, tombstone)
+		
 		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: tombstone})
 	}
 
