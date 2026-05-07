@@ -98,8 +98,9 @@ func (ae *AntiEntropy) syncWithPeer(ctx context.Context, addr string) {
 		}
 
 		deltaResp, err := client.DeltaSync(ctx, &repb.DeltaSyncRequest{
-			ReplicaId: ae.node.ReplicaID(),
-			Buckets:   bucketsInt32,
+			ReplicaId:   ae.node.ReplicaID(),
+			Buckets:     bucketsInt32,
+			RequesterId: ae.node.ReplicaID(), // used by responder to filter by ownership
 		})
 		if err != nil {
 			log.Printf("[antientropy] DeltaSync (pull) %s: %v", addr, err)

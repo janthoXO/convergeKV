@@ -11,6 +11,12 @@ import (
 //
 // Concurrent ApplyDelta calls for different keys proceed without blocking each other.
 func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, error) {
+	// Reject data we are not responsible for.
+	// This prevents unintended data accumulation during ring transitions.
+	if !n.isReplica(key) {
+		return false, nil
+	}
+
 	_ = n.hlc.Receive(incoming.Timestamp) // advance HLC; has its own internal mutex
 
 	kl := n.getKeyLock(key)

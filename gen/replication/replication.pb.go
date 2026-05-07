@@ -211,9 +211,12 @@ func (x *HashSyncResponse) GetBucketHashes() [][]byte {
 }
 
 type DeltaSyncRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ReplicaId     string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
-	Buckets       []int32                `protobuf:"varint,2,rep,packed,name=buckets,proto3" json:"buckets,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	ReplicaId string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
+	Buckets   []int32                `protobuf:"varint,2,rep,packed,name=buckets,proto3" json:"buckets,omitempty"`
+	// requester_id is the ReplicaID of the node making this request.
+	// The responder uses it to filter entries to only those the requester owns.
+	RequesterId   string `protobuf:"bytes,3,opt,name=requester_id,json=requesterId,proto3" json:"requester_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -260,6 +263,13 @@ func (x *DeltaSyncRequest) GetBuckets() []int32 {
 		return x.Buckets
 	}
 	return nil
+}
+
+func (x *DeltaSyncRequest) GetRequesterId() string {
+	if x != nil {
+		return x.RequesterId
+	}
+	return ""
 }
 
 type DeltaSyncResponse struct {
@@ -327,11 +337,12 @@ const file_replication_replication_proto_rawDesc = "" +
 	"\rbucket_hashes\x18\x02 \x03(\fR\fbucketHashes\"d\n" +
 	"\x10HashSyncResponse\x12+\n" +
 	"\x11divergent_buckets\x18\x01 \x03(\x05R\x10divergentBuckets\x12#\n" +
-	"\rbucket_hashes\x18\x02 \x03(\fR\fbucketHashes\"K\n" +
+	"\rbucket_hashes\x18\x02 \x03(\fR\fbucketHashes\"n\n" +
 	"\x10DeltaSyncRequest\x12\x1d\n" +
 	"\n" +
 	"replica_id\x18\x01 \x01(\tR\treplicaId\x12\x18\n" +
-	"\abuckets\x18\x02 \x03(\x05R\abuckets\"D\n" +
+	"\abuckets\x18\x02 \x03(\x05R\abuckets\x12!\n" +
+	"\frequester_id\x18\x03 \x01(\tR\vrequesterId\"D\n" +
 	"\x11DeltaSyncResponse\x12/\n" +
 	"\x06deltas\x18\x01 \x03(\v2\x17.replication.DeltaEntryR\x06deltas2\xa9\x01\n" +
 	"\x12ReplicationService\x12G\n" +

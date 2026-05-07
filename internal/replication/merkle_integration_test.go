@@ -82,7 +82,7 @@ func TestMerkleSync(t *testing.T) {
 	}
 
 	// 4. Build a Handler for nodeB. Call HashSync with nodeA's bucket hashes.
-	handlerB := NewHandler(nodeB)
+	handlerB := NewHandler(nodeB, nil)
 
 	hashRespB, err := handlerB.HashSync(context.Background(), &repb.HashSyncRequest{
 		ReplicaId:    "replica-A",
@@ -104,8 +104,9 @@ func TestMerkleSync(t *testing.T) {
 
 	// 5. Call DeltaSync for that bucket — must contain the city field from nodeB.
 	deltaRespB, err := handlerB.DeltaSync(context.Background(), &repb.DeltaSyncRequest{
-		ReplicaId: "replica-A",
-		Buckets:   hashRespB.DivergentBuckets,
+		ReplicaId:   "replica-A",
+		Buckets:     hashRespB.DivergentBuckets,
+		RequesterId: "", // no ring in test — no filtering
 	})
 	if err != nil {
 		t.Fatalf("DeltaSync (A→B): %v", err)
@@ -124,7 +125,7 @@ func TestMerkleSync(t *testing.T) {
 	applyDeltasToNode(t, nodeA, deltaRespB.Deltas)
 
 	// 7. Repeat in the other direction: nodeA → nodeB for the name field.
-	handlerA := NewHandler(nodeA)
+	handlerA := NewHandler(nodeA, nil)
 
 	hashRespA, err := handlerA.HashSync(context.Background(), &repb.HashSyncRequest{
 		ReplicaId:    "replica-B",
@@ -140,8 +141,9 @@ func TestMerkleSync(t *testing.T) {
 	}
 
 	deltaRespA, err := handlerA.DeltaSync(context.Background(), &repb.DeltaSyncRequest{
-		ReplicaId: "replica-B",
-		Buckets:   hashRespA.DivergentBuckets,
+		ReplicaId:   "replica-B",
+		Buckets:     hashRespA.DivergentBuckets,
+		RequesterId: "", // no ring in test — no filtering
 	})
 	if err != nil {
 		t.Fatalf("DeltaSync (B→A): %v", err)

@@ -44,11 +44,13 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, error) {
 		old, hadOld := awlwwmap.Fields[field]
 		crdt.Apply(&awlwwmap, field, entry)
 
-		// replace old tree entry with new one
-		if hadOld {
-			n.removeTree(key, field, old)
+		// Only update the Merkle tree for keys this node is responsible for.
+		if n.isReplica(key) {
+			if hadOld {
+				n.removeTree(key, field, old)
+			}
+			n.updateTree(key, field, entry)
 		}
-		n.updateTree(key, field, entry)
 
 		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: entry})
 	}

@@ -5,47 +5,36 @@ import (
 	"context"
 
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
+	"github.com/janthoXO/convergeKV/internal/coordinator"
 	"github.com/janthoXO/convergeKV/internal/node"
 )
 
 // Handler implements kvpb.KVServiceServer.
 type Handler struct {
 	kvpb.UnimplementedKVServiceServer
-	node  *node.Node
+	coord *coordinator.Coordinator
+	node  *node.Node   // used only for Status
 	peers []string
 }
 
 // NewHandler returns a ready-to-register Handler.
-func NewHandler(n *node.Node, peers []string) *Handler {
-	return &Handler{node: n, peers: peers}
+func NewHandler(coord *coordinator.Coordinator, n *node.Node, peers []string) *Handler {
+	return &Handler{coord: coord, node: n, peers: peers}
 }
 
-// Put writes a JSON object to the given key on this node.
-func (h *Handler) Put(_ context.Context, req *kvpb.PutRequest) (*kvpb.PutResponse, error) {
-	ts, err := h.node.Put(req.GetKey(), req.GetValueJson())
-	if err != nil {
-		return nil, err
-	}
-	return &kvpb.PutResponse{
-		Timestamp: &kvpb.HLCTimestamp{PhysicalMs: ts.PhysicalMs, Logical: ts.Logical},
-	}, nil
+// Put routes a put request through the coordinator.
+func (h *Handler) Put(ctx context.Context, req *kvpb.PutRequest) (*kvpb.PutResponse, error) {
+	return h.coord.Put(ctx, req)
 }
 
-// Get returns the current merged JSON value for the given key.
-func (h *Handler) Get(_ context.Context, req *kvpb.GetRequest) (*kvpb.GetResponse, error) {
-	v, found := h.node.Get(req.GetKey())
-	return &kvpb.GetResponse{ValueJson: v, Found: found}, nil
+// Get routes a get request through the coordinator.
+func (h *Handler) Get(ctx context.Context, req *kvpb.GetRequest) (*kvpb.GetResponse, error) {
+	return h.coord.Get(ctx, req)
 }
 
-// Delete tombstones all current fields of the given key.
-func (h *Handler) Delete(_ context.Context, req *kvpb.DeleteRequest) (*kvpb.DeleteResponse, error) {
-	ts, err := h.node.Delete(req.GetKey())
-	if err != nil {
-		return nil, err
-	}
-	return &kvpb.DeleteResponse{
-		Timestamp: &kvpb.HLCTimestamp{PhysicalMs: ts.PhysicalMs, Logical: ts.Logical},
-	}, nil
+// Delete routes a delete request through the coordinator.
+func (h *Handler) Delete(ctx context.Context, req *kvpb.DeleteRequest) (*kvpb.DeleteResponse, error) {
+	return h.coord.Delete(ctx, req)
 }
 
 // Status returns the node's replica ID, current HLC, and peer list.

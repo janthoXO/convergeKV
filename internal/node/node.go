@@ -10,6 +10,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/merkle"
+	"github.com/janthoXO/convergeKV/internal/ring"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
@@ -31,6 +32,7 @@ import (
 type Node struct {
 	replicaID string
 	hlc       *hlc.HLC
+	ring      *ring.Ring // set after construction via SetRing; nil = no sharding
 
 	// stateMu guards the state map structure. Held only for map reads/writes.
 	stateMu sync.RWMutex
@@ -78,6 +80,32 @@ func (n *Node) HLCNow() hlc.Timestamp { return n.hlc.Now() }
 // ReceiveHLC advances the node's HLC with a remote timestamp.
 func (n *Node) ReceiveHLC(remote hlc.Timestamp) hlc.Timestamp {
 	return n.hlc.Receive(remote)
+}
+
+// SetRing injects the ring after construction.
+// Must be called before the node handles any requests.
+func (n *Node) SetRing(r *ring.Ring) {
+	n.stateMu.Lock()
+	defer n.stateMu.Unlock()
+	n.ring = r
+}
+
+// isReplica returns true if this node is in the replica set for key.
+// If the ring is not yet set (startup), returns true so that data is always
+// accepted during bootstrap.
+func (n *Node) isReplica(key string) bool {
+	n.stateMu.RLock()
+	r := n.ring
+	n.stateMu.RUnlock()
+	if r == nil {
+		return true
+	}
+	return r.IsReplica(key, n.replicaID)
+}
+
+// IsReplica returns true if this node is a replica for key.
+func (n *Node) IsReplica(key string) bool {
+	return n.isReplica(key)
 }
 
 // MerkleTree returns the node's live Merkle tree.

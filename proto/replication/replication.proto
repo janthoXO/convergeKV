@@ -24,9 +24,13 @@ message HashSyncResponse {
 }
 
 message DeltaSyncRequest {
-  string replica_id = 1;
-  repeated int32 buckets = 2;
+  string         replica_id       = 1;
+  repeated int32 buckets          = 2;
+  // requester_id is the ReplicaID of the node making this request.
+  // The responder uses it to filter entries to only those the requester owns.
+  string         requester_id     = 3;
 }
+
 
 message DeltaSyncResponse {
   repeated DeltaEntry deltas = 1;

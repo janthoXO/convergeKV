@@ -10,17 +10,19 @@ import (
 	repb "github.com/janthoXO/convergeKV/gen/replication"
 	"github.com/janthoXO/convergeKV/internal/merkle"
 	"github.com/janthoXO/convergeKV/internal/node"
+	"github.com/janthoXO/convergeKV/internal/ring"
 )
 
 // Handler implements repb.ReplicationServiceServer.
 type Handler struct {
 	repb.UnimplementedReplicationServiceServer
 	node *node.Node
+	ring *ring.Ring
 }
 
 // NewHandler returns a ready-to-register Handler.
-func NewHandler(n *node.Node) *Handler {
-	return &Handler{node: n}
+func NewHandler(n *node.Node, r *ring.Ring) *Handler {
+	return &Handler{node: n, ring: r}
 }
 
 // HashSync handles Phase 1. The caller sends its bucket hashes; we reply with
@@ -64,6 +66,7 @@ func (h *Handler) HashSync(_ context.Context, req *repb.HashSyncRequest) (*repb.
 }
 
 // DeltaSync handles Phase 2. The caller lists the buckets it needs entries for.
+// Only entries that the requester is responsible for are included in the response.
 func (h *Handler) DeltaSync(_ context.Context, req *repb.DeltaSyncRequest) (*repb.DeltaSyncResponse, error) {
 	buckets := make([]int, len(req.Buckets))
 	for i, b := range req.Buckets {
@@ -72,7 +75,16 @@ func (h *Handler) DeltaSync(_ context.Context, req *repb.DeltaSyncRequest) (*rep
 
 	records := h.node.SnapshotBuckets(buckets)
 	deltas := make([]*repb.DeltaEntry, 0, len(records))
+	requesterID := req.GetRequesterId()
+
 	for _, rec := range records {
+		// Only send entries that the requester is supposed to hold.
+		// If ring is not set (bootstrap) or requesterID is empty, send everything.
+		if requesterID != "" && h.ring != nil {
+			if !h.ring.IsReplica(rec.Key, requesterID) {
+				continue
+			}
+		}
 		deltas = append(deltas, encodeEntry(rec))
 	}
 
