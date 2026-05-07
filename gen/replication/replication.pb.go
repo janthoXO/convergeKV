@@ -106,12 +106,16 @@ func (x *DeltaEntry) GetDeleted() bool {
 	return false
 }
 
+// HashSyncRequest now sends hashes for a sparse subset of partitions.
+// Only partitions shared between the two co-replicas are included.
 type HashSyncRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ReplicaId     string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
-	BucketHashes  [][]byte               `protobuf:"bytes,2,rep,name=bucket_hashes,json=bucketHashes,proto3" json:"bucket_hashes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	ReplicaId string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
+	// partition_hashes maps partition index → 32-byte hash for that partition.
+	// Only shared partitions are included (not all NumPartitions).
+	PartitionHashes map[int32][]byte `protobuf:"bytes,2,rep,name=partition_hashes,json=partitionHashes,proto3" json:"partition_hashes,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *HashSyncRequest) Reset() {
@@ -151,19 +155,25 @@ func (x *HashSyncRequest) GetReplicaId() string {
 	return ""
 }
 
-func (x *HashSyncRequest) GetBucketHashes() [][]byte {
+func (x *HashSyncRequest) GetPartitionHashes() map[int32][]byte {
 	if x != nil {
-		return x.BucketHashes
+		return x.PartitionHashes
 	}
 	return nil
 }
 
+// HashSyncResponse returns hashes for the same set of partitions,
+// plus the list of partitions where the hashes differ.
 type HashSyncResponse struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	DivergentBuckets []int32                `protobuf:"varint,1,rep,packed,name=divergent_buckets,json=divergentBuckets,proto3" json:"divergent_buckets,omitempty"`
-	BucketHashes     [][]byte               `protobuf:"bytes,2,rep,name=bucket_hashes,json=bucketHashes,proto3" json:"bucket_hashes,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// divergent_partitions lists partition indices where the receiver's hash
+	// differs from the sender's hash for that partition.
+	DivergentPartitions []int32 `protobuf:"varint,1,rep,packed,name=divergent_partitions,json=divergentPartitions,proto3" json:"divergent_partitions,omitempty"`
+	// partition_hashes mirrors the sender's requested partitions with the
+	// receiver's own hashes, so the sender can compute ITS own missing partitions.
+	PartitionHashes map[int32][]byte `protobuf:"bytes,2,rep,name=partition_hashes,json=partitionHashes,proto3" json:"partition_hashes,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *HashSyncResponse) Reset() {
@@ -196,24 +206,24 @@ func (*HashSyncResponse) Descriptor() ([]byte, []int) {
 	return file_replication_replication_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *HashSyncResponse) GetDivergentBuckets() []int32 {
+func (x *HashSyncResponse) GetDivergentPartitions() []int32 {
 	if x != nil {
-		return x.DivergentBuckets
+		return x.DivergentPartitions
 	}
 	return nil
 }
 
-func (x *HashSyncResponse) GetBucketHashes() [][]byte {
+func (x *HashSyncResponse) GetPartitionHashes() map[int32][]byte {
 	if x != nil {
-		return x.BucketHashes
+		return x.PartitionHashes
 	}
 	return nil
 }
 
 type DeltaSyncRequest struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	ReplicaId string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
-	Buckets   []int32                `protobuf:"varint,2,rep,packed,name=buckets,proto3" json:"buckets,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	ReplicaId  string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
+	Partitions []int32                `protobuf:"varint,2,rep,packed,name=partitions,proto3" json:"partitions,omitempty"` // renamed from 'buckets'
 	// requester_id is the ReplicaID of the node making this request.
 	// The responder uses it to filter entries to only those the requester owns.
 	RequesterId   string `protobuf:"bytes,3,opt,name=requester_id,json=requesterId,proto3" json:"requester_id,omitempty"`
@@ -258,9 +268,9 @@ func (x *DeltaSyncRequest) GetReplicaId() string {
 	return ""
 }
 
-func (x *DeltaSyncRequest) GetBuckets() []int32 {
+func (x *DeltaSyncRequest) GetPartitions() []int32 {
 	if x != nil {
-		return x.Buckets
+		return x.Partitions
 	}
 	return nil
 }
@@ -330,18 +340,26 @@ const file_replication_replication_proto_rawDesc = "" +
 	"\ttimestamp\x18\x04 \x01(\v2\x10.kv.HLCTimestampR\ttimestamp\x12\x1d\n" +
 	"\n" +
 	"replica_id\x18\x05 \x01(\tR\treplicaId\x12\x18\n" +
-	"\adeleted\x18\x06 \x01(\bR\adeleted\"U\n" +
+	"\adeleted\x18\x06 \x01(\bR\adeleted\"\xd2\x01\n" +
 	"\x0fHashSyncRequest\x12\x1d\n" +
 	"\n" +
-	"replica_id\x18\x01 \x01(\tR\treplicaId\x12#\n" +
-	"\rbucket_hashes\x18\x02 \x03(\fR\fbucketHashes\"d\n" +
-	"\x10HashSyncResponse\x12+\n" +
-	"\x11divergent_buckets\x18\x01 \x03(\x05R\x10divergentBuckets\x12#\n" +
-	"\rbucket_hashes\x18\x02 \x03(\fR\fbucketHashes\"n\n" +
+	"replica_id\x18\x01 \x01(\tR\treplicaId\x12\\\n" +
+	"\x10partition_hashes\x18\x02 \x03(\v21.replication.HashSyncRequest.PartitionHashesEntryR\x0fpartitionHashes\x1aB\n" +
+	"\x14PartitionHashesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\xe8\x01\n" +
+	"\x10HashSyncResponse\x121\n" +
+	"\x14divergent_partitions\x18\x01 \x03(\x05R\x13divergentPartitions\x12]\n" +
+	"\x10partition_hashes\x18\x02 \x03(\v22.replication.HashSyncResponse.PartitionHashesEntryR\x0fpartitionHashes\x1aB\n" +
+	"\x14PartitionHashesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"t\n" +
 	"\x10DeltaSyncRequest\x12\x1d\n" +
 	"\n" +
-	"replica_id\x18\x01 \x01(\tR\treplicaId\x12\x18\n" +
-	"\abuckets\x18\x02 \x03(\x05R\abuckets\x12!\n" +
+	"replica_id\x18\x01 \x01(\tR\treplicaId\x12\x1e\n" +
+	"\n" +
+	"partitions\x18\x02 \x03(\x05R\n" +
+	"partitions\x12!\n" +
 	"\frequester_id\x18\x03 \x01(\tR\vrequesterId\"D\n" +
 	"\x11DeltaSyncResponse\x12/\n" +
 	"\x06deltas\x18\x01 \x03(\v2\x17.replication.DeltaEntryR\x06deltas2\xa9\x01\n" +
@@ -361,27 +379,31 @@ func file_replication_replication_proto_rawDescGZIP() []byte {
 	return file_replication_replication_proto_rawDescData
 }
 
-var file_replication_replication_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_replication_replication_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_replication_replication_proto_goTypes = []any{
 	(*DeltaEntry)(nil),        // 0: replication.DeltaEntry
 	(*HashSyncRequest)(nil),   // 1: replication.HashSyncRequest
 	(*HashSyncResponse)(nil),  // 2: replication.HashSyncResponse
 	(*DeltaSyncRequest)(nil),  // 3: replication.DeltaSyncRequest
 	(*DeltaSyncResponse)(nil), // 4: replication.DeltaSyncResponse
-	(*kv.HLCTimestamp)(nil),   // 5: kv.HLCTimestamp
+	nil,                       // 5: replication.HashSyncRequest.PartitionHashesEntry
+	nil,                       // 6: replication.HashSyncResponse.PartitionHashesEntry
+	(*kv.HLCTimestamp)(nil),   // 7: kv.HLCTimestamp
 }
 var file_replication_replication_proto_depIdxs = []int32{
-	5, // 0: replication.DeltaEntry.timestamp:type_name -> kv.HLCTimestamp
-	0, // 1: replication.DeltaSyncResponse.deltas:type_name -> replication.DeltaEntry
-	1, // 2: replication.ReplicationService.HashSync:input_type -> replication.HashSyncRequest
-	3, // 3: replication.ReplicationService.DeltaSync:input_type -> replication.DeltaSyncRequest
-	2, // 4: replication.ReplicationService.HashSync:output_type -> replication.HashSyncResponse
-	4, // 5: replication.ReplicationService.DeltaSync:output_type -> replication.DeltaSyncResponse
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	7, // 0: replication.DeltaEntry.timestamp:type_name -> kv.HLCTimestamp
+	5, // 1: replication.HashSyncRequest.partition_hashes:type_name -> replication.HashSyncRequest.PartitionHashesEntry
+	6, // 2: replication.HashSyncResponse.partition_hashes:type_name -> replication.HashSyncResponse.PartitionHashesEntry
+	0, // 3: replication.DeltaSyncResponse.deltas:type_name -> replication.DeltaEntry
+	1, // 4: replication.ReplicationService.HashSync:input_type -> replication.HashSyncRequest
+	3, // 5: replication.ReplicationService.DeltaSync:input_type -> replication.DeltaSyncRequest
+	2, // 6: replication.ReplicationService.HashSync:output_type -> replication.HashSyncResponse
+	4, // 7: replication.ReplicationService.DeltaSync:output_type -> replication.DeltaSyncResponse
+	6, // [6:8] is the sub-list for method output_type
+	4, // [4:6] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_replication_replication_proto_init() }
@@ -395,7 +417,7 @@ func file_replication_replication_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_replication_replication_proto_rawDesc), len(file_replication_replication_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

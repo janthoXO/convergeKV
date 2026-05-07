@@ -9,21 +9,21 @@ import (
 // Hash is a 32-byte SHA-256 digest used at each tree node.
 type Hash [32]byte
 
-// emptyHash is the zero value, representing an empty bucket.
+// emptyHash is the zero value, representing an empty partition.
 var emptyHash Hash
 
 // MerkleTree is a thread-safe incremental Merkle tree over the key space.
-// Leaf i corresponds to bucket i. Each leaf stores the XOR of the
-// content hashes of all (key, field, replica_id, timestamp) tuples in that bucket.
+// Leaf i corresponds to partition i. Each leaf stores the XOR of the
+// content hashes of all (key, field, replica_id, timestamp) tuples in that partition.
 type MerkleTree struct {
 	mu    sync.RWMutex
-	nodes []Hash // length = 2 * NumBuckets; index 0 unused; root at index 1
+	nodes []Hash // length = 2 * NumPartitions; index 0 unused; root at index 1
 }
 
 // NewMerkleTree returns an empty tree with all hashes zeroed.
 func NewMerkleTree() *MerkleTree {
 	return &MerkleTree{
-		nodes: make([]Hash, 2*NumBuckets),
+		nodes: make([]Hash, 2*NumPartitions),
 	}
 }
 
@@ -39,12 +39,12 @@ func (t *MerkleTree) Root() Hash {
 // If replacing an existing entry, call Remove first, then Update.
 func (t *MerkleTree) Update(key, field, replicaID string, physMs uint64, logical uint32) {
 	h := entryHash(key, field, replicaID, physMs, logical)
-	bucket := BucketIndex(key)
+	partition := PartitionIndex(key)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	leaf := NumBuckets + bucket
+	leaf := NumPartitions + partition
 	t.nodes[leaf] = xorHash(t.nodes[leaf], h)
 
 	t.bubbleUp(leaf)
@@ -54,41 +54,41 @@ func (t *MerkleTree) Update(key, field, replicaID string, physMs uint64, logical
 // XOR is its own inverse: XOR-ing the same hash twice cancels it out.
 func (t *MerkleTree) Remove(key, field, replicaID string, physMs uint64, logical uint32) {
 	h := entryHash(key, field, replicaID, physMs, logical)
-	bucket := BucketIndex(key)
+	partition := PartitionIndex(key)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	leaf := NumBuckets + bucket
+	leaf := NumPartitions + partition
 	t.nodes[leaf] = xorHash(t.nodes[leaf], h) // XOR cancels
 
 	t.bubbleUp(leaf)
 }
 
-// BucketHash returns the hash of a single leaf bucket.
-// Used during Phase 1 binary search to compare individual leaves.
-func (t *MerkleTree) BucketHash(bucket int) Hash {
+// PartitionHash returns the hash of a single leaf partition.
+// Used during Phase 1 to compare individual partition leaves.
+func (t *MerkleTree) PartitionHash(partition int) Hash {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	return t.nodes[NumBuckets+bucket]
+	return t.nodes[NumPartitions+partition]
 }
 
-// DivergentBuckets compares this tree against a peer's bucket hashes (a flat
-// slice of NumBuckets hashes, indexed by bucket number) and returns the list
-// of bucket indices where the hashes differ.
-// The peer sends its bucket hashes during Phase 1; this function identifies
+// DivergentPartitions compares this tree against a peer's partition hashes (a flat
+// slice of NumPartitions hashes, indexed by partition number) and returns the list
+// of partition indices where the hashes differ.
+// The peer sends its partition hashes during Phase 1; this function identifies
 // which ranges need a full delta exchange in Phase 2.
-func (t *MerkleTree) DivergentBuckets(peerBuckets []Hash) []int {
+func (t *MerkleTree) DivergentPartitions(peerPartitions []Hash) []int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
 	var out []int
-	for i, ph := range peerBuckets {
-		if i >= NumBuckets {
+	for i, ph := range peerPartitions {
+		if i >= NumPartitions {
 			break
 		}
-		if t.nodes[NumBuckets+i] != ph {
+		if t.nodes[NumPartitions+i] != ph {
 			out = append(out, i)
 		}
 	}
@@ -96,14 +96,14 @@ func (t *MerkleTree) DivergentBuckets(peerBuckets []Hash) []int {
 	return out
 }
 
-// AllBucketHashes returns a snapshot of all leaf hashes, indexed by bucket.
-// Sent to a peer during Phase 1 so they can call DivergentBuckets.
-func (t *MerkleTree) AllBucketHashes() []Hash {
+// AllPartitionHashes returns a snapshot of all leaf hashes, indexed by partition.
+// Sent to a peer during Phase 1 so they can call DivergentPartitions.
+func (t *MerkleTree) AllPartitionHashes() []Hash {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	out := make([]Hash, NumBuckets)
-	copy(out, t.nodes[NumBuckets:])
+	out := make([]Hash, NumPartitions)
+	copy(out, t.nodes[NumPartitions:])
 
 	return out
 }

@@ -39,6 +39,18 @@ func hashesToBytes(hashes []merkle.Hash) [][]byte {
 	return out
 }
 
+// partitionHashesMap converts a full AllPartitionHashes slice to the sparse
+// map<int32,bytes> format used by the proto.
+func partitionHashesMap(hashes []merkle.Hash) map[int32][]byte {
+	m := make(map[int32][]byte, len(hashes))
+	for i, h := range hashes {
+		cp := make([]byte, 32)
+		copy(cp, h[:])
+		m[int32(i)] = cp
+	}
+	return m
+}
+
 // applyDeltasToNode applies a slice of proto DeltaEntry messages to a node.
 func applyDeltasToNode(t *testing.T, n *node.Node, deltas []*repb.DeltaEntry) {
 	t.Helper()
@@ -85,27 +97,27 @@ func TestMerkleSync(t *testing.T) {
 	handlerB := NewHandler(nodeB, nil)
 
 	hashRespB, err := handlerB.HashSync(context.Background(), &repb.HashSyncRequest{
-		ReplicaId:    "replica-A",
-		BucketHashes: hashesToBytes(nodeA.MerkleTree().AllBucketHashes()),
+		ReplicaId:       "replica-A",
+		PartitionHashes: partitionHashesMap(nodeA.MerkleTree().AllPartitionHashes()),
 	})
 	if err != nil {
 		t.Fatalf("HashSync (A→B): %v", err)
 	}
 
-	// Response must list exactly one divergent bucket — the one for "user:1".
-	expectedBucket := merkle.BucketIndex("user:1")
-	if len(hashRespB.DivergentBuckets) != 1 {
-		t.Fatalf("expected 1 divergent bucket from nodeB, got %d: %v",
-			len(hashRespB.DivergentBuckets), hashRespB.DivergentBuckets)
+	// Response must list exactly one divergent partition — the one for "user:1".
+	expectedPartition := merkle.PartitionIndex("user:1")
+	if len(hashRespB.DivergentPartitions) != 1 {
+		t.Fatalf("expected 1 divergent partition from nodeB, got %d: %v",
+			len(hashRespB.DivergentPartitions), hashRespB.DivergentPartitions)
 	}
-	if int(hashRespB.DivergentBuckets[0]) != expectedBucket {
-		t.Errorf("divergent bucket: want %d, got %d", expectedBucket, hashRespB.DivergentBuckets[0])
+	if int(hashRespB.DivergentPartitions[0]) != expectedPartition {
+		t.Errorf("divergent partition: want %d, got %d", expectedPartition, hashRespB.DivergentPartitions[0])
 	}
 
-	// 5. Call DeltaSync for that bucket — must contain the city field from nodeB.
+	// 5. Call DeltaSync for that partition — must contain the city field from nodeB.
 	deltaRespB, err := handlerB.DeltaSync(context.Background(), &repb.DeltaSyncRequest{
 		ReplicaId:   "replica-A",
-		Buckets:     hashRespB.DivergentBuckets,
+		Partitions:  hashRespB.DivergentPartitions,
 		RequesterId: "", // no ring in test — no filtering
 	})
 	if err != nil {
@@ -128,21 +140,21 @@ func TestMerkleSync(t *testing.T) {
 	handlerA := NewHandler(nodeA, nil)
 
 	hashRespA, err := handlerA.HashSync(context.Background(), &repb.HashSyncRequest{
-		ReplicaId:    "replica-B",
-		BucketHashes: hashesToBytes(nodeB.MerkleTree().AllBucketHashes()),
+		ReplicaId:       "replica-B",
+		PartitionHashes: partitionHashesMap(nodeB.MerkleTree().AllPartitionHashes()),
 	})
 	if err != nil {
 		t.Fatalf("HashSync (B→A): %v", err)
 	}
 
-	if len(hashRespA.DivergentBuckets) != 1 {
-		t.Fatalf("expected 1 divergent bucket from nodeA (reverse), got %d: %v",
-			len(hashRespA.DivergentBuckets), hashRespA.DivergentBuckets)
+	if len(hashRespA.DivergentPartitions) != 1 {
+		t.Fatalf("expected 1 divergent partition from nodeA (reverse), got %d: %v",
+			len(hashRespA.DivergentPartitions), hashRespA.DivergentPartitions)
 	}
 
 	deltaRespA, err := handlerA.DeltaSync(context.Background(), &repb.DeltaSyncRequest{
 		ReplicaId:   "replica-B",
-		Buckets:     hashRespA.DivergentBuckets,
+		Partitions:  hashRespA.DivergentPartitions,
 		RequesterId: "", // no ring in test — no filtering
 	})
 	if err != nil {

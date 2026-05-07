@@ -128,25 +128,9 @@ func main() {
 	// ── 8. Causal context + anti-entropy ──────────────────────────────────────
 	causal := replication.NewCausalContext()
 
-	// Derive peer list from initial gossip view; it is refreshed when gossip
-	// fires the OnChange callback but we keep a separate list for anti-entropy
-	// since AntiEntropy needs host:grpc_port addresses.
-	// For now AntiEntropy will re-read the ring's member list on each tick
-	// via the peers closure below (Release 3 will make this fully dynamic).
-	// For Release 2, pass peers as initially known (pre-gossip convergence they
-	// may be empty; anti-entropy tolerates failed dials with a log and retry).
-	peerAddrs := func() []string {
-		members := g.Members()
-		addrs := make([]string, 0, len(members))
-		for _, m := range members {
-			if m.ReplicaID != cfg.ReplicaID {
-				addrs = append(addrs, m.GRPCAddr)
-			}
-		}
-		return addrs
-	}
-
-	ae := replication.NewAntiEntropy(n, peerAddrs(), causal, time.Duration(cfg.SyncMs)*time.Millisecond)
+	// AntiEntropy reads live gossip.Members() on each tick, so it always
+	// sees the current cluster view without a static peer list.
+	ae := replication.NewAntiEntropy(n, g, r, causal, time.Duration(cfg.SyncMs)*time.Millisecond)
 
 	// ── 9. gRPC server ────────────────────────────────────────────────────────
 	srv := grpc.NewServer()

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"sync/atomic"
+
+	"github.com/janthoXO/convergeKV/internal/merkle"
 )
 
 const (
@@ -25,6 +27,10 @@ type ring struct {
 	vnodes  []vnode  // sorted by hash position
 	members []Member // indexed by member index (unique per ReplicaID)
 	rf      int
+
+	// partitionOwners[i] is the slice of member indices (into .members)
+	// that are replicas for partition i. Precomputed on Rebuild.
+	partitionOwners [][]int // length = merkle.NumPartitions
 }
 
 type vnode struct {
@@ -65,6 +71,25 @@ func (r *Ring) Rebuild(members []Member, rf int) {
 		members: members,
 		rf:      rf,
 	}
+
+	// Precompute partition ownership for Merkle-aligned anti-entropy.
+	owners := make([][]int, merkle.NumPartitions)
+	for i := 0; i < merkle.NumPartitions; i++ {
+		midToken := merkle.PartitionMidToken(i)
+		replicas := snap.getReplicasByToken(midToken)
+		idxs := make([]int, 0, len(replicas))
+		for _, repl := range replicas {
+			for k, m := range members {
+				if m.ReplicaID == repl.ReplicaID {
+					idxs = append(idxs, k)
+					break
+				}
+			}
+		}
+		owners[i] = idxs
+	}
+	snap.partitionOwners = owners
+
 	r.ptr.Store(snap)
 }
 
@@ -103,12 +128,66 @@ func (r *Ring) Primary(key string) (Member, bool) {
 	return replicas[0], true
 }
 
+// SharedPartitions returns the partition indices where both localID and peerID
+// are in the replica set. These are the only partitions whose Merkle hashes
+// need to be compared during anti-entropy between these two nodes.
+//
+// The result is computed from the precomputed partition cache — O(NumPartitions).
+// Call this once per anti-entropy round after confirming the peer is alive.
+func (r *Ring) SharedPartitions(localID, peerID string) []int {
+	snap := r.ptr.Load()
+	if snap == nil {
+		return nil
+	}
+	var out []int
+	for i, ownerIdxs := range snap.partitionOwners {
+		hasLocal, hasPeer := false, false
+		for _, idx := range ownerIdxs {
+			rid := snap.members[idx].ReplicaID
+			if rid == localID {
+				hasLocal = true
+			}
+			if rid == peerID {
+				hasPeer = true
+			}
+		}
+		if hasLocal && hasPeer {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// OwnsPartition returns true if replicaID is in the replica set for partition i.
+// Faster than IsReplica because it uses the precomputed partition cache.
+func (r *Ring) OwnsPartition(partition int, replicaID string) bool {
+	snap := r.ptr.Load()
+	if snap == nil || partition < 0 || partition >= merkle.NumPartitions {
+		return false
+	}
+	for _, idx := range snap.partitionOwners[partition] {
+		if snap.members[idx].ReplicaID == replicaID {
+			return true
+		}
+	}
+	return false
+}
+
 // ── immutable ring methods ────────────────────────────────────────────────────
 
 func (rg *ring) getReplicas(key string) []Member {
 	h := keyHash(key)
-	// Binary search: find the first vnode with hash >= h
-	idx := sort.Search(len(rg.vnodes), func(i int) bool { return rg.vnodes[i].hash >= h })
+	return rg.getReplicasByToken(h)
+}
+
+// getReplicasByToken looks up replicas by raw ring token (used both for key
+// lookups and for partition midpoint sampling during Rebuild).
+func (rg *ring) getReplicasByToken(token uint64) []Member {
+	if len(rg.vnodes) == 0 {
+		return nil
+	}
+	// Binary search: find the first vnode with hash >= token
+	idx := sort.Search(len(rg.vnodes), func(i int) bool { return rg.vnodes[i].hash >= token })
 	if idx == len(rg.vnodes) {
 		idx = 0 // wrap around
 	}
@@ -134,6 +213,7 @@ func vnodeHash(replicaID string, idx int) uint64 {
 }
 
 // keyHash hashes a key to a uint64 position on the ring.
+// This produces the same value as merkle.RingToken — they share the same algorithm.
 func keyHash(key string) uint64 {
 	h := sha256.Sum256([]byte(key))
 	return binary.BigEndian.Uint64(h[:8])

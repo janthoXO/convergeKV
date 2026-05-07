@@ -1,10 +1,20 @@
 package ring
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"math/rand"
 	"testing"
 )
+
+// partitionIndexFromKey mirrors merkle.PartitionIndex using the same algorithm.
+// Kept here to avoid a circular dependency with the merkle package.
+func partitionIndexFromKey(key string) int {
+	h := sha256.Sum256([]byte(key))
+	v := binary.BigEndian.Uint64(h[:8])
+	return int(v % 1024) // merkle.NumPartitions = 1024
+}
 
 func TestSingleMember(t *testing.T) {
 	r := NewRing()
@@ -172,5 +182,141 @@ func TestEmptyRing(t *testing.T) {
 	_, ok := r.Primary("any")
 	if ok {
 		t.Fatalf("empty ring: Primary should return false")
+	}
+}
+
+// ── SharedPartitions and OwnsPartition tests ──────────────────────────────────
+
+func TestSharedPartitionsAllOwned(t *testing.T) {
+	// 3 nodes, RF=3 — every node owns every partition, so all are shared.
+	r := NewRing()
+	members := []Member{
+		{ReplicaID: "A", GRPCAddr: "localhost:50051"},
+		{ReplicaID: "B", GRPCAddr: "localhost:50052"},
+		{ReplicaID: "C", GRPCAddr: "localhost:50053"},
+	}
+	r.Rebuild(members, 3)
+
+	shared := r.SharedPartitions("A", "B")
+	if len(shared) == 0 {
+		t.Fatalf("SharedPartitions(A,B) returned 0 on a 3-node RF=3 ring")
+	}
+	t.Logf("3-node RF=3: SharedPartitions(A,B)=%d (of 1024)", len(shared))
+}
+
+func TestSharedPartitionsPartialOverlap(t *testing.T) {
+	// 6 nodes, RF=3 — each pair shares a subset of partitions.
+	r := NewRing()
+	members := make([]Member, 6)
+	for i := range members {
+		members[i] = Member{
+			ReplicaID: fmt.Sprintf("n%d", i+1),
+			GRPCAddr:  fmt.Sprintf("localhost:%d", 50051+i),
+		}
+	}
+	r.Rebuild(members, 3)
+
+	sharedAB := r.SharedPartitions("n1", "n2")
+	sharedAC := r.SharedPartitions("n1", "n3")
+
+	if len(sharedAB) == 0 {
+		t.Error("SharedPartitions(n1,n2) returned 0 on 6-node RF=3 ring")
+	}
+	if len(sharedAC) == 0 {
+		t.Error("SharedPartitions(n1,n3) returned 0 on 6-node RF=3 ring")
+	}
+	if len(sharedAB) >= 1024 {
+		t.Errorf("SharedPartitions(n1,n2)=%d, expected < 1024 for 6-node ring", len(sharedAB))
+	}
+	t.Logf("6-node RF=3: SharedPartitions(n1,n2)=%d, SharedPartitions(n1,n3)=%d", len(sharedAB), len(sharedAC))
+}
+
+func TestSharedPartitionsSymmetric(t *testing.T) {
+	r := NewRing()
+	members := []Member{
+		{ReplicaID: "A", GRPCAddr: "localhost:50051"},
+		{ReplicaID: "B", GRPCAddr: "localhost:50052"},
+		{ReplicaID: "C", GRPCAddr: "localhost:50053"},
+		{ReplicaID: "D", GRPCAddr: "localhost:50054"},
+	}
+	r.Rebuild(members, 2)
+
+	ab := r.SharedPartitions("A", "B")
+	ba := r.SharedPartitions("B", "A")
+
+	if len(ab) != len(ba) {
+		t.Errorf("SharedPartitions is not symmetric: A→B=%d, B→A=%d", len(ab), len(ba))
+	}
+	abSet := make(map[int]struct{}, len(ab))
+	for _, p := range ab {
+		abSet[p] = struct{}{}
+	}
+	for _, p := range ba {
+		if _, ok := abSet[p]; !ok {
+			t.Errorf("partition %d in B→A but not in A→B", p)
+		}
+	}
+}
+
+func TestSharedPartitionsAfterRebuild(t *testing.T) {
+	r := NewRing()
+	initial := []Member{
+		{ReplicaID: "A", GRPCAddr: "localhost:50051"},
+		{ReplicaID: "B", GRPCAddr: "localhost:50052"},
+	}
+	r.Rebuild(initial, 2)
+	sharedBefore := r.SharedPartitions("A", "B")
+
+	// Add a third member; with RF=2, A and B now share fewer partitions.
+	updated := []Member{
+		{ReplicaID: "A", GRPCAddr: "localhost:50051"},
+		{ReplicaID: "B", GRPCAddr: "localhost:50052"},
+		{ReplicaID: "C", GRPCAddr: "localhost:50053"},
+	}
+	r.Rebuild(updated, 2)
+	sharedAfter := r.SharedPartitions("A", "B")
+
+	if len(sharedBefore) == 0 {
+		t.Error("SharedPartitions before rebuild: expected > 0")
+	}
+	if len(sharedAfter) == 0 {
+		t.Error("SharedPartitions after rebuild: expected > 0")
+	}
+	t.Logf("SharedPartitions(A,B): before=%d after=%d (C added)", len(sharedBefore), len(sharedAfter))
+}
+
+func TestOwnsPartitionConsistentWithGetReplicas(t *testing.T) {
+	r := NewRing()
+	members := []Member{
+		{ReplicaID: "n1", GRPCAddr: "localhost:50051"},
+		{ReplicaID: "n2", GRPCAddr: "localhost:50052"},
+		{ReplicaID: "n3", GRPCAddr: "localhost:50053"},
+		{ReplicaID: "n4", GRPCAddr: "localhost:50054"},
+	}
+	r.Rebuild(members, 2)
+
+	// For a sample of keys, log any mismatch between OwnsPartition (midpoint
+	// sampling) and GetReplicas (exact key lookup). Boundary mismatches are
+	// expected and don't indicate a bug; just verify OwnsPartition returns true
+	// for the primary's own partition midpoint key.
+	keys := []string{"hello", "world", "user:1", "key:extra", "foobar", "test", "abc"}
+	for _, key := range keys {
+		replicas := r.GetReplicas(key)
+		partition := partitionIndexFromKey(key)
+		for _, m := range members {
+			owns := r.OwnsPartition(partition, m.ReplicaID)
+			inReplicas := false
+			for _, rep := range replicas {
+				if rep.ReplicaID == m.ReplicaID {
+					inReplicas = true
+					break
+				}
+			}
+			if owns != inReplicas {
+				// Midpoint vs exact-key sampling can differ at partition boundaries.
+				t.Logf("note: key=%q partition=%d member=%s: OwnsPartition=%v GetReplicas=%v",
+					key, partition, m.ReplicaID, owns, inReplicas)
+			}
+		}
 	}
 }

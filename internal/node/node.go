@@ -91,6 +91,7 @@ func (n *Node) SetRing(r *ring.Ring) {
 }
 
 // isReplica returns true if this node is in the replica set for key.
+// Uses partition-level ownership cache (O(RF)) when ring is available.
 // If the ring is not yet set (startup), returns true so that data is always
 // accepted during bootstrap.
 func (n *Node) isReplica(key string) bool {
@@ -100,7 +101,8 @@ func (n *Node) isReplica(key string) bool {
 	if r == nil {
 		return true
 	}
-	return r.IsReplica(key, n.replicaID)
+	partition := merkle.PartitionIndex(key)
+	return r.OwnsPartition(partition, n.replicaID)
 }
 
 // IsReplica returns true if this node is a replica for key.
@@ -114,21 +116,17 @@ func (n *Node) MerkleTree() *merkle.MerkleTree {
 	return n.tree
 }
 
-// SnapshotBuckets returns all DeltaRecords whose key maps to one of the given buckets.
-// Used by the replication handler to answer Phase 2 requests.
-func (n *Node) SnapshotBuckets(buckets []int) []KeyFieldEntryTuple {
-	// Build a set for O(1) lookup.
-	wanted := make(map[int]struct{}, len(buckets))
-	for _, b := range buckets {
-		wanted[b] = struct{}{}
-	}
-
+// SnapshotPartitions returns all KeyFieldEntryTuples whose key maps to one
+// of the given partition indices. Used by the replication handler to answer
+// Phase 2 (DeltaSync) requests.
+func (n *Node) SnapshotPartitions(partitions map[int]struct{}) []KeyFieldEntryTuple {
 	n.stateMu.RLock()
 	defer n.stateMu.RUnlock()
 
 	var out []KeyFieldEntryTuple
 	for key, m := range n.state {
-		if _, ok := wanted[merkle.BucketIndex(key)]; !ok {
+		partition := merkle.PartitionIndex(key)
+		if _, ok := partitions[partition]; !ok {
 			continue
 		}
 		for field, entry := range m.Fields {

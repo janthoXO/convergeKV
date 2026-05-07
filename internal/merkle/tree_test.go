@@ -4,6 +4,18 @@ import (
 	"testing"
 )
 
+// TestPartitionIndexConsistency verifies PartitionIndex equals RingToken(key) % NumPartitions.
+func TestPartitionIndexConsistency(t *testing.T) {
+	keys := []string{"hello", "world", "user:1", "key:extra", "key:shared", "foo", "bar"}
+	for _, key := range keys {
+		want := int(RingToken(key) % NumPartitions)
+		got := PartitionIndex(key)
+		if got != want {
+			t.Errorf("key=%q: PartitionIndex=%d, want RingToken%%NumPartitions=%d", key, got, want)
+		}
+	}
+}
+
 // TestEmptyTreeRootIsZero verifies that a freshly created tree has the zero root.
 func TestEmptyTreeRootIsZero(t *testing.T) {
 	tree := NewMerkleTree()
@@ -44,9 +56,9 @@ func TestCommutativity(t *testing.T) {
 	}
 }
 
-// TestDivergentBuckets verifies that inserting one extra entry on tree B makes
-// DivergentBuckets return exactly the bucket containing that entry's key.
-func TestDivergentBuckets(t *testing.T) {
+// TestDivergentPartitions verifies that inserting one extra entry on tree B makes
+// DivergentPartitions return exactly the partition containing that entry's key.
+func TestDivergentPartitions(t *testing.T) {
 	sharedKey := "key:shared"
 	extraKey := "key:extra"
 
@@ -57,35 +69,35 @@ func TestDivergentBuckets(t *testing.T) {
 	treeB.Update(sharedKey, "name", "r1", 1000, 0)
 	treeB.Update(extraKey, "city", "r2", 2000, 0) // extra entry only in B
 
-	// From A's perspective: which of A's buckets differ from B's?
-	divergentFromA := treeA.DivergentBuckets(treeB.AllBucketHashes())
-	expectedBucket := BucketIndex(extraKey)
+	// From A's perspective: which of A's partitions differ from B's?
+	divergentFromA := treeA.DivergentPartitions(treeB.AllPartitionHashes())
+	expectedPartition := PartitionIndex(extraKey)
 
 	if len(divergentFromA) != 1 {
-		t.Fatalf("expected 1 divergent bucket, got %d: %v", len(divergentFromA), divergentFromA)
+		t.Fatalf("expected 1 divergent partition, got %d: %v", len(divergentFromA), divergentFromA)
 	}
-	if divergentFromA[0] != expectedBucket {
-		t.Errorf("expected divergent bucket %d (for key %q), got %d", expectedBucket, extraKey, divergentFromA[0])
+	if divergentFromA[0] != expectedPartition {
+		t.Errorf("expected divergent partition %d (for key %q), got %d", expectedPartition, extraKey, divergentFromA[0])
 	}
 }
 
-// TestAllBucketHashesLength verifies that AllBucketHashes always returns exactly NumBuckets hashes.
-func TestAllBucketHashesLength(t *testing.T) {
+// TestAllPartitionHashesLength verifies AllPartitionHashes always returns exactly NumPartitions hashes.
+func TestAllPartitionHashesLength(t *testing.T) {
 	tree := NewMerkleTree()
-	hashes := tree.AllBucketHashes()
-	if len(hashes) != NumBuckets {
-		t.Errorf("expected %d bucket hashes, got %d", NumBuckets, len(hashes))
+	hashes := tree.AllPartitionHashes()
+	if len(hashes) != NumPartitions {
+		t.Errorf("expected %d partition hashes, got %d", NumPartitions, len(hashes))
 	}
 
 	// Also verify after some updates.
 	tree.Update("somekey", "field", "r1", 999, 0)
-	hashes = tree.AllBucketHashes()
-	if len(hashes) != NumBuckets {
-		t.Errorf("expected %d bucket hashes after update, got %d", NumBuckets, len(hashes))
+	hashes = tree.AllPartitionHashes()
+	if len(hashes) != NumPartitions {
+		t.Errorf("expected %d partition hashes after update, got %d", NumPartitions, len(hashes))
 	}
 }
 
-// TestNoDivergenceWhenEqual verifies that two identical trees report no divergent buckets.
+// TestNoDivergenceWhenEqual verifies that two identical trees report no divergent partitions.
 func TestNoDivergenceWhenEqual(t *testing.T) {
 	treeA := NewMerkleTree()
 	treeA.Update("key:1", "name", "r1", 1000, 0)
@@ -93,8 +105,22 @@ func TestNoDivergenceWhenEqual(t *testing.T) {
 	treeB := NewMerkleTree()
 	treeB.Update("key:1", "name", "r1", 1000, 0)
 
-	divergent := treeA.DivergentBuckets(treeB.AllBucketHashes())
+	divergent := treeA.DivergentPartitions(treeB.AllPartitionHashes())
 	if len(divergent) != 0 {
-		t.Errorf("expected no divergent buckets for identical trees, got %v", divergent)
+		t.Errorf("expected no divergent partitions for identical trees, got %v", divergent)
+	}
+}
+
+// TestPartitionHashNonZeroAfterUpdate verifies PartitionHash returns non-zero
+// for a partition that has received an entry.
+func TestPartitionHashNonZeroAfterUpdate(t *testing.T) {
+	tree := NewMerkleTree()
+	key := "user:42"
+	tree.Update(key, "name", "r1", 1000, 0)
+
+	p := PartitionIndex(key)
+	h := tree.PartitionHash(p)
+	if h == emptyHash {
+		t.Errorf("PartitionHash(%d) should be non-zero after Update for key %q", p, key)
 	}
 }
