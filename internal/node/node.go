@@ -6,11 +6,12 @@ package node
 import (
 	"maps"
 	"sync"
+	"sync/atomic"
 
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/merkle"
-	"github.com/janthoXO/convergeKV/internal/ring"
+	"github.com/janthoXO/convergeKV/internal/partition"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
@@ -29,10 +30,13 @@ import (
 //
 //   - The HLC has its own internal mutex and is always safe to call without
 //     holding any of the above locks.
+//
+//   - slotMap is an atomic pointer: reads are lock-free, writes atomically
+//     swap the pointer so in-flight reads always see a consistent map.
 type Node struct {
 	replicaID string
 	hlc       *hlc.HLC
-	ring      *ring.Ring // set after construction via SetRing; nil = no sharding
+	slotMap   atomic.Pointer[partition.SlotMap] // nil = accept everything (bootstrap)
 
 	// stateMu guards the state map structure. Held only for map reads/writes.
 	stateMu sync.RWMutex
@@ -82,27 +86,26 @@ func (n *Node) ReceiveHLC(remote hlc.Timestamp) hlc.Timestamp {
 	return n.hlc.Receive(remote)
 }
 
-// SetRing injects the ring after construction.
-// Must be called before the node handles any requests.
-func (n *Node) SetRing(r *ring.Ring) {
-	n.stateMu.Lock()
-	defer n.stateMu.Unlock()
-	n.ring = r
+// UpdateSlotMap atomically replaces the node's slot map.
+// Called by main.go whenever gossip fires onSlotMapChange.
+func (n *Node) UpdateSlotMap(sm partition.SlotMap) {
+	n.slotMap.Store(&sm)
+}
+
+// SlotMap returns the current slot map, or nil if not yet set.
+func (n *Node) SlotMap() *partition.SlotMap {
+	return n.slotMap.Load()
 }
 
 // isReplica returns true if this node is in the replica set for key.
-// Uses partition-level ownership cache (O(RF)) when ring is available.
-// If the ring is not yet set (startup), returns true so that data is always
-// accepted during bootstrap.
+// If the slot map is not yet set (startup bootstrap), returns true so that
+// data is always accepted until the map is installed.
 func (n *Node) isReplica(key string) bool {
-	n.stateMu.RLock()
-	r := n.ring
-	n.stateMu.RUnlock()
-	if r == nil {
+	sm := n.slotMap.Load()
+	if sm == nil {
 		return true
 	}
-	partition := merkle.PartitionIndex(key)
-	return r.OwnsPartition(partition, n.replicaID)
+	return sm.IsReplica(key, n.replicaID)
 }
 
 // IsReplica returns true if this node is a replica for key.
@@ -117,7 +120,7 @@ func (n *Node) MerkleTree() *merkle.MerkleTree {
 }
 
 // SnapshotPartitions returns all KeyFieldEntryTuples whose key maps to one
-// of the given partition indices. Used by the replication handler to answer
+// of the given partition (slot) indices. Used by the replication handler to answer
 // Phase 2 (DeltaSync) requests.
 func (n *Node) SnapshotPartitions(partitions map[int]struct{}) []KeyFieldEntryTuple {
 	n.stateMu.RLock()
@@ -125,8 +128,8 @@ func (n *Node) SnapshotPartitions(partitions map[int]struct{}) []KeyFieldEntryTu
 
 	var out []KeyFieldEntryTuple
 	for key, m := range n.state {
-		partition := merkle.PartitionIndex(key)
-		if _, ok := partitions[partition]; !ok {
+		slot := merkle.PartitionIndex(key)
+		if _, ok := partitions[slot]; !ok {
 			continue
 		}
 		for field, entry := range m.Fields {

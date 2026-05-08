@@ -3,88 +3,94 @@ package coordinator
 import (
 	"context"
 	"fmt"
+	"log"
 
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
 	"github.com/janthoXO/convergeKV/internal/node"
-	"github.com/janthoXO/convergeKV/internal/ring"
+	"github.com/janthoXO/convergeKV/internal/partition"
+	utils "github.com/janthoXO/convergeKV/internal/utils"
 )
 
-// Coordinator routes client requests based on the current ring view.
+// Coordinator routes client requests based on the current slot map.
 type Coordinator struct {
 	node      *node.Node
-	ring      *ring.Ring
+	slotMap   func() partition.SlotMap // returns the current slot map snapshot
 	forwarder *Forwarder
+	grpcAddrs func(replicaID string) (string, bool) // resolves replica ID → gRPC address
 }
 
 // New returns a Coordinator.
-func New(n *node.Node, r *ring.Ring, f *Forwarder) *Coordinator {
-	return &Coordinator{node: n, ring: r, forwarder: f}
+// getSlotMap must return the latest SlotMap on every call (e.g. via an atomic load).
+// resolveAddr must map a replicaID to its host:grpcPort address.
+func New(n *node.Node, getSlotMap func() partition.SlotMap, resolveAddr func(string) (string, bool), f *Forwarder) *Coordinator {
+	return &Coordinator{node: n, slotMap: getSlotMap, grpcAddrs: resolveAddr, forwarder: f}
 }
 
 // Put handles a put request.
-// If this node is the primary for the key, it writes locally and
-// asynchronously replicates to co-replicas.
-// If this node is not a replica at all, it forwards to the primary.
+// If this node is any replica for the key's slot, it writes locally and
+// asynchronously pushes to co-replicas. Otherwise forwards to replicas[0].
 func (c *Coordinator) Put(ctx context.Context, req *kvpb.PutRequest) (*kvpb.PutResponse, error) {
-	primary, ok := c.ring.Primary(req.GetKey())
-	if !ok {
-		// Ring is empty (single node bootstrap or pre-gossip). Handle locally.
-		return c.handleLocalPut(ctx, req)
-	}
-
+	replicas := c.slotMap().ReplicasForKey(req.GetKey())
 	localID := c.node.ReplicaID()
 
-	if primary.ReplicaID == localID {
-		// This node is the primary: handle locally then async-replicate.
+	if len(replicas) == 0 || utils.Contains(replicas, localID) {
+		// Handle locally and push to co-replicas.
 		resp, err := c.handleLocalPut(ctx, req)
 		if err != nil {
 			return nil, err
 		}
-		go c.replicatePut(req, c.ring.GetReplicas(req.GetKey()), localID)
+		go c.pushPut(req, replicas, localID)
 		return resp, nil
 	}
 
-	// This node is not the primary: forward to the primary.
-	return c.forwarder.ForwardPut(ctx, primary.GRPCAddr, req)
+	// Forward to the first replica in the slot (deterministic, any is correct).
+	addr, ok := c.grpcAddrs(replicas[0])
+	if !ok {
+		// Address unknown — handle locally as a fallback (pre-convergence).
+		return c.handleLocalPut(ctx, req)
+	}
+	return c.forwarder.ForwardPut(ctx, addr, req)
 }
 
 // Get handles a get request.
-// If this node is any replica for the key, serve locally.
-// Otherwise, forward to the primary.
+// Serves locally if this node is any replica for the slot; otherwise forwards.
 func (c *Coordinator) Get(ctx context.Context, req *kvpb.GetRequest) (*kvpb.GetResponse, error) {
+	replicas := c.slotMap().ReplicasForKey(req.GetKey())
 	localID := c.node.ReplicaID()
 
-	if c.ring.IsReplica(req.GetKey(), localID) {
+	if len(replicas) == 0 || utils.Contains(replicas, localID) {
 		v, found := c.node.Get(req.GetKey())
 		return &kvpb.GetResponse{ValueJson: v, Found: found}, nil
 	}
 
-	primary, ok := c.ring.Primary(req.GetKey())
+	addr, ok := c.grpcAddrs(replicas[0])
 	if !ok {
-		// Ring empty — serve locally.
+		// Serve locally as fallback.
 		v, found := c.node.Get(req.GetKey())
 		return &kvpb.GetResponse{ValueJson: v, Found: found}, nil
 	}
-	return c.forwarder.ForwardGet(ctx, primary.GRPCAddr, req)
+	return c.forwarder.ForwardGet(ctx, addr, req)
 }
 
 // Delete handles a delete request. Same routing logic as Put.
 func (c *Coordinator) Delete(ctx context.Context, req *kvpb.DeleteRequest) (*kvpb.DeleteResponse, error) {
-	primary, ok := c.ring.Primary(req.GetKey())
-	if !ok {
-		return c.handleLocalDelete(ctx, req)
-	}
-
+	replicas := c.slotMap().ReplicasForKey(req.GetKey())
 	localID := c.node.ReplicaID()
-	if primary.ReplicaID == localID {
+
+	if len(replicas) == 0 || utils.Contains(replicas, localID) {
 		resp, err := c.handleLocalDelete(ctx, req)
 		if err != nil {
 			return nil, err
 		}
-		go c.replicateDelete(req, c.ring.GetReplicas(req.GetKey()), localID)
+		go c.pushDelete(req, replicas, localID)
 		return resp, nil
 	}
-	return c.forwarder.ForwardDelete(ctx, primary.GRPCAddr, req)
+
+	addr, ok := c.grpcAddrs(replicas[0])
+	if !ok {
+		return c.handleLocalDelete(ctx, req)
+	}
+	return c.forwarder.ForwardDelete(ctx, addr, req)
 }
 
 // ── local write helpers ───────────────────────────────────────────────────────
@@ -109,31 +115,41 @@ func (c *Coordinator) handleLocalDelete(_ context.Context, req *kvpb.DeleteReque
 	}, nil
 }
 
-// ── async replication helpers ─────────────────────────────────────────────────
+// ── async push helpers ────────────────────────────────────────────────────────
 
-// replicatePut sends the put to all co-replicas except the local node.
+// pushPut sends the put to all co-replicas except the local node.
 // Errors are logged but do not affect the client response — anti-entropy
 // corrects any missed replications during the next sync cycle.
-func (c *Coordinator) replicatePut(req *kvpb.PutRequest, replicas []ring.Member, skipID string) {
+func (c *Coordinator) pushPut(req *kvpb.PutRequest, replicas []string, skipID string) {
 	ctx := context.Background()
-	for _, r := range replicas {
-		if r.ReplicaID == skipID {
+	for _, replicaID := range replicas {
+		if replicaID == skipID {
 			continue
 		}
-		if _, err := c.forwarder.ForwardPut(ctx, r.GRPCAddr, req); err != nil {
-			_ = err // anti-entropy will reconcile
+		addr, ok := c.grpcAddrs(replicaID)
+		if !ok {
+			log.Printf("[coordinator] pushPut: unknown addr for replica %s", replicaID)
+			continue
+		}
+		if _, err := c.forwarder.ForwardPut(ctx, addr, req); err != nil {
+			log.Printf("[coordinator] pushPut to %s: %v (anti-entropy will reconcile)", replicaID, err)
 		}
 	}
 }
 
-func (c *Coordinator) replicateDelete(req *kvpb.DeleteRequest, replicas []ring.Member, skipID string) {
+func (c *Coordinator) pushDelete(req *kvpb.DeleteRequest, replicas []string, skipID string) {
 	ctx := context.Background()
-	for _, r := range replicas {
-		if r.ReplicaID == skipID {
+	for _, replicaID := range replicas {
+		if replicaID == skipID {
 			continue
 		}
-		if _, err := c.forwarder.ForwardDelete(ctx, r.GRPCAddr, req); err != nil {
-			_ = err
+		addr, ok := c.grpcAddrs(replicaID)
+		if !ok {
+			log.Printf("[coordinator] pushDelete: unknown addr for replica %s", replicaID)
+			continue
+		}
+		if _, err := c.forwarder.ForwardDelete(ctx, addr, req); err != nil {
+			log.Printf("[coordinator] pushDelete to %s: %v (anti-entropy will reconcile)", replicaID, err)
 		}
 	}
 }

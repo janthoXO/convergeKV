@@ -14,28 +14,28 @@ import (
 	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/merkle"
 	"github.com/janthoXO/convergeKV/internal/node"
-	"github.com/janthoXO/convergeKV/internal/ring"
+	"github.com/janthoXO/convergeKV/internal/partition"
 )
 
 // AntiEntropy runs a background goroutine that periodically contacts each peer,
-// exchanges Merkle partition hashes only for shared partitions (Phase 1), and
-// merges only the delta entries for diverged shared partitions (Phase 2).
+// exchanges Merkle partition hashes only for shared slots (Phase 1), and
+// merges only the delta entries for diverged shared slots (Phase 2).
 //
-// Unlike Release 1, the peer list is resolved dynamically from gossip each tick,
-// and shared-partition calculation prevents any data exchange with peers that
-// share no ownership responsibility.
+// Shared slot calculation uses SlotMap.SharedSlots — an O(NSlots×RF) scan
+// over the fixed 4096-slot map. This replaces the ring.SharedPartitions midpoint
+// approximation with an exact lookup.
 type AntiEntropy struct {
 	node     *node.Node
 	gossip   *gossip.Gossip
-	ring     *ring.Ring
+	slotMap  func() partition.SlotMap // returns current slot map
 	context  *CausalContext
 	interval time.Duration
 }
 
 // NewAntiEntropy returns an AntiEntropy runner.
-// g and r may be nil in tests (falls back to nil-safe no-ops).
-func NewAntiEntropy(n *node.Node, g *gossip.Gossip, r *ring.Ring, ctx *CausalContext, interval time.Duration) *AntiEntropy {
-	return &AntiEntropy{node: n, gossip: g, ring: r, context: ctx, interval: interval}
+// g and getSlotMap may be nil in tests (falls back to nil-safe no-ops).
+func NewAntiEntropy(n *node.Node, g *gossip.Gossip, getSlotMap func() partition.SlotMap, ctx *CausalContext, interval time.Duration) *AntiEntropy {
+	return &AntiEntropy{node: n, gossip: g, slotMap: getSlotMap, context: ctx, interval: interval}
 }
 
 // Run starts the anti-entropy loop. Call in a goroutine. Stops when ctx is cancelled.
@@ -61,15 +61,15 @@ func (ae *AntiEntropy) Run(ctx context.Context) {
 	}
 }
 
-// syncWithPeer runs the two-phase partition-aligned Merkle sync with a single peer.
+// syncWithPeer runs the two-phase slot-aligned Merkle sync with a single peer.
 func (ae *AntiEntropy) syncWithPeer(ctx context.Context, peerAddr, peerReplicaID string) {
-	// Determine shared partitions before opening a connection.
-	// If the ring is not yet built or we share nothing, skip entirely.
-	var sharedPartitions []int
-	if ae.ring != nil {
-		sharedPartitions = ae.ring.SharedPartitions(ae.node.ReplicaID(), peerReplicaID)
+	// Determine shared slots before opening a connection.
+	var sharedSlots []int
+	if ae.slotMap != nil {
+		sm := ae.slotMap()
+		sharedSlots = sm.SharedSlots(ae.node.ReplicaID(), peerReplicaID)
 	}
-	if len(sharedPartitions) == 0 {
+	if len(sharedSlots) == 0 {
 		// No shared data with this peer — nothing to sync.
 		return
 	}
@@ -83,10 +83,10 @@ func (ae *AntiEntropy) syncWithPeer(ctx context.Context, peerAddr, peerReplicaID
 
 	client := repb.NewReplicationServiceClient(conn)
 
-	// ── Phase 1: exchange partition hashes for shared partitions only ─────────
+	// ── Phase 1: exchange partition hashes for shared slots only ──────────────
 
-	myPartitionHashes := make(map[int32][]byte, len(sharedPartitions))
-	for _, p := range sharedPartitions {
+	myPartitionHashes := make(map[int32][]byte, len(sharedSlots))
+	for _, p := range sharedSlots {
 		h := ae.node.MerkleTree().PartitionHash(p)
 		b := make([]byte, 32)
 		copy(b, h[:])
@@ -106,7 +106,6 @@ func (ae *AntiEntropy) syncWithPeer(ctx context.Context, peerAddr, peerReplicaID
 	peerDivergent := hashResp.GetDivergentPartitions()
 
 	// Partitions where our hash differs from the peer's = peer needs to pull from us.
-	// Compute this by comparing the peer's returned hashes against our local hashes.
 	var weDivergent []int32
 	for partInt32, peerHashBytes := range hashResp.GetPartitionHashes() {
 		p := int(partInt32)
@@ -119,12 +118,12 @@ func (ae *AntiEntropy) syncWithPeer(ctx context.Context, peerAddr, peerReplicaID
 	}
 
 	if len(peerDivergent) == 0 && len(weDivergent) == 0 {
-		log.Printf("[antientropy] trees match with %s on %d shared partitions — skipping",
-			peerReplicaID, len(sharedPartitions))
+		log.Printf("[antientropy] trees match with %s on %d shared slots — skipping",
+			peerReplicaID, len(sharedSlots))
 		return
 	}
 
-	// ── Phase 2a: pull from peer (partitions where peer has newer data) ───────
+	// ── Phase 2a: pull from peer (slots where peer has newer data) ────────────
 
 	if len(peerDivergent) > 0 {
 		deltaResp, err := client.DeltaSync(ctx, &repb.DeltaSyncRequest{
@@ -140,9 +139,6 @@ func (ae *AntiEntropy) syncWithPeer(ctx context.Context, peerAddr, peerReplicaID
 	}
 
 	// ── Phase 2b: peer will pull from us in its own anti-entropy tick ─────────
-	// weDivergent tells us which of our partitions the peer is missing.
-	// We don't push directly here; the peer's own Run() tick handles it
-	// bidirectionally. (Release 3 will add an explicit push path.)
 	_ = weDivergent
 }
 

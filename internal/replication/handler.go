@@ -7,19 +7,20 @@ import (
 	repb "github.com/janthoXO/convergeKV/gen/replication"
 	"github.com/janthoXO/convergeKV/internal/merkle"
 	"github.com/janthoXO/convergeKV/internal/node"
-	"github.com/janthoXO/convergeKV/internal/ring"
+	"github.com/janthoXO/convergeKV/internal/partition"
 )
 
 // Handler implements repb.ReplicationServiceServer.
 type Handler struct {
 	repb.UnimplementedReplicationServiceServer
-	node *node.Node
-	ring *ring.Ring
+	node    *node.Node
+	slotMap func() partition.SlotMap // returns the current slot map snapshot
 }
 
 // NewHandler returns a ready-to-register Handler.
-func NewHandler(n *node.Node, r *ring.Ring) *Handler {
-	return &Handler{node: n, ring: r}
+// getSlotMap may be nil (disables ownership filtering — used in tests).
+func NewHandler(n *node.Node, getSlotMap func() partition.SlotMap) *Handler {
+	return &Handler{node: n, slotMap: getSlotMap}
 }
 
 // HashSync handles Phase 1. The caller sends a sparse map of partition hashes
@@ -64,7 +65,7 @@ func (h *Handler) HashSync(_ context.Context, req *repb.HashSyncRequest) (*repb.
 }
 
 // DeltaSync handles Phase 2. The caller lists the partitions it needs entries for.
-// Only entries that the requester is responsible for are included in the response.
+// Only entries that the requester is responsible for (per slot map) are included.
 func (h *Handler) DeltaSync(_ context.Context, req *repb.DeltaSyncRequest) (*repb.DeltaSyncResponse, error) {
 	partitionSet := make(map[int]struct{}, len(req.GetPartitions()))
 	for _, p := range req.GetPartitions() {
@@ -75,12 +76,17 @@ func (h *Handler) DeltaSync(_ context.Context, req *repb.DeltaSyncRequest) (*rep
 	deltas := make([]*repb.DeltaEntry, 0, len(records))
 	requesterID := req.GetRequesterId()
 
+	var sm *partition.SlotMap
+	if h.slotMap != nil && requesterID != "" {
+		s := h.slotMap()
+		sm = &s
+	}
+
 	for _, rec := range records {
-		// Only send entries that the requester is supposed to hold.
-		// Use partition ownership (faster than per-key ring lookup).
-		if requesterID != "" && h.ring != nil {
-			partition := merkle.PartitionIndex(rec.Key)
-			if !h.ring.OwnsPartition(partition, requesterID) {
+		// Filter to only entries the requester is supposed to hold.
+		if sm != nil {
+			slot := merkle.PartitionIndex(rec.Key)
+			if !sm.IsReplicaForSlot(slot, requesterID) {
 				continue
 			}
 		}

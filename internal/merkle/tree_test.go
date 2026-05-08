@@ -1,17 +1,24 @@
 package merkle
 
 import (
+	"fmt"
+	"math/rand"
 	"testing"
+
+	"github.com/janthoXO/convergeKV/internal/partition"
 )
 
-// TestPartitionIndexConsistency verifies PartitionIndex equals RingToken(key) % NumPartitions.
-func TestPartitionIndexConsistency(t *testing.T) {
-	keys := []string{"hello", "world", "user:1", "key:extra", "key:shared", "foo", "bar"}
-	for _, key := range keys {
-		want := int(RingToken(key) % NumPartitions)
+// TestSlotIndexAgreement is the critical invariant of Release 3:
+// merkle.PartitionIndex(key) == partition.SlotIndex(key) for every key.
+// Verified across 10,000 random keys.
+func TestSlotIndexAgreement(t *testing.T) {
+	rng := rand.New(rand.NewSource(12345))
+	for i := 0; i < 10_000; i++ {
+		key := fmt.Sprintf("key-%d", rng.Int63())
+		want := partition.SlotIndex(key)
 		got := PartitionIndex(key)
 		if got != want {
-			t.Errorf("key=%q: PartitionIndex=%d, want RingToken%%NumPartitions=%d", key, got, want)
+			t.Fatalf("key=%q: PartitionIndex=%d, partition.SlotIndex=%d (must be equal)", key, got, want)
 		}
 	}
 }

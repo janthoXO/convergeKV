@@ -1,14 +1,16 @@
 // Package main is the ConvergeKV server entry point.
-// It wires together gossip-based cluster membership, a consistent-hash ring,
+// It wires together gossip-based cluster membership, a fixed slot map,
 // a coordinator for request routing, and the anti-entropy replication loop.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -25,22 +27,25 @@ import (
 	"github.com/janthoXO/convergeKV/internal/coordinator"
 	"github.com/janthoXO/convergeKV/internal/gossip"
 	"github.com/janthoXO/convergeKV/internal/node"
+	"github.com/janthoXO/convergeKV/internal/partition"
 	"github.com/janthoXO/convergeKV/internal/replication"
-	"github.com/janthoXO/convergeKV/internal/ring"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
 // config holds all server configuration parsed from environment variables.
 type config struct {
-	ReplicaID   string `env:"REPLICA_ID,required"`
-	GRPCPort    string `env:"GRPC_PORT"    envDefault:"50051"`
-	GossipPort  int    `env:"GOSSIP_PORT"  envDefault:"7946"`
-	GossipBind  string `env:"GOSSIP_BIND"  envDefault:"0.0.0.0"`
-	Seeds       string `env:"SEEDS"` // comma-separated host:port; empty for single-node
-	DataDir     string `env:"DATA_DIR"     envDefault:"/data"`
-	RF          int    `env:"RF"           envDefault:"3"`
-	SyncMs      int    `env:"SYNC_MS"      envDefault:"2000"`
+	ReplicaID    string `env:"REPLICA_ID,required"`
+	GRPCPort     string `env:"GRPC_PORT"     envDefault:"50051"`
+	GossipPort   int    `env:"GOSSIP_PORT"   envDefault:"7946"`
+	GossipBind   string `env:"GOSSIP_BIND"   envDefault:"0.0.0.0"`
+	Seeds        string `env:"SEEDS"`        // comma-separated gossip host:port; empty for single-node
+	InitialNodes string `env:"INITIAL_NODES"` // comma-separated replica IDs for first-boot slot map
+	DataDir      string `env:"DATA_DIR"      envDefault:"/data"`
+	RF           int    `env:"RF"            envDefault:"3"`
+	SyncMs       int    `env:"SYNC_MS"       envDefault:"2000"`
 }
+
+const slotMapFile = "slotmap.json"
 
 func main() {
 	// Load .env if present; silently ignored when the file doesn't exist.
@@ -55,7 +60,7 @@ func main() {
 	log.Printf("[config] replica=%s grpc=%s gossip=%d seeds=%q dataDir=%s rf=%d syncMs=%d",
 		cfg.ReplicaID, cfg.GRPCPort, cfg.GossipPort, cfg.Seeds, cfg.DataDir, cfg.RF, cfg.SyncMs)
 
-	// ── 1. Parse GRPC port as int for gossip metadata ─────────────────────────
+	// ── 1. Parse GRPC port as int for gossip metadata ──────────────────────────
 	grpcPortInt, err := strconv.Atoi(cfg.GRPCPort)
 	if err != nil {
 		log.Fatalf("invalid GRPC_PORT %q: %v", cfg.GRPCPort, err)
@@ -68,16 +73,19 @@ func main() {
 	}
 	defer store.Close()
 
-	// ── 3. Node (ring not yet set) ─────────────────────────────────────────────
+	// ── 3. Node ────────────────────────────────────────────────────────────────
 	n, err := node.New(cfg.ReplicaID, store)
 	if err != nil {
 		log.Fatalf("create node: %v", err)
 	}
 
-	// ── 4. Ring (empty on startup) ─────────────────────────────────────────────
-	r := ring.NewRing()
+	// ── 4. Slot map — load persisted or generate initial ───────────────────────
+	smPath := filepath.Join(cfg.DataDir, slotMapFile)
+	initialSM := loadOrCreateSlotMap(smPath, cfg.InitialNodes, cfg.RF)
+	n.UpdateSlotMap(initialSM)
+	log.Printf("[slotmap] version=%d loaded", initialSM.Version)
 
-	// ── 5. Gossip + OnChange callback that rebuilds the ring ───────────────────
+	// ── 5. Seeds ───────────────────────────────────────────────────────────────
 	var seeds []string
 	if cfg.Seeds != "" {
 		for _, s := range strings.Split(cfg.Seeds, ",") {
@@ -88,55 +96,58 @@ func main() {
 		}
 	}
 
-	onMemberChange := func(members []gossip.MemberInfo) {
-		ringMembers := make([]ring.Member, len(members))
-		for i, m := range members {
-			ringMembers[i] = ring.Member{
-				ReplicaID: m.ReplicaID,
-				GRPCAddr:  m.GRPCAddr,
-			}
+	// ── 6. Gossip with SlotMap push/pull ──────────────────────────────────────
+	onSlotMapChange := func(sm partition.SlotMap) {
+		n.UpdateSlotMap(sm)
+		if err := saveSlotMap(smPath, sm); err != nil {
+			log.Printf("[slotmap] persist error: %v", err)
 		}
-		r.Rebuild(ringMembers, cfg.RF)
-		log.Printf("[ring] rebuilt with %d members", len(ringMembers))
+		log.Printf("[slotmap] updated to version %d", sm.Version)
 	}
 
 	g, err := gossip.Start(gossip.Config{
-		BindAddr:  cfg.GossipBind,
-		BindPort:  cfg.GossipPort,
-		LocalMeta: gossip.NodeMeta{ReplicaID: cfg.ReplicaID, GRPCPort: grpcPortInt},
-		Seeds:     seeds,
-		OnChange:  onMemberChange,
+		BindAddr:        cfg.GossipBind,
+		BindPort:        cfg.GossipPort,
+		LocalMeta:       gossip.NodeMeta{ReplicaID: cfg.ReplicaID, GRPCPort: grpcPortInt},
+		Seeds:           seeds,
+		InitialSlotMap:  initialSM,
+		OnSlotMapChange: onSlotMapChange,
 	})
 	if err != nil {
 		log.Fatalf("start gossip: %v", err)
 	}
 	defer g.Leave(3 * time.Second)
 
-	// Bootstrap the ring with just ourselves so the node can handle requests
-	// before gossip converges.
-	onMemberChange(g.Members())
+	// ── 7. Slot map accessor and address resolver for coordinator/AE ──────────
+	getSlotMap := func() partition.SlotMap {
+		return g.CurrentSlotMap()
+	}
 
-	// ── 6. Inject ring into node ───────────────────────────────────────────────
-	n.SetRing(r)
+	// resolveAddr maps a replicaID to its gRPC address via the live gossip view.
+	resolveAddr := func(replicaID string) (string, bool) {
+		for _, m := range g.Members() {
+			if m.ReplicaID == replicaID {
+				return m.GRPCAddr, true
+			}
+		}
+		return "", false
+	}
 
-	// ── 7. Forwarder and Coordinator ──────────────────────────────────────────
+	// ── 8. Forwarder and Coordinator ──────────────────────────────────────────
 	fwd := coordinator.NewForwarder()
 	defer fwd.Close()
 
-	coord := coordinator.New(n, r, fwd)
+	coord := coordinator.New(n, getSlotMap, resolveAddr, fwd)
 
-	// ── 8. Causal context + anti-entropy ──────────────────────────────────────
+	// ── 9. Causal context + anti-entropy ──────────────────────────────────────
 	causal := replication.NewCausalContext()
+	ae := replication.NewAntiEntropy(n, g, getSlotMap, causal, time.Duration(cfg.SyncMs)*time.Millisecond)
 
-	// AntiEntropy reads live gossip.Members() on each tick, so it always
-	// sees the current cluster view without a static peer list.
-	ae := replication.NewAntiEntropy(n, g, r, causal, time.Duration(cfg.SyncMs)*time.Millisecond)
-
-	// ── 9. gRPC server ────────────────────────────────────────────────────────
+	// ── 10. gRPC server ───────────────────────────────────────────────────────
 	srv := grpc.NewServer()
 	kvpb.RegisterKVServiceServer(srv, api.NewHandler(coord, n, seeds))
 	fwdpb.RegisterForwardServiceServer(srv, api.NewForwardHandler(coord))
-	repb.RegisterReplicationServiceServer(srv, replication.NewHandler(n, r))
+	repb.RegisterReplicationServiceServer(srv, replication.NewHandler(n, getSlotMap))
 	reflection.Register(srv)
 
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", cfg.GRPCPort))
@@ -145,13 +156,57 @@ func main() {
 	}
 	log.Printf("[%s] gRPC listening on :%s", cfg.ReplicaID, cfg.GRPCPort)
 
-	// ── 10. Anti-entropy loop ─────────────────────────────────────────────────
+	// ── 11. Anti-entropy loop ──────────────────────────────────────────────────
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go ae.Run(ctx)
 
-	// ── 11. Serve (blocking) ──────────────────────────────────────────────────
+	// ── 12. Serve (blocking) ──────────────────────────────────────────────────
 	if err := srv.Serve(lis); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
+}
+
+// loadOrCreateSlotMap loads the slot map from disk, or generates an initial one.
+func loadOrCreateSlotMap(path, initialNodes string, rf int) partition.SlotMap {
+	// Try to load persisted map.
+	if b, err := os.ReadFile(path); err == nil {
+		sm, err := partition.Decode(b)
+		if err == nil {
+			return sm
+		}
+		log.Printf("[slotmap] ignoring corrupt persisted file: %v", err)
+	}
+
+	// Generate initial assignment from INITIAL_NODES env var.
+	var nodeIDs []string
+	for _, id := range strings.Split(initialNodes, ",") {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			nodeIDs = append(nodeIDs, id)
+		}
+	}
+	if len(nodeIDs) == 0 {
+		log.Printf("[slotmap] INITIAL_NODES not set — single-node mode")
+		return partition.SlotMap{Version: 0} // empty map; accepts all writes
+	}
+
+	sm := partition.InitialAssignment(nodeIDs, rf)
+	if err := saveSlotMap(path, sm); err != nil {
+		log.Printf("[slotmap] initial persist failed: %v", err)
+	}
+	log.Printf("[slotmap] generated initial assignment: %d nodes rf=%d", len(nodeIDs), rf)
+	return sm
+}
+
+// saveSlotMap persists the slot map to disk as JSON.
+func saveSlotMap(path string, sm partition.SlotMap) error {
+	b, err := json.Marshal(sm)
+	if err != nil {
+		return fmt.Errorf("marshal slot map: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
 }

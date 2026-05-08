@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/memberlist"
+
+	"github.com/janthoXO/convergeKV/internal/partition"
 )
 
 // MemberInfo holds the information about a discovered cluster member that
@@ -23,13 +25,16 @@ type MemberInfo struct {
 // The argument is the current complete membership list, including the local node.
 type ChangeHandler func(members []MemberInfo)
 
-// Gossip wraps a memberlist instance and exposes a stable membership view.
+// Gossip wraps a memberlist instance and exposes a stable membership view
+// and the shared SlotMap propagated via the push/pull full-state mechanism.
 type Gossip struct {
-	mu        sync.RWMutex
-	list      *memberlist.Memberlist
-	members   map[string]MemberInfo // keyed by ReplicaID
-	onChange  ChangeHandler
-	localMeta NodeMeta
+	mu          sync.RWMutex
+	list        *memberlist.Memberlist
+	members     map[string]MemberInfo // keyed by ReplicaID
+	onChange    ChangeHandler
+	localMeta   NodeMeta
+	slotMap     partition.SlotMap
+	onSlotMapCh func(partition.SlotMap) // called when slot map version advances
 
 	// changeCh is written by the eventDelegate (inside memberlist's lock) and
 	// read by the background worker goroutine (outside memberlist's lock).
@@ -40,29 +45,35 @@ type Gossip struct {
 
 // Config holds the parameters for starting a Gossip instance.
 type Config struct {
-	BindAddr  string
-	BindPort  int
-	LocalMeta NodeMeta      // this node's metadata
-	Seeds     []string      // host:port of seed nodes; may be empty
-	OnChange  ChangeHandler // called on every membership change
+	BindAddr        string
+	BindPort        int
+	LocalMeta       NodeMeta             // this node's metadata
+	Seeds           []string             // host:port of seed nodes; may be empty
+	OnChange        ChangeHandler        // called on every membership change
+	InitialSlotMap  partition.SlotMap    // starting slot map for this node
+	OnSlotMapChange func(partition.SlotMap) // fired when slot map version advances
 }
 
 // Start creates and starts a memberlist node, then joins via seeds.
 // It returns once the node is participating in gossip (seeds may be empty).
 func Start(cfg Config) (*Gossip, error) {
 	g := &Gossip{
-		members:   make(map[string]MemberInfo),
-		onChange:  cfg.OnChange,
-		localMeta: cfg.LocalMeta,
-		changeCh:  make(chan struct{}, 16), // buffered; drops coalesced signals
-		stopCh:    make(chan struct{}),
+		members:     make(map[string]MemberInfo),
+		onChange:    cfg.OnChange,
+		localMeta:   cfg.LocalMeta,
+		slotMap:     cfg.InitialSlotMap,
+		onSlotMapCh: cfg.OnSlotMapChange,
+		changeCh:    make(chan struct{}, 16), // buffered; drops coalesced signals
+		stopCh:      make(chan struct{}),
 	}
 
 	mlCfg := memberlist.DefaultLANConfig()
 	mlCfg.BindAddr = cfg.BindAddr
 	mlCfg.BindPort = cfg.BindPort
 	mlCfg.Name = cfg.LocalMeta.ReplicaID
-	mlCfg.Delegate = &delegate{meta: EncodeMeta(cfg.LocalMeta)}
+
+	// Use the gossipDelegate which handles both node metadata AND slot map exchange.
+	mlCfg.Delegate = &gossipDelegate{gossip: g, meta: EncodeMeta(cfg.LocalMeta)}
 	mlCfg.Events = &eventDelegate{gossip: g}
 	mlCfg.Logger = nil // suppress memberlist's own logger in tests
 
@@ -104,6 +115,34 @@ func (g *Gossip) Members() []MemberInfo {
 		out = append(out, m)
 	}
 	return out
+}
+
+// CurrentSlotMap returns a snapshot of the current slot map.
+func (g *Gossip) CurrentSlotMap() partition.SlotMap {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.slotMap
+}
+
+// ProposeSlotMap stores a new slot map if its version is higher than the current one,
+// then triggers an immediate push/pull with peers to propagate it.
+func (g *Gossip) ProposeSlotMap(sm partition.SlotMap) {
+	g.mu.Lock()
+	if sm.Version <= g.slotMap.Version {
+		g.mu.Unlock()
+		return
+	}
+	g.slotMap = sm
+	list := g.list
+	g.mu.Unlock()
+
+	if g.onSlotMapCh != nil {
+		g.onSlotMapCh(sm)
+	}
+	if list != nil {
+		// Force an immediate push/pull cycle to propagate the new map.
+		list.UpdateNode(0)
+	}
 }
 
 // Leave gracefully announces departure and shuts down the memberlist.
@@ -165,10 +204,15 @@ func (g *Gossip) rebuildMembers() {
 		if err != nil || meta.ReplicaID == "" {
 			continue
 		}
+		// Copy the IP bytes before calling String() to avoid a data race with
+		// memberlist's internal goroutine that may mutate the n.Addr slice.
+		ipCopy := make(net.IP, len(n.Addr))
+		copy(ipCopy, n.Addr)
+		port := int(n.Port)
 		newMembers[meta.ReplicaID] = MemberInfo{
 			ReplicaID:  meta.ReplicaID,
-			GossipAddr: net.JoinHostPort(n.Addr.String(), strconv.Itoa(int(n.Port))),
-			GRPCAddr:   net.JoinHostPort(n.Addr.String(), strconv.Itoa(meta.GRPCPort)),
+			GossipAddr: net.JoinHostPort(ipCopy.String(), strconv.Itoa(port)),
+			GRPCAddr:   net.JoinHostPort(ipCopy.String(), strconv.Itoa(meta.GRPCPort)),
 		}
 	}
 
@@ -179,10 +223,43 @@ func (g *Gossip) rebuildMembers() {
 
 	g.mu.Lock()
 	g.members = newMembers
+	currentSM := g.slotMap
 	g.mu.Unlock()
 
 	if g.onChange != nil {
 		g.onChange(snapshot)
+	}
+	// Also notify slot map listeners so they get a refresh after membership change.
+	if g.onSlotMapCh != nil {
+		g.onSlotMapCh(currentSM)
+	}
+}
+
+// mergeRemoteSlotMap merges a received slot map and fires the callback if the
+// version advances. Called from gossipDelegate.MergeRemoteState.
+func (g *Gossip) mergeRemoteSlotMap(b []byte) {
+	if len(b) == 0 {
+		return
+	}
+	incoming, err := partition.Decode(b)
+	if err != nil {
+		// Silently ignore the common case of a peer that hasn't configured a slot
+		// map yet (bootstrap mode sends a zero-slot JSON object).
+		return
+	}
+
+	g.mu.Lock()
+	merged := g.slotMap.Merge(incoming)
+	if merged.Version == g.slotMap.Version {
+		g.mu.Unlock()
+		return // no change
+	}
+	g.slotMap = merged
+	g.mu.Unlock()
+
+	log.Printf("[gossip] slot map version advanced to %d", merged.Version)
+	if g.onSlotMapCh != nil {
+		g.onSlotMapCh(merged)
 	}
 }
 
@@ -197,13 +274,35 @@ func (g *Gossip) signal() {
 
 // ── memberlist.Delegate ───────────────────────────────────────────────────────
 
-type delegate struct{ meta []byte }
+// gossipDelegate handles both node metadata (NodeMeta) and full-state slot map
+// exchange (LocalState/MergeRemoteState). Implements memberlist.Delegate.
+type gossipDelegate struct {
+	gossip *Gossip
+	meta   []byte // pre-encoded NodeMeta
+}
 
-func (d *delegate) NodeMeta(_ int) []byte           { return d.meta }
-func (d *delegate) NotifyMsg([]byte)                {}
-func (d *delegate) GetBroadcasts(_, _ int) [][]byte { return nil }
-func (d *delegate) LocalState(_ bool) []byte        { return nil }
-func (d *delegate) MergeRemoteState(_ []byte, _ bool) {}
+func (d *gossipDelegate) NodeMeta(_ int) []byte           { return d.meta }
+func (d *gossipDelegate) NotifyMsg([]byte)                {}
+func (d *gossipDelegate) GetBroadcasts(_, _ int) [][]byte { return nil }
+
+// LocalState is called by memberlist during push/pull. Return the serialised SlotMap.
+func (d *gossipDelegate) LocalState(_ bool) []byte {
+	d.gossip.mu.RLock()
+	sm := d.gossip.slotMap
+	d.gossip.mu.RUnlock()
+
+	b, err := sm.Encode()
+	if err != nil {
+		log.Printf("[gossip] LocalState: encode slot map: %v", err)
+		return nil
+	}
+	return b
+}
+
+// MergeRemoteState is called by memberlist when remote state arrives.
+func (d *gossipDelegate) MergeRemoteState(buf []byte, _ bool) {
+	d.gossip.mergeRemoteSlotMap(buf)
+}
 
 // ── memberlist.EventDelegate ──────────────────────────────────────────────────
 

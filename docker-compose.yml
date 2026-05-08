@@ -10,19 +10,26 @@ networks:
   convergekv:
     driver: bridge
 
+# INITIAL_NODES lists all replica IDs used to generate the first-boot slot map.
+# All nodes must agree on this list. The first node to boot generates the map;
+# subsequent boots load it from disk or receive it via gossip push/pull.
+x-initial-nodes: &initial-nodes "replica1,replica2,replica3"
+
 services:
   replica1:
     <<: *node-defaults
     container_name: replica1
     hostname: replica1
     environment:
-      REPLICA_ID:   "replica1"
-      GRPC_PORT:    "50051"
-      GOSSIP_PORT:  "7946"
-      GOSSIP_BIND:  "0.0.0.0"
-      SEEDS:        "replica2:7946,replica3:7946"
-      DATA_DIR:     "/data"
-      RF:           "3"
+      REPLICA_ID:    "replica1"
+      GRPC_PORT:     "50051"
+      GOSSIP_PORT:   "7946"
+      GOSSIP_BIND:   "0.0.0.0"
+      SEEDS:         "replica2:7946,replica3:7946"
+      INITIAL_NODES: *initial-nodes
+      DATA_DIR:      "/data"
+      RF:            "3"
+      SYNC_MS:       "2000"
     volumes:
       - replica1-data:/data
     ports:
@@ -33,13 +40,15 @@ services:
     container_name: replica2
     hostname: replica2
     environment:
-      REPLICA_ID:   "replica2"
-      GRPC_PORT:    "50051"
-      GOSSIP_PORT:  "7946"
-      GOSSIP_BIND:  "0.0.0.0"
-      SEEDS:        "replica1:7946,replica3:7946"
-      DATA_DIR:     "/data"
-      RF:           "3"
+      REPLICA_ID:    "replica2"
+      GRPC_PORT:     "50051"
+      GOSSIP_PORT:   "7946"
+      GOSSIP_BIND:   "0.0.0.0"
+      SEEDS:         "replica1:7946,replica3:7946"
+      INITIAL_NODES: *initial-nodes
+      DATA_DIR:      "/data"
+      RF:            "3"
+      SYNC_MS:       "2000"
     volumes:
       - replica2-data:/data
     ports:
@@ -50,13 +59,15 @@ services:
     container_name: replica3
     hostname: replica3
     environment:
-      REPLICA_ID:   "replica3"
-      GRPC_PORT:    "50051"
-      GOSSIP_PORT:  "7946"
-      GOSSIP_BIND:  "0.0.0.0"
-      SEEDS:        "replica1:7946,replica2:7946"
-      DATA_DIR:     "/data"
-      RF:           "3"
+      REPLICA_ID:    "replica3"
+      GRPC_PORT:     "50051"
+      GOSSIP_PORT:   "7946"
+      GOSSIP_BIND:   "0.0.0.0"
+      SEEDS:         "replica1:7946,replica2:7946"
+      INITIAL_NODES: *initial-nodes
+      DATA_DIR:      "/data"
+      RF:            "3"
+      SYNC_MS:       "2000"
     volumes:
       - replica3-data:/data
     ports:
