@@ -12,15 +12,6 @@ import (
 	"github.com/janthoXO/convergeKV/internal/hlc"
 )
 
-// StoredEntry is the on-disk representation of a single FieldEntry.
-type StoredEntry struct {
-	ValueJSON  []byte `json:"value"` // raw JSON bytes
-	PhysicalMs uint64 `json:"phys_ms"`
-	Logical    uint32 `json:"logical"`
-	ReplicaID  string `json:"replica_id"`
-	Deleted    bool   `json:"deleted"`
-}
-
 // Store wraps a BadgerDB instance with CRDT-aware read/write helpers.
 type Store struct {
 	db *badger.DB
@@ -144,11 +135,4 @@ func (s *Store) SaveBatch(entries []FieldUpdate) error {
 	}
 
 	return wb.Flush()
-}
-
-// FieldUpdate is a helper tuple used in SaveBatch.
-type FieldUpdate struct {
-	Key   string
-	Field string
-	Entry crdt.FieldEntry
 }
