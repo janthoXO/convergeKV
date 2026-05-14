@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -35,7 +34,7 @@ import (
 // config holds all server configuration parsed from environment variables.
 type config struct {
 	ReplicaID    string `env:"REPLICA_ID,required"`
-	GRPCPort     string `env:"GRPC_PORT"     envDefault:"50051"`
+	GRPCPort     int `env:"GRPC_PORT"     envDefault:"50051"`
 	GossipPort   int    `env:"GOSSIP_PORT"   envDefault:"7946"`
 	GossipBind   string `env:"GOSSIP_BIND"   envDefault:"0.0.0.0"`
 	Seeds        string `env:"SEEDS"`        // comma-separated gossip host:port; empty for single-node
@@ -57,35 +56,29 @@ func main() {
 	if err := cenv.Parse(&cfg); err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	log.Printf("[config] replica=%s grpc=%s gossip=%d seeds=%q dataDir=%s rf=%d syncMs=%d",
+	log.Printf("[config] replica=%s grpc=%d gossip=%d seeds=%q dataDir=%s rf=%d syncMs=%d",
 		cfg.ReplicaID, cfg.GRPCPort, cfg.GossipPort, cfg.Seeds, cfg.DataDir, cfg.RF, cfg.SyncMs)
 
-	// ── 1. Parse GRPC port as int for gossip metadata ──────────────────────────
-	grpcPortInt, err := strconv.Atoi(cfg.GRPCPort)
-	if err != nil {
-		log.Fatalf("invalid GRPC_PORT %q: %v", cfg.GRPCPort, err)
-	}
-
-	// ── 2. Storage ─────────────────────────────────────────────────────────────
+	// ── 1. Storage ─────────────────────────────────────────────────────────────
 	store, err := storage.Open(cfg.DataDir)
 	if err != nil {
 		log.Fatalf("open storage: %v", err)
 	}
 	defer store.Close()
 
-	// ── 3. Node ────────────────────────────────────────────────────────────────
+	// ── 2. Node ────────────────────────────────────────────────────────────────
 	n, err := node.New(cfg.ReplicaID, store)
 	if err != nil {
 		log.Fatalf("create node: %v", err)
 	}
 
-	// ── 4. Slot map — load persisted or generate initial ───────────────────────
+	// ── 3. Slot map — load persisted or generate initial ───────────────────────
 	smPath := filepath.Join(cfg.DataDir, slotMapFile)
 	initialSM := loadOrCreateSlotMap(smPath, cfg.InitialNodes, cfg.RF)
 	n.UpdateSlotMap(initialSM)
 	log.Printf("[slotmap] version=%d loaded", initialSM.Version)
 
-	// ── 5. Seeds ───────────────────────────────────────────────────────────────
+	// ── 4. Seeds ───────────────────────────────────────────────────────────────
 	var seeds []string
 	if cfg.Seeds != "" {
 		for _, s := range strings.Split(cfg.Seeds, ",") {
@@ -96,7 +89,7 @@ func main() {
 		}
 	}
 
-	// ── 6. Gossip with SlotMap push/pull ──────────────────────────────────────
+	// ── 5. Gossip with SlotMap push/pull ──────────────────────────────────────
 	onSlotMapChange := func(sm partition.SlotMap) {
 		n.UpdateSlotMap(sm)
 		if err := saveSlotMap(smPath, sm); err != nil {
@@ -108,7 +101,7 @@ func main() {
 	g, err := gossip.Start(gossip.Config{
 		BindAddr:        cfg.GossipBind,
 		BindPort:        cfg.GossipPort,
-		LocalMeta:       gossip.NodeMeta{ReplicaID: cfg.ReplicaID, GRPCPort: grpcPortInt},
+		LocalMeta:       gossip.NodeMeta{ReplicaID: cfg.ReplicaID, GRPCPort: cfg.GRPCPort},
 		Seeds:           seeds,
 		InitialSlotMap:  initialSM,
 		OnSlotMapChange: onSlotMapChange,
@@ -118,7 +111,7 @@ func main() {
 	}
 	defer g.Leave(3 * time.Second)
 
-	// ── 7. Slot map accessor and address resolver for coordinator/AE ──────────
+	// ── 6. Slot map accessor and address resolver for coordinator/AE ──────────
 	getSlotMap := func() partition.SlotMap {
 		return g.CurrentSlotMap()
 	}
@@ -133,35 +126,35 @@ func main() {
 		return "", false
 	}
 
-	// ── 8. Forwarder and Coordinator ──────────────────────────────────────────
+	// ── 7. Forwarder and Coordinator ──────────────────────────────────────────
 	fwd := coordinator.NewForwarder()
 	defer fwd.Close()
 
 	coord := coordinator.New(n, getSlotMap, resolveAddr, fwd)
 
-	// ── 9. Causal context + anti-entropy ──────────────────────────────────────
+	// ── 8. Causal context + anti-entropy ──────────────────────────────────────
 	causal := replication.NewCausalContext()
 	ae := replication.NewAntiEntropy(n, g, getSlotMap, causal, time.Duration(cfg.SyncMs)*time.Millisecond)
 
-	// ── 10. gRPC server ───────────────────────────────────────────────────────
+	// ── 9. gRPC server ───────────────────────────────────────────────────────
 	srv := grpc.NewServer()
 	kvpb.RegisterKVServiceServer(srv, api.NewHandler(coord, n, seeds))
 	fwdpb.RegisterForwardServiceServer(srv, api.NewForwardHandler(coord))
 	repb.RegisterReplicationServiceServer(srv, replication.NewHandler(n, getSlotMap))
 	reflection.Register(srv)
 
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", cfg.GRPCPort))
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.GRPCPort))
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
-	log.Printf("[%s] gRPC listening on :%s", cfg.ReplicaID, cfg.GRPCPort)
+	log.Printf("[%s] gRPC listening on :%d", cfg.ReplicaID, cfg.GRPCPort)
 
-	// ── 11. Anti-entropy loop ──────────────────────────────────────────────────
+	// ── 10. Anti-entropy loop ──────────────────────────────────────────────────
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go ae.Run(ctx)
 
-	// ── 12. Serve (blocking) ──────────────────────────────────────────────────
+	// ── 11. Serve (blocking) ──────────────────────────────────────────────────
 	if err := srv.Serve(lis); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
