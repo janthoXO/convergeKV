@@ -66,8 +66,8 @@ func TestSlotMapGossip(t *testing.T) {
 	portA := 17948
 	portB := 17949
 
-	smLow := partition.InitialAssignment([]string{"nodeA", "nodeB"}, 2)  // version 1
-	smHigh := partition.RebalanceForJoin(smLow, "nodeC", 2)              // version 2
+	smLow := partition.InitialAssignment([]string{"nodeA", "nodeB"}, 2) // version 1
+	smHigh := partition.RebalanceForJoin(smLow, "nodeC", 2)             // version 2
 
 	// A starts with the higher-versioned map.
 	gA, err := Start(Config{

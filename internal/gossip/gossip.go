@@ -47,10 +47,10 @@ type Gossip struct {
 type Config struct {
 	BindAddr        string
 	BindPort        int
-	LocalMeta       NodeMeta             // this node's metadata
-	Seeds           []string             // host:port of seed nodes; may be empty
-	OnChange        ChangeHandler        // called on every membership change
-	InitialSlotMap  partition.SlotMap    // starting slot map for this node
+	LocalMeta       NodeMeta                // this node's metadata
+	Seeds           []string                // host:port of seed nodes; may be empty
+	OnChange        ChangeHandler           // called on every membership change
+	InitialSlotMap  partition.SlotMap       // starting slot map for this node
 	OnSlotMapChange func(partition.SlotMap) // fired when slot map version advances
 }
 

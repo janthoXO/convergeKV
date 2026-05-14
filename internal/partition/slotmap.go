@@ -136,7 +136,7 @@ func slotsEqual(a, b [][]string) bool {
 			}
 		}
 	}
-	
+
 	return true
 }
 

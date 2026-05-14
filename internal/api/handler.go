@@ -13,7 +13,7 @@ import (
 type Handler struct {
 	kvpb.UnimplementedKVServiceServer
 	coord *coordinator.Coordinator
-	node  *node.Node   // used only for Status
+	node  *node.Node // used only for Status
 	peers []string
 }
 

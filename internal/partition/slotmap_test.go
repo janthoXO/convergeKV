@@ -88,8 +88,8 @@ func TestIsReplicaConsistentWithReplicasForKey(t *testing.T) {
 }
 
 func TestMergeHigherVersionWins(t *testing.T) {
-	low := partition.InitialAssignment([]string{"A", "B"}, 2)              // version 1
-	high := partition.RebalanceForJoin(low, "C", 2)                        // version 2
+	low := partition.InitialAssignment([]string{"A", "B"}, 2) // version 1
+	high := partition.RebalanceForJoin(low, "C", 2)           // version 2
 
 	if got := low.Merge(high); got.Version != high.Version {
 		t.Errorf("low.Merge(high): want version %d, got %d", high.Version, got.Version)

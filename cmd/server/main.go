@@ -34,10 +34,10 @@ import (
 // config holds all server configuration parsed from environment variables.
 type config struct {
 	ReplicaID    string `env:"REPLICA_ID,required"`
-	GRPCPort     int `env:"GRPC_PORT"     envDefault:"50051"`
+	GRPCPort     int    `env:"GRPC_PORT"     envDefault:"50051"`
 	GossipPort   int    `env:"GOSSIP_PORT"   envDefault:"7946"`
 	GossipBind   string `env:"GOSSIP_BIND"   envDefault:"0.0.0.0"`
-	Seeds        string `env:"SEEDS"`        // comma-separated gossip host:port; empty for single-node
+	Seeds        string `env:"SEEDS"`         // comma-separated gossip host:port; empty for single-node
 	InitialNodes string `env:"INITIAL_NODES"` // comma-separated replica IDs for first-boot slot map
 	DataDir      string `env:"DATA_DIR"      envDefault:"/data"`
 	RF           int    `env:"RF"            envDefault:"3"`
