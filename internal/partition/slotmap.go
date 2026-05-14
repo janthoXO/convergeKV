@@ -13,6 +13,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // NSlots is the fixed number of slots. Must match merkle.NumPartitions.
@@ -86,13 +87,97 @@ func (sm SlotMap) SharedSlots(nodeA, nodeB string) []int {
 	return out
 }
 
-// Merge returns whichever SlotMap has the higher Version.
-// If both have the same version they are assumed identical.
+// Merge resolves two SlotMaps into one according to these rules:
+//
+//  1. Higher version wins unconditionally.
+//  2. Equal version + identical content → return self (idempotent, no version bump).
+//  3. Equal version + different content → deterministic per-slot union merge with
+//     version bumped by one.
+//
+// Rule 3 prevents split-brain when two nodes independently compute a rebalance
+// from the same base version and gossip both results to the cluster. Every node
+// applies the same deterministic merge and converges to the same map.
+//
+// Per-slot merge algorithm:
+//   - Union the two replica lists for each slot.
+//   - Sort the union lexicographically (deterministic, commutative).
+//   - Trim to max(len(a), len(b)) entries, preserving the intended RF.
 func (sm SlotMap) Merge(other SlotMap) SlotMap {
 	if other.Version > sm.Version {
 		return other
 	}
-	return sm
+	if other.Version < sm.Version {
+		return sm
+	}
+	// Same version. Check for content equality.
+	if slotsEqual(sm.Slots, other.Slots) {
+		return sm // identical — no change
+	}
+	// Different content at the same version: deterministic union merge.
+	return SlotMap{
+		Version: sm.Version + 1,
+		Slots:   mergeSlots(sm.Slots, other.Slots),
+	}
+}
+
+// slotsEqual returns true iff a and b have identical content.
+func slotsEqual(a, b [][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := range a {
+		if len(a[i]) != len(b[i]) {
+			return false
+		}
+		for j := range a[i] {
+			if a[i][j] != b[i][j] {
+				return false
+			}
+		}
+	}
+	
+	return true
+}
+
+// mergeSlots produces a per-slot union of two slot lists.
+// For each slot the union is sorted lexicographically and trimmed to
+// max(len(a[i]), len(b[i])) entries so no slot ends up under-replicated.
+func mergeSlots(a, b [][]string) [][]string {
+	n := max(len(b), len(a))
+	out := make([][]string, n)
+	for i := range n {
+		var ai, bi []string
+		if i < len(a) {
+			ai = a[i]
+		}
+		if i < len(b) {
+			bi = b[i]
+		}
+		targetLen := len(ai)
+		if len(bi) > targetLen {
+			targetLen = len(bi)
+		}
+		// Build the union (deduplicated).
+		seen := make(map[string]struct{}, targetLen*2)
+		for _, id := range ai {
+			seen[id] = struct{}{}
+		}
+		for _, id := range bi {
+			seen[id] = struct{}{}
+		}
+		union := make([]string, 0, len(seen))
+		for id := range seen {
+			union = append(union, id)
+		}
+		sort.Strings(union) // deterministic
+		// Trim to the intended RF.
+		if len(union) > targetLen {
+			union = union[:targetLen]
+		}
+		out[i] = union
+	}
+	return out
 }
 
 // Encode serialises the SlotMap to JSON.

@@ -87,27 +87,91 @@ func TestIsReplicaConsistentWithReplicasForKey(t *testing.T) {
 	}
 }
 
-func TestMerge(t *testing.T) {
-	low := partition.InitialAssignment([]string{"A", "B"}, 2)  // version 1
-	high := partition.InitialAssignment([]string{"A", "B"}, 2) // version 1
-	// Bump high's version manually via RebalanceForJoin (version+1).
-	high = partition.RebalanceForJoin(high, "C", 2) // version 2
+func TestMergeHigherVersionWins(t *testing.T) {
+	low := partition.InitialAssignment([]string{"A", "B"}, 2)              // version 1
+	high := partition.RebalanceForJoin(low, "C", 2)                        // version 2
 
-	got := low.Merge(high)
-	if got.Version != high.Version {
-		t.Errorf("Merge: want version %d, got %d", high.Version, got.Version)
+	if got := low.Merge(high); got.Version != high.Version {
+		t.Errorf("low.Merge(high): want version %d, got %d", high.Version, got.Version)
+	}
+	if got := high.Merge(low); got.Version != high.Version {
+		t.Errorf("high.Merge(low): should keep version %d, got %d", high.Version, got.Version)
+	}
+}
+
+func TestMergeIdenticalVersionIdempotent(t *testing.T) {
+	sm := partition.InitialAssignment([]string{"A", "B", "C"}, 2)
+	got := sm.Merge(sm)
+	// Identical content at same version must not bump the version.
+	if got.Version != sm.Version {
+		t.Errorf("Merge(self): version bumped from %d to %d, want no change", sm.Version, got.Version)
+	}
+}
+
+// TestMergeSplitBrain is the key regression test for the concurrent-join scenario.
+// Two nodes independently call RebalanceForJoin on the same base map, producing
+// two different maps both at version N+1. Merge must resolve them to a single
+// map at version N+2 that is identical regardless of call order.
+func TestMergeSplitBrain(t *testing.T) {
+	base := partition.InitialAssignment([]string{"A", "B", "C"}, 2) // version 1
+
+	// Node X sees D join; node Y sees E join — both produce version 2.
+	smD := partition.RebalanceForJoin(base, "D", 2) // version 2, D added
+	smE := partition.RebalanceForJoin(base, "E", 2) // version 2, E added
+
+	if smD.Version != smE.Version {
+		t.Fatalf("precondition: both maps must be version %d", smD.Version)
 	}
 
-	// Lower version wins when other is lower.
-	got2 := high.Merge(low)
-	if got2.Version != high.Version {
-		t.Errorf("Merge: should keep high version, got %d", got2.Version)
+	mergedDE := smD.Merge(smE)
+	mergedED := smE.Merge(smD)
+
+	// Version must be bumped.
+	if mergedDE.Version != smD.Version+1 {
+		t.Errorf("merged version: want %d, got %d", smD.Version+1, mergedDE.Version)
 	}
 
-	// Equal versions — either is fine; just check it doesn't panic.
-	eq := low.Merge(low)
-	if eq.Version != low.Version {
-		t.Errorf("Merge equal: want %d, got %d", low.Version, eq.Version)
+	// Merge must be commutative: D.Merge(E) == E.Merge(D).
+	if mergedDE.Version != mergedED.Version {
+		t.Errorf("commutativity: version mismatch %d vs %d", mergedDE.Version, mergedED.Version)
+	}
+	for i := range mergedDE.Slots {
+		if len(mergedDE.Slots[i]) != len(mergedED.Slots[i]) {
+			t.Fatalf("commutativity: slot %d length differs", i)
+		}
+		for j := range mergedDE.Slots[i] {
+			if mergedDE.Slots[i][j] != mergedED.Slots[i][j] {
+				t.Fatalf("commutativity: slot %d replica[%d] differs: %q vs %q",
+					i, j, mergedDE.Slots[i][j], mergedED.Slots[i][j])
+			}
+		}
+	}
+
+	// After merge, no slot should have fewer than 2 replicas.
+	for i, replicas := range mergedDE.Slots {
+		if len(replicas) < 2 {
+			t.Errorf("slot %d: only %d replicas after split-brain merge", i, len(replicas))
+		}
+	}
+
+	// Merging the result with either input must not downgrade.
+	mergedAgain := mergedDE.Merge(smD)
+	if mergedAgain.Version < mergedDE.Version {
+		t.Errorf("re-merge downgraded from %d to %d", mergedDE.Version, mergedAgain.Version)
+	}
+}
+
+// TestMergeIdempotentAfterSplitBrain verifies that once the conflict is resolved,
+// further merges of the same pair are idempotent.
+func TestMergeIdempotentAfterSplitBrain(t *testing.T) {
+	base := partition.InitialAssignment([]string{"A", "B"}, 2)
+	v2a := partition.RebalanceForJoin(base, "C", 2)
+	v2b := partition.RebalanceForJoin(base, "D", 2)
+
+	resolved := v2a.Merge(v2b) // version 3
+	again := resolved.Merge(v2a.Merge(v2b))
+	if again.Version != resolved.Version {
+		t.Errorf("re-merge of identical resolved maps bumped version: %d → %d", resolved.Version, again.Version)
 	}
 }
 

@@ -249,17 +249,26 @@ func (g *Gossip) mergeRemoteSlotMap(b []byte) {
 	}
 
 	g.mu.Lock()
-	merged := g.slotMap.Merge(incoming)
-	if merged.Version == g.slotMap.Version {
+	prev := g.slotMap
+	merged := prev.Merge(incoming)
+	if merged.Version == prev.Version {
 		g.mu.Unlock()
-		return // no change
+		return // no change — identical content or incoming was older
 	}
 	g.slotMap = merged
+	list := g.list
 	g.mu.Unlock()
 
 	log.Printf("[gossip] slot map version advanced to %d", merged.Version)
 	if g.onSlotMapCh != nil {
 		g.onSlotMapCh(merged)
+	}
+
+	// If the merge resolved a split-brain (version bumped above both inputs),
+	// push the result immediately so peers converge without waiting for the
+	// next scheduled push/pull cycle.
+	if merged.Version > incoming.Version && list != nil {
+		list.UpdateNode(0)
 	}
 }
 
