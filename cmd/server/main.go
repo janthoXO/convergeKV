@@ -35,7 +35,7 @@ type config struct {
 	GRPCPort   int    `env:"GRPC_PORT"     envDefault:"50051"`
 	GossipPort int    `env:"GOSSIP_PORT"   envDefault:"7946"`
 	GossipBind string `env:"GOSSIP_BIND"   envDefault:"0.0.0.0"`
-	Seeds      string `env:"SEEDS"`        // comma-separated gossip host:port; empty for single-node
+	Seeds      string `env:"SEEDS"` // comma-separated gossip host:port; empty for single-node
 	DataDir    string `env:"DATA_DIR"      envDefault:"/data"`
 	RF         int    `env:"RF"            envDefault:"3"`
 	SyncMs     int    `env:"SYNC_MS"       envDefault:"2000"`

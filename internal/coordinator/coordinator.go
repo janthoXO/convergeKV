@@ -143,8 +143,8 @@ func (c *Coordinator) pushWriteToPeers(ctx context.Context, key string, replicas
 			continue
 		}
 		entries = append(entries, &repb.DeltaEntry{
-			Key:   r.Key,
-			Field: r.Field,
+			Key:       r.Key,
+			Field:     r.Field,
 			ValueJson: r.Entry.Value,
 			Timestamp: &kvpb.HLCTimestamp{
 				PhysicalMs: r.Entry.Timestamp.PhysicalMs,

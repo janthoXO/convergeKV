@@ -61,8 +61,8 @@ func (h *Handler) IBLTExchange(_ context.Context, req *repb.IBLTExchangeRequest)
 				r.Entry.ReplicaID == replicaID &&
 				r.Entry.Deleted == deleted {
 				itemsForInitiator = append(itemsForInitiator, &repb.DeltaEntry{
-					Key:   r.Key,
-					Field: r.Field,
+					Key:       r.Key,
+					Field:     r.Field,
 					ValueJson: r.Entry.Value,
 					Timestamp: &kvpb.HLCTimestamp{
 						PhysicalMs: r.Entry.Timestamp.PhysicalMs,
@@ -151,8 +151,8 @@ func (h *Handler) FullStateSync(_ context.Context, req *repb.FullStateSyncReques
 	resp := make([]*repb.DeltaEntry, 0, len(localRecords))
 	for _, r := range localRecords {
 		resp = append(resp, &repb.DeltaEntry{
-			Key:   r.Key,
-			Field: r.Field,
+			Key:       r.Key,
+			Field:     r.Field,
 			ValueJson: r.Entry.Value,
 			Timestamp: &kvpb.HLCTimestamp{
 				PhysicalMs: r.Entry.Timestamp.PhysicalMs,
