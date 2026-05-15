@@ -12,12 +12,7 @@ import (
 )
 
 const (
-	// DefaultCells is the recommended cell count for production use.
-	// With k=3 independent SHA-256 hashes, 512 cells reliably decodes symmetric
-	// differences of up to ~40 items with >99.9% probability.
 	// Larger differences trigger the full-state fallback (FullStateSync RPC).
-	DefaultCells = 512
-
 	// numHashFuncs is fixed at 3, the standard choice.
 	numHashFuncs = 3
 )

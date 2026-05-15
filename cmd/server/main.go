@@ -23,7 +23,6 @@ import (
 	"github.com/janthoXO/convergeKV/internal/api"
 	"github.com/janthoXO/convergeKV/internal/coordinator"
 	"github.com/janthoXO/convergeKV/internal/gossip"
-	"github.com/janthoXO/convergeKV/internal/iblt"
 	"github.com/janthoXO/convergeKV/internal/node"
 	"github.com/janthoXO/convergeKV/internal/storage"
 	"github.com/janthoXO/convergeKV/internal/syncer"
@@ -54,11 +53,6 @@ func main() {
 	}
 	log.Printf("[config] replica=%s grpc=%d gossip=%d seeds=%q dataDir=%s rf=%d syncMs=%d ibltCells=%d",
 		cfg.ReplicaID, cfg.GRPCPort, cfg.GossipPort, cfg.Seeds, cfg.DataDir, cfg.RF, cfg.SyncMs, cfg.IBLTCells)
-
-	// Enforce the default cell count minimum.
-	if cfg.IBLTCells <= 0 {
-		cfg.IBLTCells = iblt.DefaultCells
-	}
 
 	// ── 1. Storage ─────────────────────────────────────────────────────────────
 	store, err := storage.Open(cfg.DataDir)

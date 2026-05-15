@@ -14,6 +14,8 @@ import (
 	"github.com/janthoXO/convergeKV/internal/syncer"
 )
 
+const IBLT_DEFAULT_CELLS = 512
+
 func tempNode(t *testing.T, id string) *node.Node {
 	t.Helper()
 	dir := t.TempDir()
@@ -33,7 +35,7 @@ func tempNode(t *testing.T, id string) *node.Node {
 // deterministic and that a snapshot matches the current node state.
 func TestIBLTStateRoundTrip(t *testing.T) {
 	n := tempNode(t, "test-node")
-	is := syncer.NewIBLTState(iblt.DefaultCells)
+	is := syncer.NewIBLTState(IBLT_DEFAULT_CELLS)
 	n.SetIBLTState(is)
 
 	// Write some data.
@@ -46,7 +48,7 @@ func TestIBLTStateRoundTrip(t *testing.T) {
 
 	// Build a second IBLTState from the snapshot and compare.
 	snap := n.Snapshot()
-	is2 := syncer.BuildFromSnapshot(snap, iblt.DefaultCells)
+	is2 := syncer.BuildFromSnapshot(snap, IBLT_DEFAULT_CELLS)
 
 	// The two IBLTs should have identical symmetric difference = empty.
 	diff := is.Snapshot().Subtract(is2.Snapshot())
@@ -70,7 +72,7 @@ func TestDeserialiseItemRoundTrip(t *testing.T) {
 	}
 	key, field := "my-key", "my-field"
 
-	is := syncer.NewIBLTState(iblt.DefaultCells)
+	is := syncer.NewIBLTState(IBLT_DEFAULT_CELLS)
 	is.InsertEntry(key, field, entry)
 
 	// Export the item bytes and verify deserialisation.
@@ -78,7 +80,7 @@ func TestDeserialiseItemRoundTrip(t *testing.T) {
 	// Build item bytes manually.
 	snap := is.Snapshot()
 	// We inserted 1 item; subtract empty to get the diff = the one item.
-	diff := snap.Subtract(iblt.New(iblt.DefaultCells))
+	diff := snap.Subtract(iblt.New(IBLT_DEFAULT_CELLS))
 	onlyA, _, ok := diff.Decode()
 	if !ok {
 		t.Fatal("decode failed")
@@ -104,8 +106,8 @@ func TestDeserialiseItemRoundTrip(t *testing.T) {
 func TestIBLTConvergence(t *testing.T) {
 	n1 := tempNode(t, "n1")
 	n2 := tempNode(t, "n2")
-	is1 := syncer.NewIBLTState(iblt.DefaultCells)
-	is2 := syncer.NewIBLTState(iblt.DefaultCells)
+	is1 := syncer.NewIBLTState(IBLT_DEFAULT_CELLS)
+	is2 := syncer.NewIBLTState(IBLT_DEFAULT_CELLS)
 	n1.SetIBLTState(is1)
 	n2.SetIBLTState(is2)
 
