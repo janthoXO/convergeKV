@@ -6,91 +6,108 @@ import (
 	"log"
 
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
+	repb "github.com/janthoXO/convergeKV/gen/replication"
+	"github.com/janthoXO/convergeKV/internal/gossip"
+	"github.com/janthoXO/convergeKV/internal/hrw"
 	"github.com/janthoXO/convergeKV/internal/node"
-	"github.com/janthoXO/convergeKV/internal/partition"
-	utils "github.com/janthoXO/convergeKV/internal/utils"
 )
 
-// Coordinator routes client requests based on the current slot map.
+// PushSyncer is the minimal interface the coordinator needs from the syncer
+// for write-path push. Avoids a direct import of the syncer package.
+type PushSyncer interface {
+	PushToPeers(ctx context.Context, entries []*repb.DeltaEntry, replicas []gossip.MemberInfo, localID string)
+}
+
+// Coordinator routes client requests using Rendezvous Hashing (HRW).
+// Any replica in the HRW set for a key serves reads and writes (quorum=1).
+// If the local node is not a replica, the request is forwarded to the
+// highest-scoring HRW member for deterministic routing.
 type Coordinator struct {
 	node      *node.Node
-	slotMap   func() partition.SlotMap // returns the current slot map snapshot
+	gossip    *gossip.Gossip
 	forwarder *Forwarder
-	grpcAddrs func(replicaID string) (string, bool) // resolves replica ID → gRPC address
+	syncer    PushSyncer
+	rf        int
 }
 
 // New returns a Coordinator.
-// getSlotMap must return the latest SlotMap on every call (e.g. via an atomic load).
-// resolveAddr must map a replicaID to its host:grpcPort address.
-func New(n *node.Node, getSlotMap func() partition.SlotMap, resolveAddr func(string) (string, bool), f *Forwarder) *Coordinator {
-	return &Coordinator{node: n, slotMap: getSlotMap, grpcAddrs: resolveAddr, forwarder: f}
+func New(n *node.Node, g *gossip.Gossip, f *Forwarder, syncer PushSyncer, rf int) *Coordinator {
+	return &Coordinator{node: n, gossip: g, forwarder: f, syncer: syncer, rf: rf}
 }
 
 // Put handles a put request.
-// If this node is any replica for the key's slot, it writes locally and
-// asynchronously pushes to co-replicas. Otherwise forwards to replicas[0].
+// If the local node is an HRW replica for the key, it writes locally and
+// asynchronously pushes to the other HRW replicas.
+// Otherwise it forwards to the highest-scoring HRW member.
 func (c *Coordinator) Put(ctx context.Context, req *kvpb.PutRequest) (*kvpb.PutResponse, error) {
-	replicas := c.slotMap().ReplicasForKey(req.GetKey())
+	members := c.gossip.Members()
+	replicas := hrw.Replicas(req.GetKey(), members, c.rf)
 	localID := c.node.ReplicaID()
 
-	if len(replicas) == 0 || utils.Contains(replicas, localID) {
-		// Handle locally and push to co-replicas.
+	if len(replicas) == 0 || containsID(replicas, localID) {
 		resp, err := c.handleLocalPut(ctx, req)
 		if err != nil {
 			return nil, err
 		}
-		go c.pushPut(req, replicas, localID)
+		if c.syncer != nil {
+			// Build the DeltaEntry list for push (one entry per field).
+			// The entries were just written; pull them from the node snapshot.
+			go c.pushWriteToPeers(ctx, req.GetKey(), replicas, localID)
+		}
 		return resp, nil
 	}
 
-	// Forward to the first replica in the slot (deterministic, any is correct).
-	addr, ok := c.grpcAddrs(replicas[0])
-	if !ok {
-		// Address unknown — handle locally as a fallback (pre-convergence).
+	// Forward to the highest scorer.
+	target := hrw.HighestScorer(req.GetKey(), members)
+	if target.GRPCAddr == "" {
+		// No reachable target — serve locally as fallback.
 		return c.handleLocalPut(ctx, req)
 	}
-	return c.forwarder.ForwardPut(ctx, addr, req)
+	return c.forwarder.ForwardPut(ctx, target.GRPCAddr, req)
 }
 
 // Get handles a get request.
-// Serves locally if this node is any replica for the slot; otherwise forwards.
+// Serves locally if the local node is an HRW replica; otherwise forwards.
 func (c *Coordinator) Get(ctx context.Context, req *kvpb.GetRequest) (*kvpb.GetResponse, error) {
-	replicas := c.slotMap().ReplicasForKey(req.GetKey())
+	members := c.gossip.Members()
+	replicas := hrw.Replicas(req.GetKey(), members, c.rf)
 	localID := c.node.ReplicaID()
 
-	if len(replicas) == 0 || utils.Contains(replicas, localID) {
+	if len(replicas) == 0 || containsID(replicas, localID) {
 		v, found := c.node.Get(req.GetKey())
 		return &kvpb.GetResponse{ValueJson: v, Found: found}, nil
 	}
 
-	addr, ok := c.grpcAddrs(replicas[0])
-	if !ok {
-		// Serve locally as fallback.
+	target := hrw.HighestScorer(req.GetKey(), members)
+	if target.GRPCAddr == "" {
 		v, found := c.node.Get(req.GetKey())
 		return &kvpb.GetResponse{ValueJson: v, Found: found}, nil
 	}
-	return c.forwarder.ForwardGet(ctx, addr, req)
+	return c.forwarder.ForwardGet(ctx, target.GRPCAddr, req)
 }
 
 // Delete handles a delete request. Same routing logic as Put.
 func (c *Coordinator) Delete(ctx context.Context, req *kvpb.DeleteRequest) (*kvpb.DeleteResponse, error) {
-	replicas := c.slotMap().ReplicasForKey(req.GetKey())
+	members := c.gossip.Members()
+	replicas := hrw.Replicas(req.GetKey(), members, c.rf)
 	localID := c.node.ReplicaID()
 
-	if len(replicas) == 0 || utils.Contains(replicas, localID) {
+	if len(replicas) == 0 || containsID(replicas, localID) {
 		resp, err := c.handleLocalDelete(ctx, req)
 		if err != nil {
 			return nil, err
 		}
-		go c.pushDelete(req, replicas, localID)
+		if c.syncer != nil {
+			go c.pushWriteToPeers(ctx, req.GetKey(), replicas, localID)
+		}
 		return resp, nil
 	}
 
-	addr, ok := c.grpcAddrs(replicas[0])
-	if !ok {
+	target := hrw.HighestScorer(req.GetKey(), members)
+	if target.GRPCAddr == "" {
 		return c.handleLocalDelete(ctx, req)
 	}
-	return c.forwarder.ForwardDelete(ctx, addr, req)
+	return c.forwarder.ForwardDelete(ctx, target.GRPCAddr, req)
 }
 
 // ── local write helpers ───────────────────────────────────────────────────────
@@ -115,41 +132,41 @@ func (c *Coordinator) handleLocalDelete(_ context.Context, req *kvpb.DeleteReque
 	}, nil
 }
 
-// ── async push helpers ────────────────────────────────────────────────────────
-
-// pushPut sends the put to all co-replicas except the local node.
-// Errors are logged but do not affect the client response — anti-entropy
-// corrects any missed replications during the next sync cycle.
-func (c *Coordinator) pushPut(req *kvpb.PutRequest, replicas []string, skipID string) {
-	ctx := context.Background()
-	for _, replicaID := range replicas {
-		if replicaID == skipID {
+// pushWriteToPeers collects the current entries for key from the node snapshot
+// and pushes them to the other HRW replicas via PushEntries.
+// Called asynchronously from the write path; errors are logged but not retried.
+func (c *Coordinator) pushWriteToPeers(ctx context.Context, key string, replicas []gossip.MemberInfo, localID string) {
+	snap := c.node.Snapshot()
+	var entries []*repb.DeltaEntry
+	for _, r := range snap {
+		if r.Key != key {
 			continue
 		}
-		addr, ok := c.grpcAddrs(replicaID)
-		if !ok {
-			log.Printf("[coordinator] pushPut: unknown addr for replica %s", replicaID)
-			continue
-		}
-		if _, err := c.forwarder.ForwardPut(ctx, addr, req); err != nil {
-			log.Printf("[coordinator] pushPut to %s: %v (anti-entropy will reconcile)", replicaID, err)
-		}
+		entries = append(entries, &repb.DeltaEntry{
+			Key:   r.Key,
+			Field: r.Field,
+			ValueJson: r.Entry.Value,
+			Timestamp: &kvpb.HLCTimestamp{
+				PhysicalMs: r.Entry.Timestamp.PhysicalMs,
+				Logical:    r.Entry.Timestamp.Logical,
+			},
+			ReplicaId: r.Entry.ReplicaID,
+			Deleted:   r.Entry.Deleted,
+		})
 	}
+	if len(entries) == 0 {
+		log.Printf("[coordinator] pushWriteToPeers: no entries for key %s (already applied?)", key)
+		return
+	}
+	c.syncer.PushToPeers(ctx, entries, replicas, localID)
 }
 
-func (c *Coordinator) pushDelete(req *kvpb.DeleteRequest, replicas []string, skipID string) {
-	ctx := context.Background()
-	for _, replicaID := range replicas {
-		if replicaID == skipID {
-			continue
-		}
-		addr, ok := c.grpcAddrs(replicaID)
-		if !ok {
-			log.Printf("[coordinator] pushDelete: unknown addr for replica %s", replicaID)
-			continue
-		}
-		if _, err := c.forwarder.ForwardDelete(ctx, addr, req); err != nil {
-			log.Printf("[coordinator] pushDelete to %s: %v (anti-entropy will reconcile)", replicaID, err)
+// containsID reports whether any member in the slice has ReplicaID == id.
+func containsID(members []gossip.MemberInfo, id string) bool {
+	for _, m := range members {
+		if m.ReplicaID == id {
+			return true
 		}
 	}
+	return false
 }

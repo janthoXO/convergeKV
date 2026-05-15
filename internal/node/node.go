@@ -6,14 +6,23 @@ package node
 import (
 	"maps"
 	"sync"
-	"sync/atomic"
 
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
-	"github.com/janthoXO/convergeKV/internal/merkle"
-	"github.com/janthoXO/convergeKV/internal/partition"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
+
+// IBLTUpdater is the minimal interface that the IBLT state object must satisfy.
+// Defined here to avoid a circular import between node and syncer.
+// syncer.IBLTState implements this interface.
+type IBLTUpdater interface {
+	InsertEntry(key, field string, e crdt.FieldEntry)
+	RemoveEntry(key, field string, e crdt.FieldEntry)
+}
+
+// DeltaRecord is a flat (key, field, entry) triple used in replication.
+// Replaces the old KeyFieldEntryTuple name for clarity.
+type DeltaRecord = KeyFieldEntryTuple
 
 // Node is the central state holder. It is safe for concurrent use.
 //
@@ -30,13 +39,13 @@ import (
 //
 //   - The HLC has its own internal mutex and is always safe to call without
 //     holding any of the above locks.
-//
-//   - slotMap is an atomic pointer: reads are lock-free, writes atomically
-//     swap the pointer so in-flight reads always see a consistent map.
 type Node struct {
 	replicaID string
 	hlc       *hlc.HLC
-	slotMap   atomic.Pointer[partition.SlotMap] // nil = accept everything (bootstrap)
+
+	// ibltState mirrors the node's in-memory state in an IBLT for sync.
+	// It is injected after construction via SetIBLTState; nil means not yet set.
+	ibltState IBLTUpdater
 
 	// stateMu guards the state map structure. Held only for map reads/writes.
 	stateMu sync.RWMutex
@@ -47,7 +56,6 @@ type Node struct {
 	keyLocks map[string]*sync.RWMutex
 
 	store *storage.Store
-	tree  *merkle.MerkleTree // live Merkle tree over all (key, field) entries
 }
 
 // New constructs a Node, loading existing state from the store.
@@ -57,21 +65,12 @@ func New(replicaID string, store *storage.Store) (*Node, error) {
 		return nil, err
 	}
 
-	// Rebuild the Merkle tree from persisted state.
-	tree := merkle.NewMerkleTree()
-	for key, m := range existing {
-		for field, e := range m.Fields {
-			tree.Update(key, field, e.ReplicaID, e.Timestamp.PhysicalMs, e.Timestamp.Logical)
-		}
-	}
-
 	return &Node{
 		replicaID: replicaID,
 		hlc:       hlc.New(),
 		state:     existing,
 		keyLocks:  make(map[string]*sync.RWMutex),
 		store:     store,
-		tree:      tree,
 	}, nil
 }
 
@@ -86,70 +85,26 @@ func (n *Node) ReceiveHLC(remote hlc.Timestamp) hlc.Timestamp {
 	return n.hlc.Receive(remote)
 }
 
-// UpdateSlotMap atomically replaces the node's slot map.
-// Called by main.go whenever gossip fires onSlotMapChange.
-func (n *Node) UpdateSlotMap(sm partition.SlotMap) {
-	n.slotMap.Store(&sm)
+// SetIBLTState injects the IBLT state object. Called from main.go after
+// both node and IBLTState are constructed. Thread-safe: called once at startup
+// before any concurrent requests.
+func (n *Node) SetIBLTState(s IBLTUpdater) {
+	n.ibltState = s
 }
 
-// SlotMap returns the current slot map, or nil if not yet set.
-func (n *Node) SlotMap() *partition.SlotMap {
-	return n.slotMap.Load()
-}
-
-// isReplica returns true if this node is in the replica set for key.
-// If the slot map is not yet set (startup bootstrap), returns true so that
-// data is always accepted until the map is installed.
-func (n *Node) isReplica(key string) bool {
-	sm := n.slotMap.Load()
-	if sm == nil {
-		return true
-	}
-	return sm.IsReplica(key, n.replicaID)
-}
-
-// IsReplica returns true if this node is a replica for key.
-func (n *Node) IsReplica(key string) bool {
-	return n.isReplica(key)
-}
-
-// MerkleTree returns the node's live Merkle tree.
-// The replication layer reads from this to build sync messages.
-func (n *Node) MerkleTree() *merkle.MerkleTree {
-	return n.tree
-}
-
-// SnapshotPartitions returns all KeyFieldEntryTuples whose key maps to one
-// of the given partition (slot) indices. Used by the replication handler to answer
-// Phase 2 (DeltaSync) requests.
-func (n *Node) SnapshotPartitions(partitions map[int]struct{}) []KeyFieldEntryTuple {
+// Snapshot returns a flat list of all current (key, field, entry) triples.
+// Used by the full-state sync fallback and IBLT state reconstruction.
+func (n *Node) Snapshot() []KeyFieldEntryTuple {
 	n.stateMu.RLock()
 	defer n.stateMu.RUnlock()
 
 	var out []KeyFieldEntryTuple
 	for key, m := range n.state {
-		slot := merkle.PartitionIndex(key)
-		if _, ok := partitions[slot]; !ok {
-			continue
-		}
 		for field, entry := range m.Fields {
 			out = append(out, KeyFieldEntryTuple{Key: key, Field: field, Entry: entry})
 		}
 	}
 	return out
-}
-
-// updateTree adds the hash of entry to the tree.
-// Must be called under n.mu write lock.
-// If replacing an existing entry, call removeTree first.
-func (n *Node) updateTree(key, field string, e crdt.FieldEntry) {
-	n.tree.Update(key, field, e.ReplicaID, e.Timestamp.PhysicalMs, e.Timestamp.Logical)
-}
-
-// removeTree removes the hash of entry from the tree.
-// Must be called under n.mu write lock.
-func (n *Node) removeTree(key, field string, e crdt.FieldEntry) {
-	n.tree.Remove(key, field, e.ReplicaID, e.Timestamp.PhysicalMs, e.Timestamp.Logical)
 }
 
 // getKeyLock returns the per-key RWMutex for key, creating it lazily.

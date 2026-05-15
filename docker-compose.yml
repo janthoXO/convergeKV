@@ -10,11 +10,6 @@ networks:
   convergekv:
     driver: bridge
 
-# INITIAL_NODES lists all replica IDs used to generate the first-boot slot map.
-# All nodes must agree on this list. The first node to boot generates the map;
-# subsequent boots load it from disk or receive it via gossip push/pull.
-x-initial-nodes: &initial-nodes "replica1,replica2,replica3"
-
 services:
   replica1:
     <<: *node-defaults
@@ -26,10 +21,10 @@ services:
       GOSSIP_PORT:   "7946"
       GOSSIP_BIND:   "0.0.0.0"
       SEEDS:         "replica2:7946,replica3:7946"
-      INITIAL_NODES: *initial-nodes
       DATA_DIR:      "/data"
       RF:            "3"
       SYNC_MS:       "2000"
+      IBLT_CELLS:    "512"
     volumes:
       - replica1-data:/data
     ports:
@@ -45,10 +40,10 @@ services:
       GOSSIP_PORT:   "7946"
       GOSSIP_BIND:   "0.0.0.0"
       SEEDS:         "replica1:7946,replica3:7946"
-      INITIAL_NODES: *initial-nodes
       DATA_DIR:      "/data"
       RF:            "3"
       SYNC_MS:       "2000"
+      IBLT_CELLS:    "512"
     volumes:
       - replica2-data:/data
     ports:
@@ -64,10 +59,10 @@ services:
       GOSSIP_PORT:   "7946"
       GOSSIP_BIND:   "0.0.0.0"
       SEEDS:         "replica1:7946,replica2:7946"
-      INITIAL_NODES: *initial-nodes
       DATA_DIR:      "/data"
       RF:            "3"
       SYNC_MS:       "2000"
+      IBLT_CELLS:    "512"
     volumes:
       - replica3-data:/data
     ports:

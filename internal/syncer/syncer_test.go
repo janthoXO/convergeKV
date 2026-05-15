@@ -1,0 +1,192 @@
+package syncer_test
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"testing"
+
+	"github.com/janthoXO/convergeKV/internal/crdt"
+	"github.com/janthoXO/convergeKV/internal/hlc"
+	"github.com/janthoXO/convergeKV/internal/iblt"
+	"github.com/janthoXO/convergeKV/internal/node"
+	"github.com/janthoXO/convergeKV/internal/storage"
+	"github.com/janthoXO/convergeKV/internal/syncer"
+)
+
+func tempNode(t *testing.T, id string) *node.Node {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open storage for %s: %v", id, err)
+	}
+	t.Cleanup(func() { store.Close(); os.RemoveAll(dir) })
+	n, err := node.New(id, store)
+	if err != nil {
+		t.Fatalf("create node %s: %v", id, err)
+	}
+	return n
+}
+
+// TestIBLTStateRoundTrip verifies that the IBLTState serialisation is
+// deterministic and that a snapshot matches the current node state.
+func TestIBLTStateRoundTrip(t *testing.T) {
+	n := tempNode(t, "test-node")
+	is := syncer.NewIBLTState(iblt.DefaultCells)
+	n.SetIBLTState(is)
+
+	// Write some data.
+	for i := 0; i < 20; i++ {
+		v := fmt.Sprintf(`{"x":%d}`, i)
+		if _, err := n.Put(fmt.Sprintf("key-%d", i), v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Build a second IBLTState from the snapshot and compare.
+	snap := n.Snapshot()
+	is2 := syncer.BuildFromSnapshot(snap, iblt.DefaultCells)
+
+	// The two IBLTs should have identical symmetric difference = empty.
+	diff := is.Snapshot().Subtract(is2.Snapshot())
+	onlyA, onlyB, ok := diff.Decode()
+	if !ok {
+		t.Fatal("diff decode failed — IBLTs diverged")
+	}
+	if len(onlyA) != 0 || len(onlyB) != 0 {
+		t.Errorf("IBLTs differ: onlyA=%d onlyB=%d", len(onlyA), len(onlyB))
+	}
+}
+
+// TestDeserialiseItemRoundTrip verifies the binary serialisation is invertible.
+func TestDeserialiseItemRoundTrip(t *testing.T) {
+	ts := hlc.Timestamp{PhysicalMs: 1234567890, Logical: 42}
+	entry := crdt.FieldEntry{
+		Value:     json.RawMessage(`"hello"`),
+		Timestamp: ts,
+		ReplicaID: "replica-abc",
+		Deleted:   false,
+	}
+	key, field := "my-key", "my-field"
+
+	is := syncer.NewIBLTState(iblt.DefaultCells)
+	is.InsertEntry(key, field, entry)
+
+	// Export the item bytes and verify deserialisation.
+	// We need to access the serialised form; we'll use the exported DeserialiseItem.
+	// Build item bytes manually.
+	snap := is.Snapshot()
+	// We inserted 1 item; subtract empty to get the diff = the one item.
+	diff := snap.Subtract(iblt.New(iblt.DefaultCells))
+	onlyA, _, ok := diff.Decode()
+	if !ok {
+		t.Fatal("decode failed")
+	}
+	if len(onlyA) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(onlyA))
+	}
+
+	k, f, rID, physMs, logical, deleted, valid := syncer.DeserialiseItem(onlyA[0])
+	if !valid {
+		t.Fatal("DeserialiseItem returned invalid")
+	}
+	if k != key || f != field || rID != "replica-abc" ||
+		physMs != ts.PhysicalMs || logical != ts.Logical || deleted {
+		t.Errorf("deserialised mismatch: k=%s f=%s rID=%s physMs=%d logical=%d deleted=%v",
+			k, f, rID, physMs, logical, deleted)
+	}
+}
+
+// TestIBLTConvergence simulates two nodes diverging and then reconciling
+// through IBLT sync without an actual gRPC server.
+// This tests the core invariant: symmetric difference is correctly identified.
+func TestIBLTConvergence(t *testing.T) {
+	n1 := tempNode(t, "n1")
+	n2 := tempNode(t, "n2")
+	is1 := syncer.NewIBLTState(iblt.DefaultCells)
+	is2 := syncer.NewIBLTState(iblt.DefaultCells)
+	n1.SetIBLTState(is1)
+	n2.SetIBLTState(is2)
+
+	// Write 5 keys to n1 only.
+	for i := 0; i < 5; i++ {
+		if _, err := n1.Put(fmt.Sprintf("key-n1-%d", i), `{"v":1}`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Write 5 different keys to n2 only.
+	for i := 0; i < 5; i++ {
+		if _, err := n2.Put(fmt.Sprintf("key-n2-%d", i), `{"v":2}`); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Simulate IBLT exchange: n1 sends its IBLT to n2.
+	snap1 := is1.Snapshot()
+	snap2 := is2.Snapshot()
+
+	diff := snap2.Subtract(snap1) // from n2's perspective
+	onlyInN2, onlyInN1, ok := diff.Decode()
+	if !ok {
+		t.Fatal("IBLT decode failed")
+	}
+
+	// onlyInN2: 5 items n2 has that n1 doesn't (key-n2-*)
+	// onlyInN1: 5 items n1 has that n2 doesn't (key-n1-*)
+	if len(onlyInN2) != 5 {
+		t.Errorf("expected 5 items in onlyInN2, got %d", len(onlyInN2))
+	}
+	if len(onlyInN1) != 5 {
+		t.Errorf("expected 5 items in onlyInN1, got %d", len(onlyInN1))
+	}
+
+	// Now sync: n1 applies n2's items, n2 applies n1's items.
+	for _, itemBytes := range onlyInN2 {
+		k, f, rID, physMs, logical, deleted, valid := syncer.DeserialiseItem(itemBytes)
+		if !valid {
+			t.Fatal("invalid item bytes")
+		}
+		// Find the entry in n2's snapshot.
+		for _, r := range n2.Snapshot() {
+			if r.Key == k && r.Field == f &&
+				r.Entry.Timestamp.PhysicalMs == physMs &&
+				r.Entry.Timestamp.Logical == logical &&
+				r.Entry.ReplicaID == rID &&
+				r.Entry.Deleted == deleted {
+				if _, err := n1.ApplyDelta(r.Key, r.Field, r.Entry); err != nil {
+					t.Fatal(err)
+				}
+				break
+			}
+		}
+	}
+	for _, itemBytes := range onlyInN1 {
+		k, f, rID, physMs, logical, deleted, valid := syncer.DeserialiseItem(itemBytes)
+		if !valid {
+			t.Fatal("invalid item bytes")
+		}
+		for _, r := range n1.Snapshot() {
+			if r.Key == k && r.Field == f &&
+				r.Entry.Timestamp.PhysicalMs == physMs &&
+				r.Entry.Timestamp.Logical == logical &&
+				r.Entry.ReplicaID == rID &&
+				r.Entry.Deleted == deleted {
+				if _, err := n2.ApplyDelta(r.Key, r.Field, r.Entry); err != nil {
+					t.Fatal(err)
+				}
+				break
+			}
+		}
+	}
+
+	// Both nodes should now have 10 keys.
+	snap1After := n1.Snapshot()
+	snap2After := n2.Snapshot()
+	if len(snap1After) != 10 {
+		t.Errorf("n1: expected 10 records after sync, got %d", len(snap1After))
+	}
+	if len(snap2After) != 10 {
+		t.Errorf("n2: expected 10 records after sync, got %d", len(snap2After))
+	}
+}

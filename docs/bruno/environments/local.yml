@@ -1,10 +1,8 @@
 name: local
 variables:
-  - name: base_url
-    value: http://localhost:50051
   - name: node_1
-    value: localhost:50051
+    value: http://localhost:50051
   - name: node_2
-    value: localhost:50052
+    value: http://localhost:50052
   - name: node_3
-    value: localhost:50053
+    value: http://localhost:50053

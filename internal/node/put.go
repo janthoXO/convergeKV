@@ -40,16 +40,15 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, error) {
 			Deleted:   false,
 		}
 
-		// Capture old entry before overwriting so we can remove its hash.
+		// Capture old entry before overwriting so we can remove its IBLT hash.
 		old, hadOld := awlwwmap.Fields[field]
 		crdt.Apply(&awlwwmap, field, entry)
 
-		// Only update the Merkle tree for keys this node is responsible for.
-		if n.isReplica(key) {
+		if n.ibltState != nil {
 			if hadOld {
-				n.removeTree(key, field, old)
+				n.ibltState.RemoveEntry(key, field, old)
 			}
-			n.updateTree(key, field, entry)
+			n.ibltState.InsertEntry(key, field, entry)
 		}
 
 		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: entry})
