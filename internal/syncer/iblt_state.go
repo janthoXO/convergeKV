@@ -94,6 +94,7 @@ func DeserialiseItem(b []byte) (key, field, replicaID string, physMs uint64, log
 		pos += l
 		return s, true
 	}
+	
 	var valid bool
 	key, valid = readStr()
 	if !valid {

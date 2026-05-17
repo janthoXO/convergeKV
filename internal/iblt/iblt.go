@@ -54,13 +54,23 @@ func cellIndex(item []byte, funcIdx int, numCells int) int {
 	return int(idx % uint64(numCells))
 }
 
+// lenPrefixed returns a new byte slice with a 4-byte big-endian length prefix followed by the item bytes.
+func lenPrefixed(item []byte) []byte {
+	buf := make([]byte, 4+len(item))
+	binary.BigEndian.PutUint32(buf, uint32(len(item)))
+	copy(buf[4:], item)
+	return buf
+}
+
 // Insert adds item to the IBLT.
 func (t *IBLT) Insert(item []byte) {
 	hv := hashItem(item)
-	for i := 0; i < numHashFuncs; i++ {
+	lp := lenPrefixed(item)
+
+	for i := range numHashFuncs {
 		idx := cellIndex(item, i, t.NumCells)
 		t.Cells[idx].Count++
-		t.Cells[idx].KeySum = xorBytes(t.Cells[idx].KeySum, item)
+		t.Cells[idx].KeySum = xorBytes(t.Cells[idx].KeySum, lp)
 		t.Cells[idx].HashSum ^= hv
 	}
 }
@@ -69,10 +79,12 @@ func (t *IBLT) Insert(item []byte) {
 // Equivalent to Insert but decrements Count (XOR is its own inverse).
 func (t *IBLT) Delete(item []byte) {
 	hv := hashItem(item)
-	for i := 0; i < numHashFuncs; i++ {
+	lp := lenPrefixed(item)
+
+	for i := range numHashFuncs {
 		idx := cellIndex(item, i, t.NumCells)
 		t.Cells[idx].Count--
-		t.Cells[idx].KeySum = xorBytes(t.Cells[idx].KeySum, item)
+		t.Cells[idx].KeySum = xorBytes(t.Cells[idx].KeySum, lp)
 		t.Cells[idx].HashSum ^= hv
 	}
 }
@@ -106,17 +118,37 @@ func isAllZero(b []byte) bool {
 	return true
 }
 
+func stripLenPrefix(b []byte) ([]byte, bool) {
+	if len(b) < 4 {
+		// defense against malformed KeySum
+		return nil, false
+	}
+
+	l := int(binary.BigEndian.Uint32(b[:4]))
+	if 4+l > len(b) {
+		return nil, false
+	}
+
+	return b[4 : 4+l], true
+}
+
 // isPure returns true if cell c contains exactly one item (|Count|==1 and
 // the hash of the KeySum matches the HashSum).
 func isPure(c *Cell) bool {
 	if c.Count != 1 && c.Count != -1 {
 		return false
 	}
+
 	// An all-zero or empty KeySum with zero HashSum means an empty cell — not pure.
 	if c.HashSum == 0 && isAllZero(c.KeySum) {
 		return false
 	}
-	return hashItem(c.KeySum) == c.HashSum
+
+	item, ok := stripLenPrefix(c.KeySum)
+	if !ok {
+		return false
+	}
+	return hashItem(item) == c.HashSum
 }
 
 // Decode attempts to peel the IBLT to recover the symmetric difference.
@@ -139,8 +171,13 @@ func (t *IBLT) Decode() (onlyInA [][]byte, onlyInB [][]byte, ok bool) {
 			if !isPure(c) {
 				continue
 			}
-			item := make([]byte, len(c.KeySum))
-			copy(item, c.KeySum)
+
+			item, ok := stripLenPrefix(c.KeySum)
+			if !ok {
+				continue
+			}
+			item = append([]byte(nil), item...) // copy to avoid aliasing
+
 			isInA := c.Count == 1
 
 			if isInA {
@@ -202,7 +239,7 @@ func DecodeIBLT(b []byte) (*IBLT, error) {
 	}
 	t := New(numCells)
 	pos := 4
-	for i := 0; i < numCells; i++ {
+	for i := range numCells {
 		if pos+20 > len(b) {
 			return nil, fmt.Errorf("iblt: truncated at cell %d", i)
 		}
@@ -247,10 +284,12 @@ func xorBytes(a, b []byte) []byte {
 	if len(b) > len(a) {
 		a, b = b, a
 	}
+
 	if len(a) == 0 {
 		// Both operands are empty/nil.
 		return nil
 	}
+
 	out := make([]byte, len(a))
 	copy(out, a)
 	for i := 0; i < len(b); i++ {
