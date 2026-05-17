@@ -49,20 +49,12 @@ func (c *Coordinator) Put(ctx context.Context, req *kvpb.PutRequest) (*kvpb.PutR
 		if err != nil {
 			return nil, err
 		}
-		if c.syncer != nil {
-			// Build the DeltaEntry list for push (one entry per field).
-			// The entries were just written; pull them from the node snapshot.
-			go c.pushWriteToPeers(ctx, req.GetKey(), replicas, localID)
-		}
+		go c.pushWriteToPeers(context.Background(), req.GetKey(), replicas, localID)
 		return resp, nil
 	}
 
-	// Forward to the highest scorer.
+	// Forward to the highest-scoring HRW member.
 	target := hrw.HighestScorer(req.GetKey(), members)
-	if target.GRPCAddr == "" {
-		// No reachable target — serve locally as fallback.
-		return c.handleLocalPut(ctx, req)
-	}
 	return c.forwarder.ForwardPut(ctx, target.GRPCAddr, req)
 }
 
@@ -79,10 +71,6 @@ func (c *Coordinator) Get(ctx context.Context, req *kvpb.GetRequest) (*kvpb.GetR
 	}
 
 	target := hrw.HighestScorer(req.GetKey(), members)
-	if target.GRPCAddr == "" {
-		v, found := c.node.Get(req.GetKey())
-		return &kvpb.GetResponse{ValueJson: v, Found: found}, nil
-	}
 	return c.forwarder.ForwardGet(ctx, target.GRPCAddr, req)
 }
 
@@ -97,16 +85,11 @@ func (c *Coordinator) Delete(ctx context.Context, req *kvpb.DeleteRequest) (*kvp
 		if err != nil {
 			return nil, err
 		}
-		if c.syncer != nil {
-			go c.pushWriteToPeers(ctx, req.GetKey(), replicas, localID)
-		}
+		go c.pushWriteToPeers(context.Background(), req.GetKey(), replicas, localID)
 		return resp, nil
 	}
 
 	target := hrw.HighestScorer(req.GetKey(), members)
-	if target.GRPCAddr == "" {
-		return c.handleLocalDelete(ctx, req)
-	}
 	return c.forwarder.ForwardDelete(ctx, target.GRPCAddr, req)
 }
 

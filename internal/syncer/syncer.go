@@ -83,9 +83,6 @@ func (s *Syncer) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if s.gossip == nil {
-				continue
-			}
 			for _, peer := range s.gossip.Members() {
 				if peer.ReplicaID == localID {
 					continue // skip self
