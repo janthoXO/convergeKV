@@ -43,7 +43,7 @@ func TestSymmetricDifference(t *testing.T) {
 		b.Insert(onlyB[i])
 	}
 
-	diff := a.Subtract(b)
+	diff := a.SubtractUnsafe(b)
 	gotA, gotB, ok := diff.Decode()
 	if !ok {
 		t.Fatal("Decode failed; expected success for small difference")
@@ -87,7 +87,7 @@ func TestDecodeSmallSucceedsLargeFails(t *testing.T) {
 		a.Insert(item(fmt.Sprintf("item-%d", i)))
 	}
 	empty := iblt.New(IBLT_DEFAULT_CELLS)
-	diff := a.Subtract(empty)
+	diff := a.SubtractUnsafe(empty)
 	_, _, ok := diff.Decode()
 	if !ok {
 		t.Error("expected Decode success for 40-item difference, got failure")
@@ -98,7 +98,7 @@ func TestDecodeSmallSucceedsLargeFails(t *testing.T) {
 	for i := 0; i < 450; i++ {
 		big.Insert(item(fmt.Sprintf("big-item-%d", i)))
 	}
-	diff2 := big.Subtract(iblt.New(IBLT_DEFAULT_CELLS))
+	diff2 := big.SubtractUnsafe(iblt.New(IBLT_DEFAULT_CELLS))
 	_, _, ok2 := diff2.Decode()
 	if ok2 {
 		t.Error("expected Decode failure for 450-item difference, got success")
@@ -109,7 +109,7 @@ func TestDecodeSmallSucceedsLargeFails(t *testing.T) {
 func TestEmptyXorEmpty(t *testing.T) {
 	a := iblt.New(IBLT_DEFAULT_CELLS)
 	b := iblt.New(IBLT_DEFAULT_CELLS)
-	diff := a.Subtract(b)
+	diff := a.SubtractUnsafe(b)
 	onlyA, onlyB, ok := diff.Decode()
 	if !ok {
 		t.Fatal("Decode of empty XOR empty failed")
@@ -128,7 +128,7 @@ func TestInsertDeleteZero(t *testing.T) {
 	t1.Delete(it)
 
 	zero := iblt.New(IBLT_DEFAULT_CELLS) // all cells zero
-	diff := t1.Subtract(zero)
+	diff := t1.SubtractUnsafe(zero)
 	onlyA, onlyB, ok := diff.Decode()
 	if !ok {
 		t.Fatal("Decode failed after Insert+Delete")
@@ -148,7 +148,7 @@ func TestIdempotence(t *testing.T) {
 	t1.Delete(it) // delete once → should still be present once
 
 	empty := iblt.New(IBLT_DEFAULT_CELLS)
-	diff := t1.Subtract(empty)
+	diff := t1.SubtractUnsafe(empty)
 	onlyA, _, ok := diff.Decode()
 	if !ok {
 		t.Fatal("Decode failed in idempotence test")

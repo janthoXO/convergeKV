@@ -35,7 +35,7 @@ func (h *Handler) IBLTExchange(_ context.Context, req *repb.IBLTExchangeRequest)
 
 	// Compute the symmetric difference IBLT.
 	localSnap := h.ibltState.Snapshot()
-	diff := localSnap.Subtract(remoteIBLT)
+	diff := localSnap.SubtractUnsafe(remoteIBLT)
 
 	onlyLocal, onlyRemote, ok := diff.Decode()
 	if !ok {
@@ -46,15 +46,14 @@ func (h *Handler) IBLTExchange(_ context.Context, req *repb.IBLTExchangeRequest)
 	// onlyLocal: items B (us) has that A doesn't → send full entries to A.
 	// onlyRemote: items A has that B (us) doesn't → tell A to send them to us.
 
+	nodeSnap := h.node.Snapshot()
 	itemsForInitiator := make([]*repb.DeltaEntry, 0, len(onlyLocal))
 	for _, itemBytes := range onlyLocal {
 		key, field, replicaID, physMs, logical, deleted, valid := DeserialiseItem(itemBytes)
 		if !valid {
 			continue
 		}
-		// Look up the actual entry in local state.
-		snap := h.node.Snapshot()
-		for _, r := range snap {
+		for _, r := range nodeSnap {
 			if r.Key == key && r.Field == field &&
 				r.Entry.Timestamp.PhysicalMs == physMs &&
 				r.Entry.Timestamp.Logical == logical &&

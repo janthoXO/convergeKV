@@ -51,7 +51,7 @@ func TestIBLTStateRoundTrip(t *testing.T) {
 	is2 := syncer.BuildFromSnapshot(snap, IBLT_DEFAULT_CELLS)
 
 	// The two IBLTs should have identical symmetric difference = empty.
-	diff := is.Snapshot().Subtract(is2.Snapshot())
+	diff := is.Snapshot().SubtractUnsafe(is2.Snapshot())
 	onlyA, onlyB, ok := diff.Decode()
 	if !ok {
 		t.Fatal("diff decode failed — IBLTs diverged")
@@ -80,7 +80,7 @@ func TestDeserialiseItemRoundTrip(t *testing.T) {
 	// Build item bytes manually.
 	snap := is.Snapshot()
 	// We inserted 1 item; subtract empty to get the diff = the one item.
-	diff := snap.Subtract(iblt.New(IBLT_DEFAULT_CELLS))
+	diff := snap.SubtractUnsafe(iblt.New(IBLT_DEFAULT_CELLS))
 	onlyA, _, ok := diff.Decode()
 	if !ok {
 		t.Fatal("decode failed")
@@ -128,7 +128,7 @@ func TestIBLTConvergence(t *testing.T) {
 	snap1 := is1.Snapshot()
 	snap2 := is2.Snapshot()
 
-	diff := snap2.Subtract(snap1) // from n2's perspective
+	diff := snap2.SubtractUnsafe(snap1) // from n2's perspective
 	onlyInN2, onlyInN1, ok := diff.Decode()
 	if !ok {
 		t.Fatal("IBLT decode failed")

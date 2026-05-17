@@ -5,7 +5,6 @@ package syncer
 
 import (
 	"encoding/binary"
-	"sync"
 
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/iblt"
@@ -16,7 +15,6 @@ import (
 // It mirrors the entries in node.Node.state and is kept in sync with every write.
 // IBLTState implements node.IBLTUpdater.
 type IBLTState struct {
-	mu       sync.RWMutex
 	t        *iblt.IBLT
 	numCells int
 }
@@ -94,7 +92,7 @@ func DeserialiseItem(b []byte) (key, field, replicaID string, physMs uint64, log
 		pos += l
 		return s, true
 	}
-	
+
 	var valid bool
 	key, valid = readStr()
 	if !valid {
@@ -126,27 +124,16 @@ func DeserialiseItem(b []byte) (key, field, replicaID string, physMs uint64, log
 
 // InsertEntry adds an entry to the IBLT. Implements node.IBLTUpdater.
 func (s *IBLTState) InsertEntry(key, field string, e crdt.FieldEntry) {
-	item := serialiseItem(key, field, e)
-	s.mu.Lock()
-	s.t.Insert(item)
-	s.mu.Unlock()
+	s.t.Insert(serialiseItem(key, field, e))
 }
 
 // RemoveEntry removes an entry from the IBLT. Implements node.IBLTUpdater.
 func (s *IBLTState) RemoveEntry(key, field string, e crdt.FieldEntry) {
-	item := serialiseItem(key, field, e)
-	s.mu.Lock()
-	s.t.Delete(item)
-	s.mu.Unlock()
+	s.t.Delete(serialiseItem(key, field, e))
 }
 
-// Snapshot returns a copy of the current IBLT for transmission.
-// The copy is taken under a read lock to prevent data races with concurrent writes.
 func (s *IBLTState) Snapshot() *iblt.IBLT {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	// Use Subtract with empty to produce a deep clone.
-	return s.t.Subtract(iblt.New(s.numCells))
+	return s.t.Snapshot()
 }
 
 // BuildFromSnapshot constructs an IBLTState from a full node snapshot.

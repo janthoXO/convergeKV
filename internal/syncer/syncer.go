@@ -103,9 +103,7 @@ func (s *Syncer) SyncWithPeer(ctx context.Context, peer gossip.MemberInfo) {
 	client := repb.NewSyncServiceClient(conn)
 
 	// ── Round 1: send our IBLT, receive what they have vs what we need ─────────
-
-	localSnap := s.ibltState.Snapshot()
-	encoded := localSnap.Encode()
+	encoded := s.ibltState.t.Encode()
 
 	resp, err := client.IBLTExchange(ctx, &repb.IBLTExchangeRequest{
 		ReplicaId: s.node.ReplicaID(),
@@ -134,9 +132,10 @@ func (s *Syncer) SyncWithPeer(ctx context.Context, peer gossip.MemberInfo) {
 		return
 	}
 
+	snap := s.node.Snapshot()
 	var toSend []*repb.DeltaEntry
 	for _, id := range iNeed {
-		entry, found := s.lookupEntry(id.GetKey(), id.GetField(),
+		entry, found := s.lookupEntry(snap, id.GetKey(), id.GetField(),
 			id.GetPhysicalMs(), id.GetLogical(), id.GetReplicaId())
 		if found {
 			toSend = append(toSend, entry)
@@ -231,8 +230,7 @@ func (s *Syncer) applyDeltaEntry(d *repb.DeltaEntry) {
 
 // lookupEntry finds the current entry for (key, field) and verifies that the
 // (physMs, logical, replicaID) match. Returns the proto entry if found.
-func (s *Syncer) lookupEntry(key, field string, physMs uint64, logical uint32, replicaID string) (*repb.DeltaEntry, bool) {
-	snap := s.node.Snapshot()
+func (s *Syncer) lookupEntry(snap []node.KeyFieldEntryTuple, key, field string, physMs uint64, logical uint32, replicaID string) (*repb.DeltaEntry, bool) {
 	for _, r := range snap {
 		if r.Key == key && r.Field == field &&
 			r.Entry.Timestamp.PhysicalMs == physMs &&
