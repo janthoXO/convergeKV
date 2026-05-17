@@ -67,10 +67,13 @@ func main() {
 		log.Fatalf("create node: %v", err)
 	}
 
-	// ── 3. IBLT State — build from persisted node data ────────────────────────
-	ibltState := syncer.BuildFromSnapshot(n.Snapshot(), cfg.IBLTCells)
+	// ── 3. IBLT State — build by streaming persisted data from Badger ─────────
+	ibltState, err := syncer.BuildFromStore(store, cfg.IBLTCells)
+	if err != nil {
+		log.Fatalf("build IBLT: %v", err)
+	}
 	n.SetIBLTState(ibltState)
-	log.Printf("[iblt] built IBLT from %d existing records (%d cells)", len(n.Snapshot()), cfg.IBLTCells)
+	log.Printf("[iblt] built IBLT from persisted records (%d cells)", cfg.IBLTCells)
 
 	// ── 4. Seeds ───────────────────────────────────────────────────────────────
 	var seeds []string
@@ -100,20 +103,20 @@ func main() {
 	defer g.Leave(3 * time.Second)
 
 	// ── 6. Syncer ─────────────────────────────────────────────────────────────
-	sync := syncer.NewSyncer(n, g, ibltState, cfg.RF, time.Duration(cfg.SyncMs)*time.Millisecond)
+	sync := syncer.NewSyncer(n, g, ibltState, store, cfg.RF, time.Duration(cfg.SyncMs)*time.Millisecond)
 	defer sync.Close()
 
 	// ── 7. Forwarder and Coordinator ──────────────────────────────────────────
 	fwd := coordinator.NewForwarder()
 	defer fwd.Close()
 
-	coord := coordinator.New(n, g, fwd, sync, cfg.RF)
+	coord := coordinator.New(n, g, fwd, sync, store, cfg.RF)
 
 	// ── 8. gRPC server ────────────────────────────────────────────────────────
 	srv := grpc.NewServer()
 	kvpb.RegisterKVServiceServer(srv, api.NewHandler(coord, n, seeds))
 	fwdpb.RegisterForwardServiceServer(srv, api.NewForwardHandler(coord))
-	repb.RegisterSyncServiceServer(srv, syncer.NewHandler(n, ibltState))
+	repb.RegisterSyncServiceServer(srv, syncer.NewHandler(n, ibltState, store))
 	reflection.Register(srv)
 
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.GRPCPort))

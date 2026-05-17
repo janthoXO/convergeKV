@@ -9,6 +9,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/node"
+	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
 // Handler implements repb.SyncServiceServer.
@@ -16,11 +17,12 @@ type Handler struct {
 	repb.UnimplementedSyncServiceServer
 	node      *node.Node
 	ibltState *IBLTState
+	store     *storage.Store
 }
 
 // NewHandler returns a Handler ready to register with a gRPC server.
-func NewHandler(n *node.Node, ibltState *IBLTState) *Handler {
-	return &Handler{node: n, ibltState: ibltState}
+func NewHandler(n *node.Node, ibltState *IBLTState, store *storage.Store) *Handler {
+	return &Handler{node: n, ibltState: ibltState, store: store}
 }
 
 // IBLTExchange is the responder side of Round 1.
@@ -43,36 +45,27 @@ func (h *Handler) IBLTExchange(_ context.Context, req *repb.IBLTExchangeRequest)
 		return &repb.IBLTExchangeResponse{Decodable: false}, nil
 	}
 
-	// onlyLocal: items B (us) has that A doesn't → send full entries to A.
-	// onlyRemote: items A has that B (us) doesn't → tell A to send them to us.
+	// onlyLocal: items we have that the initiator doesn't → send full entries.
+	// onlyRemote: items the initiator has that we don't → tell it to send them.
 
-	nodeSnap := h.node.Snapshot()
 	itemsForInitiator := make([]*repb.DeltaEntry, 0, len(onlyLocal))
 	for _, itemBytes := range onlyLocal {
 		key, field, replicaID, physMs, logical, deleted, valid := DeserialiseItem(itemBytes)
 		if !valid {
 			continue
 		}
-		for _, r := range nodeSnap {
-			if r.Key == key && r.Field == field &&
-				r.Entry.Timestamp.PhysicalMs == physMs &&
-				r.Entry.Timestamp.Logical == logical &&
-				r.Entry.ReplicaID == replicaID &&
-				r.Entry.Deleted == deleted {
-				itemsForInitiator = append(itemsForInitiator, &repb.DeltaEntry{
-					Key:       r.Key,
-					Field:     r.Field,
-					ValueJson: r.Entry.Value,
-					Timestamp: &kvpb.HLCTimestamp{
-						PhysicalMs: r.Entry.Timestamp.PhysicalMs,
-						Logical:    r.Entry.Timestamp.Logical,
-					},
-					ReplicaId: r.Entry.ReplicaID,
-					Deleted:   r.Entry.Deleted,
-				})
-				break
-			}
+		entry, found, err := h.store.GetField(key, field)
+		if err != nil || !found {
+			continue
 		}
+		// Verify it's the exact version the IBLT encodes (timestamps must match).
+		if entry.Timestamp.PhysicalMs != physMs ||
+			entry.Timestamp.Logical != logical ||
+			entry.ReplicaID != replicaID ||
+			entry.Deleted != deleted {
+			continue
+		}
+		itemsForInitiator = append(itemsForInitiator, entryToProto(key, field, entry))
 	}
 
 	iNeed := make([]*repb.ItemIdentifier, 0, len(onlyRemote))
@@ -145,23 +138,31 @@ func (h *Handler) FullStateSync(_ context.Context, req *repb.FullStateSyncReques
 		}
 	}
 
-	// Return our full state.
-	localRecords := h.node.Snapshot()
-	resp := make([]*repb.DeltaEntry, 0, len(localRecords))
-	for _, r := range localRecords {
-		resp = append(resp, &repb.DeltaEntry{
-			Key:       r.Key,
-			Field:     r.Field,
-			ValueJson: r.Entry.Value,
-			Timestamp: &kvpb.HLCTimestamp{
-				PhysicalMs: r.Entry.Timestamp.PhysicalMs,
-				Logical:    r.Entry.Timestamp.Logical,
-			},
-			ReplicaId: r.Entry.ReplicaID,
-			Deleted:   r.Entry.Deleted,
-		})
+	// Stream our full state directly from Badger.
+	var resp []*repb.DeltaEntry
+	err := h.store.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
+		resp = append(resp, entryToProto(key, field, entry))
+		return nil
+	})
+	if err != nil {
+		log.Printf("[syncer/handler] FullStateSync iterate: %v", err)
 	}
 
 	log.Printf("[syncer/handler] FullStateSync from %s: applied %d, returning %d", req.GetReplicaId(), len(req.GetEntries()), len(resp))
 	return &repb.FullStateSyncResponse{Entries: resp}, nil
+}
+
+// entryToProto encodes a (key, field, entry) triple into a protobuf DeltaEntry.
+func entryToProto(key, field string, e crdt.FieldEntry) *repb.DeltaEntry {
+	return &repb.DeltaEntry{
+		Key:       key,
+		Field:     field,
+		ValueJson: e.Value,
+		Timestamp: &kvpb.HLCTimestamp{
+			PhysicalMs: e.Timestamp.PhysicalMs,
+			Logical:    e.Timestamp.Logical,
+		},
+		ReplicaId: e.ReplicaID,
+		Deleted:   e.Deleted,
+	}
 }

@@ -69,7 +69,7 @@ func newCoord(t *testing.T, n *node.Node, g *gossip.Gossip, syncer *noOpSyncer) 
 	t.Helper()
 	fwd := coordinator.NewForwarder()
 	t.Cleanup(fwd.Close)
-	return coordinator.New(n, g, fwd, syncer, 1 /*rf=1: local node is always the replica*/)
+	return coordinator.New(n, g, fwd, syncer, n.Store(), 1 /*rf=1: local node is always the replica*/)
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -94,7 +94,10 @@ func TestPutLocalAndPushTriggered(t *testing.T) {
 	}
 
 	// The write must be readable locally.
-	v, found := n.Get("user:1")
+	v, found, err := n.Get("user:1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found {
 		t.Fatal("key not found after Put")
 	}
@@ -132,7 +135,10 @@ func TestDeleteLocalAndPushTriggered(t *testing.T) {
 		t.Error("expected non-nil timestamp in Delete response")
 	}
 
-	_, found := n.Get("doc:1")
+	_, found, err := n.Get("doc:1")
+	if err != nil {
+		t.Fatalf("Get after delete: %v", err)
+	}
 	if found {
 		t.Error("expected key to be gone after Delete")
 	}

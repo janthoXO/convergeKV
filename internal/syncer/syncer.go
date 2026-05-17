@@ -9,13 +9,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	kvpb "github.com/janthoXO/convergeKV/gen/kv"
 	repb "github.com/janthoXO/convergeKV/gen/replication"
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/gossip"
 	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/iblt"
 	"github.com/janthoXO/convergeKV/internal/node"
+	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
 // connPool is a simple connection pool for gRPC connections to peers.
@@ -53,17 +53,19 @@ type Syncer struct {
 	node      *node.Node
 	gossip    *gossip.Gossip
 	ibltState *IBLTState
+	store     *storage.Store
 	pool      *connPool
 	rf        int
 	interval  time.Duration
 }
 
 // NewSyncer constructs a Syncer.
-func NewSyncer(n *node.Node, g *gossip.Gossip, ibltState *IBLTState, rf int, interval time.Duration) *Syncer {
+func NewSyncer(n *node.Node, g *gossip.Gossip, ibltState *IBLTState, store *storage.Store, rf int, interval time.Duration) *Syncer {
 	return &Syncer{
 		node:      n,
 		gossip:    g,
 		ibltState: ibltState,
+		store:     store,
 		pool:      newConnPool(),
 		rf:        rf,
 		interval:  interval,
@@ -132,14 +134,23 @@ func (s *Syncer) SyncWithPeer(ctx context.Context, peer gossip.MemberInfo) {
 		return
 	}
 
-	snap := s.node.Snapshot()
 	var toSend []*repb.DeltaEntry
 	for _, id := range iNeed {
-		entry, found := s.lookupEntry(snap, id.GetKey(), id.GetField(),
-			id.GetPhysicalMs(), id.GetLogical(), id.GetReplicaId())
-		if found {
-			toSend = append(toSend, entry)
+		entry, found, err := s.store.GetField(id.GetKey(), id.GetField())
+		if err != nil {
+			log.Printf("[syncer] GetField key=%s field=%s: %v", id.GetKey(), id.GetField(), err)
+			continue
 		}
+		if !found {
+			continue
+		}
+		// Verify it's the exact version the peer expects.
+		if entry.Timestamp.PhysicalMs != id.GetPhysicalMs() ||
+			entry.Timestamp.Logical != id.GetLogical() ||
+			entry.ReplicaID != id.GetReplicaId() {
+			continue
+		}
+		toSend = append(toSend, entryToProto(id.GetKey(), id.GetField(), entry))
 	}
 
 	if len(toSend) == 0 {
@@ -163,11 +174,14 @@ func (s *Syncer) FullStateFallback(ctx context.Context, peer gossip.MemberInfo) 
 	}
 	client := repb.NewSyncServiceClient(conn)
 
-	// Collect our full state.
-	localRecords := s.node.Snapshot()
-	entries := make([]*repb.DeltaEntry, 0, len(localRecords))
-	for _, r := range localRecords {
-		entries = append(entries, encodeEntry(r))
+	// Stream our full state directly from Badger.
+	var entries []*repb.DeltaEntry
+	if err := s.store.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
+		entries = append(entries, entryToProto(key, field, entry))
+		return nil
+	}); err != nil {
+		log.Printf("[syncer] fallback iterate: %v", err)
+		return
 	}
 
 	resp, err := client.FullStateSync(ctx, &repb.FullStateSyncRequest{
@@ -225,35 +239,6 @@ func (s *Syncer) applyDeltaEntry(d *repb.DeltaEntry) {
 	}
 	if _, err := s.node.ApplyDelta(d.GetKey(), d.GetField(), entry); err != nil {
 		log.Printf("[syncer] apply delta key=%s field=%s: %v", d.GetKey(), d.GetField(), err)
-	}
-}
-
-// lookupEntry finds the current entry for (key, field) and verifies that the
-// (physMs, logical, replicaID) match. Returns the proto entry if found.
-func (s *Syncer) lookupEntry(snap []node.KeyFieldEntryTuple, key, field string, physMs uint64, logical uint32, replicaID string) (*repb.DeltaEntry, bool) {
-	for _, r := range snap {
-		if r.Key == key && r.Field == field &&
-			r.Entry.Timestamp.PhysicalMs == physMs &&
-			r.Entry.Timestamp.Logical == logical &&
-			r.Entry.ReplicaID == replicaID {
-			return encodeEntry(r), true
-		}
-	}
-	return nil, false
-}
-
-// encodeEntry converts a KeyFieldEntryTuple into a protobuf DeltaEntry.
-func encodeEntry(r node.KeyFieldEntryTuple) *repb.DeltaEntry {
-	return &repb.DeltaEntry{
-		Key:       r.Key,
-		Field:     r.Field,
-		ValueJson: r.Entry.Value,
-		Timestamp: &kvpb.HLCTimestamp{
-			PhysicalMs: r.Entry.Timestamp.PhysicalMs,
-			Logical:    r.Entry.Timestamp.Logical,
-		},
-		ReplicaId: r.Entry.ReplicaID,
-		Deleted:   r.Entry.Deleted,
 	}
 }
 

@@ -9,75 +9,161 @@ import (
 	"github.com/janthoXO/convergeKV/internal/hlc"
 )
 
-// TestLoadAllRoundtrip opens a BadgerDB in a temp dir, saves five field entries
-// across two keys, then calls LoadAll and verifies all entries are recovered
-// with correct field values, timestamps, and replica IDs.
-func TestLoadAllRoundtrip(t *testing.T) {
-	dir := t.TempDir()
-	store, err := Open(dir)
+var testEntries = []FieldUpdate{
+	{Key: "user:1", Field: "name", Entry: crdt.FieldEntry{
+		Value:     json.RawMessage(`"Alice"`),
+		Timestamp: hlc.Timestamp{PhysicalMs: 100, Logical: 0},
+		ReplicaID: "r1",
+		Deleted:   false,
+	}},
+	{Key: "user:1", Field: "age", Entry: crdt.FieldEntry{
+		Value:     json.RawMessage(`30`),
+		Timestamp: hlc.Timestamp{PhysicalMs: 200, Logical: 1},
+		ReplicaID: "r2",
+		Deleted:   false,
+	}},
+	{Key: "user:1", Field: "email", Entry: crdt.FieldEntry{
+		Value:     json.RawMessage(`"alice@example.com"`),
+		Timestamp: hlc.Timestamp{PhysicalMs: 150, Logical: 0},
+		ReplicaID: "r1",
+		Deleted:   false,
+	}},
+	{Key: "order:42", Field: "status", Entry: crdt.FieldEntry{
+		Value:     json.RawMessage(`"pending"`),
+		Timestamp: hlc.Timestamp{PhysicalMs: 300, Logical: 0},
+		ReplicaID: "r3",
+		Deleted:   false,
+	}},
+	{Key: "order:42", Field: "amount", Entry: crdt.FieldEntry{
+		Value:     nil,
+		Timestamp: hlc.Timestamp{PhysicalMs: 400, Logical: 2},
+		ReplicaID: "r1",
+		Deleted:   true, // tombstone
+	}},
+}
+
+func openTestStore(t *testing.T) *Store {
+	t.Helper()
+	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer store.Close()
+	t.Cleanup(func() { store.Close() })
+	return store
+}
 
-	entries := []FieldUpdate{
-		{Key: "user:1", Field: "name", Entry: crdt.FieldEntry{
-			Value:     json.RawMessage(`"Alice"`),
-			Timestamp: hlc.Timestamp{PhysicalMs: 100, Logical: 0},
-			ReplicaID: "r1",
-			Deleted:   false,
-		}},
-		{Key: "user:1", Field: "age", Entry: crdt.FieldEntry{
-			Value:     json.RawMessage(`30`),
-			Timestamp: hlc.Timestamp{PhysicalMs: 200, Logical: 1},
-			ReplicaID: "r2",
-			Deleted:   false,
-		}},
-		{Key: "user:1", Field: "email", Entry: crdt.FieldEntry{
-			Value:     json.RawMessage(`"alice@example.com"`),
-			Timestamp: hlc.Timestamp{PhysicalMs: 150, Logical: 0},
-			ReplicaID: "r1",
-			Deleted:   false,
-		}},
-		{Key: "order:42", Field: "status", Entry: crdt.FieldEntry{
-			Value:     json.RawMessage(`"pending"`),
-			Timestamp: hlc.Timestamp{PhysicalMs: 300, Logical: 0},
-			ReplicaID: "r3",
-			Deleted:   false,
-		}},
-		{Key: "order:42", Field: "amount", Entry: crdt.FieldEntry{
-			Value:     nil,
-			Timestamp: hlc.Timestamp{PhysicalMs: 400, Logical: 2},
-			ReplicaID: "r1",
-			Deleted:   true, // tombstone
-		}},
-	}
-
-	if err := store.SaveBatch(entries); err != nil {
+// TestIterateAllRoundtrip saves five entries then verifies IterateAll recovers all of them.
+func TestIterateAllRoundtrip(t *testing.T) {
+	store := openTestStore(t)
+	if err := store.SaveBatch(testEntries); err != nil {
 		t.Fatalf("SaveBatch: %v", err)
 	}
 
-	loaded, err := store.LoadAll()
-	if err != nil {
-		t.Fatalf("LoadAll: %v", err)
+	seen := make(map[string]crdt.FieldEntry)
+	if err := store.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
+		seen[key+"\x00"+field] = entry
+		return nil
+	}); err != nil {
+		t.Fatalf("IterateAll: %v", err)
 	}
 
-	// Verify user:1
-	u1, ok := loaded["user:1"]
-	if !ok {
-		t.Fatal("missing key user:1")
+	if len(seen) != 5 {
+		t.Fatalf("expected 5 entries, got %d", len(seen))
+	}
+	e := seen["user:1\x00name"]
+	checkField(t, crdt.AWLWWMap{Fields: map[string]crdt.FieldEntry{"name": e}}, "name", `"Alice"`, 100, 0, "r1", false)
+}
+
+// TestGetKey reads a single key's AWLWWMap from Badger.
+func TestGetKey(t *testing.T) {
+	store := openTestStore(t)
+	if err := store.SaveBatch(testEntries); err != nil {
+		t.Fatalf("SaveBatch: %v", err)
+	}
+
+	u1, err := store.GetKey("user:1")
+	if err != nil {
+		t.Fatalf("GetKey user:1: %v", err)
 	}
 	checkField(t, u1, "name", `"Alice"`, 100, 0, "r1", false)
 	checkField(t, u1, "age", `30`, 200, 1, "r2", false)
 	checkField(t, u1, "email", `"alice@example.com"`, 150, 0, "r1", false)
 
-	// Verify order:42
-	o42, ok := loaded["order:42"]
-	if !ok {
-		t.Fatal("missing key order:42")
+	o42, err := store.GetKey("order:42")
+	if err != nil {
+		t.Fatalf("GetKey order:42: %v", err)
 	}
 	checkField(t, o42, "status", `"pending"`, 300, 0, "r3", false)
 	checkTombstone(t, o42, "amount", 400, 2, "r1")
+
+	// Missing key returns empty map, not an error.
+	empty, err := store.GetKey("nonexistent")
+	if err != nil {
+		t.Fatalf("GetKey nonexistent: %v", err)
+	}
+	if len(empty.Fields) != 0 {
+		t.Errorf("expected empty map for nonexistent key, got %d fields", len(empty.Fields))
+	}
+}
+
+// TestGetField reads individual (key, field) records.
+func TestGetField(t *testing.T) {
+	store := openTestStore(t)
+	if err := store.SaveBatch(testEntries); err != nil {
+		t.Fatalf("SaveBatch: %v", err)
+	}
+
+	entry, found, err := store.GetField("user:1", "name")
+	if err != nil {
+		t.Fatalf("GetField: %v", err)
+	}
+	if !found {
+		t.Fatal("GetField: not found")
+	}
+	checkField(t, crdt.AWLWWMap{Fields: map[string]crdt.FieldEntry{"name": entry}}, "name", `"Alice"`, 100, 0, "r1", false)
+
+	// Tombstone is also retrievable.
+	tombEntry, found, err := store.GetField("order:42", "amount")
+	if err != nil {
+		t.Fatalf("GetField tombstone: %v", err)
+	}
+	if !found {
+		t.Fatal("GetField tombstone: not found")
+	}
+	checkTombstone(t, crdt.AWLWWMap{Fields: map[string]crdt.FieldEntry{"amount": tombEntry}}, "amount", 400, 2, "r1")
+
+	// Missing returns (zero, false, nil).
+	_, found, err = store.GetField("user:1", "nonexistent")
+	if err != nil {
+		t.Fatalf("GetField missing: %v", err)
+	}
+	if found {
+		t.Error("expected found=false for missing field")
+	}
+}
+
+// TestSaveFieldSingle verifies the single-field save path via GetField.
+func TestSaveFieldSingle(t *testing.T) {
+	store := openTestStore(t)
+
+	entry := crdt.FieldEntry{
+		Value:     json.RawMessage(`"Bob"`),
+		Timestamp: hlc.Timestamp{PhysicalMs: 999, Logical: 3},
+		ReplicaID: "r9",
+		Deleted:   false,
+	}
+	if err := store.SaveField("user:2", "name", entry); err != nil {
+		t.Fatalf("SaveField: %v", err)
+	}
+
+	got, found, err := store.GetField("user:2", "name")
+	if err != nil {
+		t.Fatalf("GetField: %v", err)
+	}
+	if !found {
+		t.Fatal("missing key user:2/name after SaveField")
+	}
+	checkField(t, crdt.AWLWWMap{Fields: map[string]crdt.FieldEntry{"name": got}}, "name", `"Bob"`, 999, 3, "r9", false)
 }
 
 func checkField(t *testing.T, m crdt.AWLWWMap, field, wantValue string, wantPhys uint64, wantLogical uint32, wantReplica string, wantDeleted bool) {
@@ -117,34 +203,4 @@ func checkTombstone(t *testing.T, m crdt.AWLWWMap, field string, wantPhys uint64
 	if e.ReplicaID != wantReplica {
 		t.Errorf("field %q: replicaID=%s, want %s", field, e.ReplicaID, wantReplica)
 	}
-}
-
-// TestSaveFieldSingle verifies the single-field save path.
-func TestSaveFieldSingle(t *testing.T) {
-	dir := t.TempDir()
-	store, err := Open(dir)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
-
-	entry := crdt.FieldEntry{
-		Value:     json.RawMessage(`"Bob"`),
-		Timestamp: hlc.Timestamp{PhysicalMs: 999, Logical: 3},
-		ReplicaID: "r9",
-		Deleted:   false,
-	}
-	if err := store.SaveField("user:2", "name", entry); err != nil {
-		t.Fatalf("SaveField: %v", err)
-	}
-
-	loaded, err := store.LoadAll()
-	if err != nil {
-		t.Fatalf("LoadAll: %v", err)
-	}
-	u2, ok := loaded["user:2"]
-	if !ok {
-		t.Fatal("missing key user:2")
-	}
-	checkField(t, u2, "name", `"Bob"`, 999, 3, "r9", false)
 }
