@@ -353,7 +353,7 @@ func xorBytes(a, b []byte) []byte {
 
 	out := make([]byte, len(a))
 	copy(out, a)
-	
+
 	for i := 0; i < len(b); i++ {
 		out[i] ^= b[i]
 	}
