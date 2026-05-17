@@ -1,6 +1,3 @@
-// Package crdt implements the Add-Wins Last-Write-Wins Map (AWLWWMap) CRDT.
-// Each key stores a field-wise AWLWWMap where individual JSON object fields
-// compete independently under a Last-Write-Wins rule broken by replica ID.
 package crdt
 
 import (
