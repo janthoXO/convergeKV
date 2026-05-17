@@ -19,139 +19,177 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ReplicationService_HashSync_FullMethodName  = "/replication.ReplicationService/HashSync"
-	ReplicationService_DeltaSync_FullMethodName = "/replication.ReplicationService/DeltaSync"
+	SyncService_IBLTExchange_FullMethodName  = "/replication.SyncService/IBLTExchange"
+	SyncService_PushEntries_FullMethodName   = "/replication.SyncService/PushEntries"
+	SyncService_FullStateSync_FullMethodName = "/replication.SyncService/FullStateSync"
 )
 
-// ReplicationServiceClient is the client API for ReplicationService service.
+// SyncServiceClient is the client API for SyncService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type ReplicationServiceClient interface {
-	HashSync(ctx context.Context, in *HashSyncRequest, opts ...grpc.CallOption) (*HashSyncResponse, error)
-	DeltaSync(ctx context.Context, in *DeltaSyncRequest, opts ...grpc.CallOption) (*DeltaSyncResponse, error)
+type SyncServiceClient interface {
+	IBLTExchange(ctx context.Context, in *IBLTExchangeRequest, opts ...grpc.CallOption) (*IBLTExchangeResponse, error)
+	PushEntries(ctx context.Context, in *PushEntriesRequest, opts ...grpc.CallOption) (*PushEntriesResponse, error)
+	FullStateSync(ctx context.Context, in *FullStateSyncRequest, opts ...grpc.CallOption) (*FullStateSyncResponse, error)
 }
 
-type replicationServiceClient struct {
+type syncServiceClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewReplicationServiceClient(cc grpc.ClientConnInterface) ReplicationServiceClient {
-	return &replicationServiceClient{cc}
+func NewSyncServiceClient(cc grpc.ClientConnInterface) SyncServiceClient {
+	return &syncServiceClient{cc}
 }
 
-func (c *replicationServiceClient) HashSync(ctx context.Context, in *HashSyncRequest, opts ...grpc.CallOption) (*HashSyncResponse, error) {
+func (c *syncServiceClient) IBLTExchange(ctx context.Context, in *IBLTExchangeRequest, opts ...grpc.CallOption) (*IBLTExchangeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(HashSyncResponse)
-	err := c.cc.Invoke(ctx, ReplicationService_HashSync_FullMethodName, in, out, cOpts...)
+	out := new(IBLTExchangeResponse)
+	err := c.cc.Invoke(ctx, SyncService_IBLTExchange_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *replicationServiceClient) DeltaSync(ctx context.Context, in *DeltaSyncRequest, opts ...grpc.CallOption) (*DeltaSyncResponse, error) {
+func (c *syncServiceClient) PushEntries(ctx context.Context, in *PushEntriesRequest, opts ...grpc.CallOption) (*PushEntriesResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(DeltaSyncResponse)
-	err := c.cc.Invoke(ctx, ReplicationService_DeltaSync_FullMethodName, in, out, cOpts...)
+	out := new(PushEntriesResponse)
+	err := c.cc.Invoke(ctx, SyncService_PushEntries_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// ReplicationServiceServer is the server API for ReplicationService service.
-// All implementations must embed UnimplementedReplicationServiceServer
+func (c *syncServiceClient) FullStateSync(ctx context.Context, in *FullStateSyncRequest, opts ...grpc.CallOption) (*FullStateSyncResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FullStateSyncResponse)
+	err := c.cc.Invoke(ctx, SyncService_FullStateSync_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SyncServiceServer is the server API for SyncService service.
+// All implementations must embed UnimplementedSyncServiceServer
 // for forward compatibility.
-type ReplicationServiceServer interface {
-	HashSync(context.Context, *HashSyncRequest) (*HashSyncResponse, error)
-	DeltaSync(context.Context, *DeltaSyncRequest) (*DeltaSyncResponse, error)
-	mustEmbedUnimplementedReplicationServiceServer()
+type SyncServiceServer interface {
+	IBLTExchange(context.Context, *IBLTExchangeRequest) (*IBLTExchangeResponse, error)
+	PushEntries(context.Context, *PushEntriesRequest) (*PushEntriesResponse, error)
+	FullStateSync(context.Context, *FullStateSyncRequest) (*FullStateSyncResponse, error)
+	mustEmbedUnimplementedSyncServiceServer()
 }
 
-// UnimplementedReplicationServiceServer must be embedded to have
+// UnimplementedSyncServiceServer must be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
 // pointer dereference when methods are called.
-type UnimplementedReplicationServiceServer struct{}
+type UnimplementedSyncServiceServer struct{}
 
-func (UnimplementedReplicationServiceServer) HashSync(context.Context, *HashSyncRequest) (*HashSyncResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method HashSync not implemented")
+func (UnimplementedSyncServiceServer) IBLTExchange(context.Context, *IBLTExchangeRequest) (*IBLTExchangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method IBLTExchange not implemented")
 }
-func (UnimplementedReplicationServiceServer) DeltaSync(context.Context, *DeltaSyncRequest) (*DeltaSyncResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method DeltaSync not implemented")
+func (UnimplementedSyncServiceServer) PushEntries(context.Context, *PushEntriesRequest) (*PushEntriesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PushEntries not implemented")
 }
-func (UnimplementedReplicationServiceServer) mustEmbedUnimplementedReplicationServiceServer() {}
-func (UnimplementedReplicationServiceServer) testEmbeddedByValue()                            {}
+func (UnimplementedSyncServiceServer) FullStateSync(context.Context, *FullStateSyncRequest) (*FullStateSyncResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FullStateSync not implemented")
+}
+func (UnimplementedSyncServiceServer) mustEmbedUnimplementedSyncServiceServer() {}
+func (UnimplementedSyncServiceServer) testEmbeddedByValue()                     {}
 
-// UnsafeReplicationServiceServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to ReplicationServiceServer will
+// UnsafeSyncServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to SyncServiceServer will
 // result in compilation errors.
-type UnsafeReplicationServiceServer interface {
-	mustEmbedUnimplementedReplicationServiceServer()
+type UnsafeSyncServiceServer interface {
+	mustEmbedUnimplementedSyncServiceServer()
 }
 
-func RegisterReplicationServiceServer(s grpc.ServiceRegistrar, srv ReplicationServiceServer) {
-	// If the following call panics, it indicates UnimplementedReplicationServiceServer was
+func RegisterSyncServiceServer(s grpc.ServiceRegistrar, srv SyncServiceServer) {
+	// If the following call panics, it indicates UnimplementedSyncServiceServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
-	s.RegisterService(&ReplicationService_ServiceDesc, srv)
+	s.RegisterService(&SyncService_ServiceDesc, srv)
 }
 
-func _ReplicationService_HashSync_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(HashSyncRequest)
+func _SyncService_IBLTExchange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IBLTExchangeRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ReplicationServiceServer).HashSync(ctx, in)
+		return srv.(SyncServiceServer).IBLTExchange(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ReplicationService_HashSync_FullMethodName,
+		FullMethod: SyncService_IBLTExchange_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ReplicationServiceServer).HashSync(ctx, req.(*HashSyncRequest))
+		return srv.(SyncServiceServer).IBLTExchange(ctx, req.(*IBLTExchangeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ReplicationService_DeltaSync_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DeltaSyncRequest)
+func _SyncService_PushEntries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PushEntriesRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ReplicationServiceServer).DeltaSync(ctx, in)
+		return srv.(SyncServiceServer).PushEntries(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ReplicationService_DeltaSync_FullMethodName,
+		FullMethod: SyncService_PushEntries_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ReplicationServiceServer).DeltaSync(ctx, req.(*DeltaSyncRequest))
+		return srv.(SyncServiceServer).PushEntries(ctx, req.(*PushEntriesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-// ReplicationService_ServiceDesc is the grpc.ServiceDesc for ReplicationService service.
+func _SyncService_FullStateSync_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FullStateSyncRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SyncServiceServer).FullStateSync(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SyncService_FullStateSync_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SyncServiceServer).FullStateSync(ctx, req.(*FullStateSyncRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// SyncService_ServiceDesc is the grpc.ServiceDesc for SyncService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var ReplicationService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "replication.ReplicationService",
-	HandlerType: (*ReplicationServiceServer)(nil),
+var SyncService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "replication.SyncService",
+	HandlerType: (*SyncServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "HashSync",
-			Handler:    _ReplicationService_HashSync_Handler,
+			MethodName: "IBLTExchange",
+			Handler:    _SyncService_IBLTExchange_Handler,
 		},
 		{
-			MethodName: "DeltaSync",
-			Handler:    _ReplicationService_DeltaSync_Handler,
+			MethodName: "PushEntries",
+			Handler:    _SyncService_PushEntries_Handler,
+		},
+		{
+			MethodName: "FullStateSync",
+			Handler:    _SyncService_FullStateSync_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

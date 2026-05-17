@@ -9,14 +9,15 @@ import (
 // It advances the HLC with the remote timestamp.
 // Returns true if the incoming entry actually changed local state.
 //
+// Under quorum=1 multi-writer with HRW, the coordinator and push routing ensure
+// that entries normally arrive only at nodes that are HRW replicas for the key.
+// However, entries arriving via IBLT sync may transiently come for keys where
+// this node is not currently a replica (due to membership view differences).
+// The CRDT merge is safe to apply regardless; IBLT sync self-corrects once
+// membership views converge.
+//
 // Concurrent ApplyDelta calls for different keys proceed without blocking each other.
 func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, error) {
-	// Reject data we are not responsible for.
-	// This prevents unintended data accumulation during ring transitions.
-	if !n.isReplica(key) {
-		return false, nil
-	}
-
 	_ = n.hlc.Receive(incoming.Timestamp) // advance HLC; has its own internal mutex
 
 	kl := n.getKeyLock(key)
@@ -30,12 +31,15 @@ func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, er
 		return false, nil // local entry already wins; no change
 	}
 
-	// incoming wins — update the Merkle tree.
-	if exists {
-		n.removeTree(key, field, existing)
+	// incoming wins — update the IBLT.
+	if n.ibltState != nil {
+		if exists {
+			n.ibltState.RemoveEntry(key, field, existing)
+		}
+		n.ibltState.InsertEntry(key, field, incoming)
 	}
+
 	crdt.Apply(&m, field, incoming)
-	n.updateTree(key, field, incoming)
 	n.commitKey(key, m)
 
 	err := n.store.SaveBatch([]storage.FieldUpdate{

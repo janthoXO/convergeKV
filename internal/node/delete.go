@@ -36,10 +36,9 @@ func (n *Node) Delete(key string) (hlc.Timestamp, error) {
 
 		m.Fields[field] = tombstone
 
-		// Only update the Merkle tree for keys this node is responsible for.
-		if n.isReplica(key) {
-			n.removeTree(key, field, old)
-			n.updateTree(key, field, tombstone)
+		if n.ibltState != nil {
+			n.ibltState.RemoveEntry(key, field, old)
+			n.ibltState.InsertEntry(key, field, tombstone)
 		}
 
 		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: tombstone})
