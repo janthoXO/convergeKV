@@ -20,9 +20,8 @@ import (
 func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, error) {
 	_ = n.hlc.Receive(incoming.Timestamp) // advance HLC; has its own internal mutex
 
-	kl := n.getKeyLock(key)
-	kl.Lock()
-	defer kl.Unlock()
+	release := n.acquireKey(key)
+	defer release()
 
 	existingEntry, exists, err := n.store.GetField(key, field)
 	if err != nil {

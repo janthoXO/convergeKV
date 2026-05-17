@@ -15,9 +15,8 @@ import (
 func (n *Node) Delete(key string) (hlc.Timestamp, error) {
 	ts := n.hlc.Send()
 
-	kl := n.getKeyLock(key)
-	kl.Lock()
-	defer kl.Unlock()
+	release := n.acquireKey(key)
+	defer release()
 
 	m, err := n.store.GetKey(key)
 	if err != nil {

@@ -24,9 +24,8 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, error) {
 	ts := n.hlc.Send()
 
 	// Serialise writes to this key; writes to other keys are unaffected.
-	kl := n.getKeyLock(key)
-	kl.Lock()
-	defer kl.Unlock()
+	release := n.acquireKey(key)
+	defer release()
 
 	// Read current field values from Badger so we can compute IBLT removals.
 	existing, err := n.store.GetKey(key)
