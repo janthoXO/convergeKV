@@ -79,7 +79,7 @@ func (n *Node) ReplicaID() string { return n.replicaID }
 func (n *Node) HLCNow() hlc.Timestamp { return n.hlc.Now() }
 
 // ReceiveHLC advances the node's HLC with a remote timestamp.
-func (n *Node) ReceiveHLC(remote hlc.Timestamp) hlc.Timestamp {
+func (n *Node) ReceiveHLC(remote hlc.Timestamp) (hlc.Timestamp, error) {
 	return n.hlc.Receive(remote)
 }
 

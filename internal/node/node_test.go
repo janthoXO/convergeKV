@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
@@ -128,11 +129,11 @@ func TestApplyDeltaHigherTimestampWins(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	// Incoming delta from a peer with a timestamp far in the future (year ~2999),
-	// ensuring it beats whatever wall-clock time the Put assigned.
+	// Incoming delta from a peer with a timestamp 1 second ahead of wall time,
+	// ensuring it beats whatever timestamp the Put assigned while staying within drift limits.
 	incoming := crdt.FieldEntry{
 		Value:     json.RawMessage(`"Bob"`),
-		Timestamp: hlc.Timestamp{PhysicalMs: 32503680000000, Logical: 0}, // ~year 2999
+		Timestamp: hlc.Timestamp{PhysicalMs: uint64(time.Now().UnixMilli()) + 1000, Logical: 0},
 		ReplicaID: "r2",
 		Deleted:   false,
 	}

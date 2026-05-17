@@ -4,9 +4,14 @@
 package hlc
 
 import (
+	"errors"
 	"sync"
 	"time"
 )
+
+// ErrClockDrift is returned by Receive when the remote timestamp is more than
+// MAX_CLOCK_DRIFT_MS ahead of local wall time.
+var ErrClockDrift = errors.New("hlc: remote timestamp exceeds max clock drift")
 
 // Timestamp is a Hybrid Logical Clock value.
 // It is totally ordered: compare PhysicalMs first, then Logical.
@@ -39,21 +44,34 @@ func (h *HLC) Send() Timestamp {
 	return h.currentTimestamp
 }
 
+const MAX_CLOCK_DRIFT_MS = 10 * 60 * 1000 // 10 minutes
+
 // Receive is called when a message carrying remote timestamp r arrives.
 // It advances the local clock to be strictly greater than both the local
 // state and the remote timestamp, then returns the new timestamp.
-func (h *HLC) Receive(remoteTimestamp Timestamp) Timestamp {
+// Returns ErrClockDrift if the remote physical time is more than
+// MAX_CLOCK_DRIFT_MS ahead of local wall time.
+func (h *HLC) Receive(remoteTimestamp Timestamp) (Timestamp, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	pt := wallMs()
-	maxPhys := max(pt, max(h.currentTimestamp.PhysicalMs, remoteTimestamp.PhysicalMs))
+
+	if remoteTimestamp.PhysicalMs > pt+MAX_CLOCK_DRIFT_MS {
+		return h.currentTimestamp, ErrClockDrift
+	}
+
+	maxPhys := max(pt, h.currentTimestamp.PhysicalMs, remoteTimestamp.PhysicalMs)
+
 	switch {
 	case maxPhys > h.currentTimestamp.PhysicalMs && maxPhys > remoteTimestamp.PhysicalMs:
 		h.currentTimestamp = Timestamp{PhysicalMs: maxPhys, Logical: 0}
+
 	case maxPhys == h.currentTimestamp.PhysicalMs && maxPhys > remoteTimestamp.PhysicalMs:
 		h.currentTimestamp.Logical++
+
 	case maxPhys == remoteTimestamp.PhysicalMs && maxPhys > h.currentTimestamp.PhysicalMs:
 		h.currentTimestamp = Timestamp{PhysicalMs: maxPhys, Logical: remoteTimestamp.Logical + 1}
+
 	default: // maxPhys == both physical parts
 		if h.currentTimestamp.Logical >= remoteTimestamp.Logical {
 			h.currentTimestamp.Logical++
@@ -62,7 +80,7 @@ func (h *HLC) Receive(remoteTimestamp Timestamp) Timestamp {
 		}
 	}
 
-	return h.currentTimestamp
+	return h.currentTimestamp, nil
 }
 
 // Now returns the current clock value without advancing it.
