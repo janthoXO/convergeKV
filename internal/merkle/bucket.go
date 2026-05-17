@@ -1,19 +1,15 @@
 package merkle
 
-import (
-	"crypto/sha256"
-	"encoding/binary"
-)
+import "github.com/janthoXO/convergeKV/internal/partition"
 
-// NumBuckets is the number of leaf nodes in the tree.
-// Must be a power of 2. 256 is a reasonable default for a small cluster;
-// increase to 1024 for larger datasets.
-const NumBuckets = 256
+// NumPartitions is the number of leaf nodes in the Merkle tree.
+// Must equal partition.NSlots so that Merkle leaf i == slot i exactly.
+// This invariant is verified by TestSlotIndexAgreement in this package.
+const NumPartitions = partition.NSlots // 4096
 
-// BucketIndex returns the leaf bucket (0 to NumBuckets-1) for a given key.
-// Uses the first 8 bytes of SHA-256 as a stable, uniform hash.
-func BucketIndex(key string) int {
-	h := sha256.Sum256([]byte(key))
-	v := binary.BigEndian.Uint64(h[:8])
-	return int(v % NumBuckets)
+// PartitionIndex maps a key to a leaf index in [0, NumPartitions).
+// Delegates to partition.SlotIndex so there is only one implementation of the
+// key→slot hash. The two values are equal by construction.
+func PartitionIndex(key string) int {
+	return partition.SlotIndex(key)
 }

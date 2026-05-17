@@ -1,0 +1,29 @@
+graph TD
+
+    Client([Client Application])
+
+    subgraph Replica1
+        PublicHandler[Public Handler]
+        ForwardHandler[Forward Handler]
+
+        Coordinator[Coordinator]
+
+        Node[Node]
+        MerkleTree[Merkle Tree]
+        HLC[HLC]
+        CRDT[CRDT]
+        Storage[(Storage)]
+
+        Hashring[Hash Ring]
+        Gossip[Gossip]
+    end
+
+    replica2([Replica 2])
+
+    Client -->|1. Put data| PublicHandler
+    PublicHandler -->|2. Forward| Coordinator
+    Coordinator -->|3. Check Hash| Coordinator
+    Coordinator -->|4. Put Local| Node
+
+    Node -->|5. | 
+

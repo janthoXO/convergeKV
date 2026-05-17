@@ -6,10 +6,12 @@ package node
 import (
 	"maps"
 	"sync"
+	"sync/atomic"
 
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/merkle"
+	"github.com/janthoXO/convergeKV/internal/partition"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
@@ -28,9 +30,13 @@ import (
 //
 //   - The HLC has its own internal mutex and is always safe to call without
 //     holding any of the above locks.
+//
+//   - slotMap is an atomic pointer: reads are lock-free, writes atomically
+//     swap the pointer so in-flight reads always see a consistent map.
 type Node struct {
 	replicaID string
 	hlc       *hlc.HLC
+	slotMap   atomic.Pointer[partition.SlotMap] // nil = accept everything (bootstrap)
 
 	// stateMu guards the state map structure. Held only for map reads/writes.
 	stateMu sync.RWMutex
@@ -80,27 +86,50 @@ func (n *Node) ReceiveHLC(remote hlc.Timestamp) hlc.Timestamp {
 	return n.hlc.Receive(remote)
 }
 
+// UpdateSlotMap atomically replaces the node's slot map.
+// Called by main.go whenever gossip fires onSlotMapChange.
+func (n *Node) UpdateSlotMap(sm partition.SlotMap) {
+	n.slotMap.Store(&sm)
+}
+
+// SlotMap returns the current slot map, or nil if not yet set.
+func (n *Node) SlotMap() *partition.SlotMap {
+	return n.slotMap.Load()
+}
+
+// isReplica returns true if this node is in the replica set for key.
+// If the slot map is not yet set (startup bootstrap), returns true so that
+// data is always accepted until the map is installed.
+func (n *Node) isReplica(key string) bool {
+	sm := n.slotMap.Load()
+	if sm == nil {
+		return true
+	}
+	return sm.IsReplica(key, n.replicaID)
+}
+
+// IsReplica returns true if this node is a replica for key.
+func (n *Node) IsReplica(key string) bool {
+	return n.isReplica(key)
+}
+
 // MerkleTree returns the node's live Merkle tree.
 // The replication layer reads from this to build sync messages.
 func (n *Node) MerkleTree() *merkle.MerkleTree {
 	return n.tree
 }
 
-// SnapshotBuckets returns all DeltaRecords whose key maps to one of the given buckets.
-// Used by the replication handler to answer Phase 2 requests.
-func (n *Node) SnapshotBuckets(buckets []int) []KeyFieldEntryTuple {
-	// Build a set for O(1) lookup.
-	wanted := make(map[int]struct{}, len(buckets))
-	for _, b := range buckets {
-		wanted[b] = struct{}{}
-	}
-
+// SnapshotPartitions returns all KeyFieldEntryTuples whose key maps to one
+// of the given partition (slot) indices. Used by the replication handler to answer
+// Phase 2 (DeltaSync) requests.
+func (n *Node) SnapshotPartitions(partitions map[int]struct{}) []KeyFieldEntryTuple {
 	n.stateMu.RLock()
 	defer n.stateMu.RUnlock()
 
 	var out []KeyFieldEntryTuple
 	for key, m := range n.state {
-		if _, ok := wanted[merkle.BucketIndex(key)]; !ok {
+		slot := merkle.PartitionIndex(key)
+		if _, ok := partitions[slot]; !ok {
 			continue
 		}
 		for field, entry := range m.Fields {

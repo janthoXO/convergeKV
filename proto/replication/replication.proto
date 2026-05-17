@@ -13,19 +13,34 @@ message DeltaEntry {
   bool deleted = 6;
 }
 
+// HashSyncRequest now sends hashes for a sparse subset of partitions.
+// Only partitions shared between the two co-replicas are included.
 message HashSyncRequest {
   string replica_id = 1;
-  repeated bytes bucket_hashes = 2;
+
+  // partition_hashes maps partition index → 32-byte hash for that partition.
+  // Only shared partitions are included (not all NumPartitions).
+  map<int32, bytes> partition_hashes = 2;
 }
 
+// HashSyncResponse returns hashes for the same set of partitions,
+// plus the list of partitions where the hashes differ.
 message HashSyncResponse {
-  repeated int32 divergent_buckets = 1;
-  repeated bytes bucket_hashes = 2;
+  // divergent_partitions lists partition indices where the receiver's hash
+  // differs from the sender's hash for that partition.
+  repeated int32 divergent_partitions = 1;
+
+  // partition_hashes mirrors the sender's requested partitions with the
+  // receiver's own hashes, so the sender can compute ITS own missing partitions.
+  map<int32, bytes> partition_hashes = 2;
 }
 
 message DeltaSyncRequest {
-  string replica_id = 1;
-  repeated int32 buckets = 2;
+  string         replica_id   = 1;
+  repeated int32 partitions   = 2;  // renamed from 'buckets'
+  // requester_id is the ReplicaID of the node making this request.
+  // The responder uses it to filter entries to only those the requester owns.
+  string         requester_id = 3;
 }
 
 message DeltaSyncResponse {
@@ -36,5 +51,3 @@ service ReplicationService {
   rpc HashSync(HashSyncRequest) returns (HashSyncResponse);
   rpc DeltaSync(DeltaSyncRequest) returns (DeltaSyncResponse);
 }
-
-

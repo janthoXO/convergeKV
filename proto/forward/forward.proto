@@ -1,0 +1,18 @@
+syntax = "proto3";
+package forward;
+option go_package = "github.com/janthoXO/convergeKV/gen/forward";
+
+import "kv/kv.proto";
+
+// ForwardService is called between nodes when a coordinator needs to route
+// a client request to the correct replica set.
+service ForwardService {
+  // ForwardPut forwards a put request to the primary for the key.
+  rpc ForwardPut    (kv.PutRequest)    returns (kv.PutResponse);
+
+  // ForwardGet forwards a get request to any replica for the key.
+  rpc ForwardGet    (kv.GetRequest)    returns (kv.GetResponse);
+
+  // ForwardDelete forwards a delete request to the primary for the key.
+  rpc ForwardDelete (kv.DeleteRequest) returns (kv.DeleteResponse);
+}

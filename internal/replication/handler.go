@@ -3,83 +3,100 @@ package replication
 import (
 	"context"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
 	repb "github.com/janthoXO/convergeKV/gen/replication"
 	"github.com/janthoXO/convergeKV/internal/merkle"
 	"github.com/janthoXO/convergeKV/internal/node"
+	"github.com/janthoXO/convergeKV/internal/partition"
 )
 
 // Handler implements repb.ReplicationServiceServer.
 type Handler struct {
 	repb.UnimplementedReplicationServiceServer
-	node *node.Node
+	node    *node.Node
+	slotMap func() partition.SlotMap // returns the current slot map snapshot
 }
 
 // NewHandler returns a ready-to-register Handler.
-func NewHandler(n *node.Node) *Handler {
-	return &Handler{node: n}
+// getSlotMap may be nil (disables ownership filtering — used in tests).
+func NewHandler(n *node.Node, getSlotMap func() partition.SlotMap) *Handler {
+	return &Handler{node: n, slotMap: getSlotMap}
 }
 
-// HashSync handles Phase 1. The caller sends its bucket hashes; we reply with
-// which buckets differ (so the caller knows what to request from us) and our
-// own bucket hashes (so the caller can tell us what WE are missing from them).
+// HashSync handles Phase 1. The caller sends a sparse map of partition hashes
+// (only shared partitions); we reply with which of those differ and our own
+// hashes for the same partitions.
 func (h *Handler) HashSync(_ context.Context, req *repb.HashSyncRequest) (*repb.HashSyncResponse, error) {
-	if len(req.BucketHashes) != merkle.NumBuckets {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"expected %d bucket hashes, got %d", merkle.NumBuckets, len(req.BucketHashes))
-	}
+	peerHashes := req.GetPartitionHashes() // map[int32][]byte
 
-	// Convert wire format ([][]byte) to []merkle.Hash.
-	peerHashes := make([]merkle.Hash, merkle.NumBuckets)
-	for i, b := range req.BucketHashes {
-		if len(b) != 32 {
-			return nil, status.Errorf(codes.InvalidArgument, "bucket hash %d: want 32 bytes, got %d", i, len(b))
+	myHashesForSender := make(map[int32][]byte, len(peerHashes))
+	var divergent []int32
+
+	for partInt32, peerHashBytes := range peerHashes {
+		partition := int(partInt32)
+		if partition < 0 || partition >= merkle.NumPartitions {
+			continue
 		}
-		copy(peerHashes[i][:], b)
-	}
 
-	// Find which of our buckets differ from the peer's.
-	divergent := h.node.MerkleTree().DivergentBuckets(peerHashes)
-	divergentInt32 := make([]int32, len(divergent))
-	for i, d := range divergent {
-		divergentInt32[i] = int32(d)
-	}
+		myHash := h.node.MerkleTree().PartitionHash(partition)
 
-	// Send back our own bucket hashes so the peer can find what IT is missing.
-	myHashes := h.node.MerkleTree().AllBucketHashes()
-	myHashesBytes := make([][]byte, merkle.NumBuckets)
-	for i, bh := range myHashes {
-		cp := make([]byte, 32)
-		copy(cp, bh[:])
-		myHashesBytes[i] = cp
+		// Record our hash for this partition so the sender can compute
+		// what IT is missing from us.
+		myHashBytes := make([]byte, 32)
+		copy(myHashBytes, myHash[:])
+		myHashesForSender[partInt32] = myHashBytes
+
+		// Compare
+		if len(peerHashBytes) != 32 {
+			divergent = append(divergent, partInt32)
+			continue
+		}
+		var peerHash merkle.Hash
+		copy(peerHash[:], peerHashBytes)
+		if myHash != peerHash {
+			divergent = append(divergent, partInt32)
+		}
 	}
 
 	return &repb.HashSyncResponse{
-		DivergentBuckets: divergentInt32,
-		BucketHashes:     myHashesBytes,
+		DivergentPartitions: divergent,
+		PartitionHashes:     myHashesForSender,
 	}, nil
 }
 
-// DeltaSync handles Phase 2. The caller lists the buckets it needs entries for.
+// DeltaSync handles Phase 2. The caller lists the partitions it needs entries for.
+// Only entries that the requester is responsible for (per slot map) are included.
 func (h *Handler) DeltaSync(_ context.Context, req *repb.DeltaSyncRequest) (*repb.DeltaSyncResponse, error) {
-	buckets := make([]int, len(req.Buckets))
-	for i, b := range req.Buckets {
-		buckets[i] = int(b)
+	partitionSet := make(map[int]struct{}, len(req.GetPartitions()))
+	for _, p := range req.GetPartitions() {
+		partitionSet[int(p)] = struct{}{}
 	}
 
-	records := h.node.SnapshotBuckets(buckets)
+	records := h.node.SnapshotPartitions(partitionSet)
 	deltas := make([]*repb.DeltaEntry, 0, len(records))
+	requesterID := req.GetRequesterId()
+
+	var sm *partition.SlotMap
+	if h.slotMap != nil && requesterID != "" {
+		s := h.slotMap()
+		sm = &s
+	}
+
 	for _, rec := range records {
+		// Filter to only entries the requester is supposed to hold.
+		if sm != nil {
+			slot := merkle.PartitionIndex(rec.Key)
+			if !sm.IsReplicaForSlot(slot, requesterID) {
+				continue
+			}
+		}
 		deltas = append(deltas, encodeEntry(rec))
 	}
 
 	return &repb.DeltaSyncResponse{Deltas: deltas}, nil
 }
 
-// encodeEntry converts a DeltaRecord into a protobuf DeltaEntry for the wire.
+// encodeEntry converts a KeyFieldEntryTuple into a protobuf DeltaEntry for the wire.
 func encodeEntry(rec node.KeyFieldEntryTuple) *repb.DeltaEntry {
 	return &repb.DeltaEntry{
 		Key:       rec.Key,
