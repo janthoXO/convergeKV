@@ -24,6 +24,14 @@ type IBLTUpdater interface {
 // Replaces the old KeyFieldEntryTuple name for clarity.
 type DeltaRecord = KeyFieldEntryTuple
 
+// keyEntry is the per-key lock with a reference count.
+// refs counts goroutines that have acquired (or are waiting to acquire) the lock.
+// When refs drops to zero the entry is removed from keyLocks.
+type keyEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
 // Node is the central state holder. It is safe for concurrent use.
 //
 // Concurrency model
@@ -31,6 +39,8 @@ type DeltaRecord = KeyFieldEntryTuple
 //   - keyLocks provides per-key write serialisation.
 //     A write to key "A" and a write to key "B" proceed concurrently.
 //     Two concurrent writes to key "A" are serialised.
+//     Entries are reference-counted and removed from the map when no goroutine
+//     holds or awaits the lock, so the map stays bounded to hot keys only.
 //
 //   - The HLC has its own internal mutex and is always safe to call without
 //     holding any of the above locks.
@@ -46,7 +56,7 @@ type Node struct {
 
 	// locksMu guards the keyLocks map itself (not the per-key locks).
 	locksMu  sync.Mutex
-	keyLocks map[string]*sync.RWMutex
+	keyLocks map[string]*keyEntry
 
 	store *storage.Store
 }
@@ -57,7 +67,7 @@ func New(replicaID string, store *storage.Store) (*Node, error) {
 	return &Node{
 		replicaID: replicaID,
 		hlc:       hlc.New(),
-		keyLocks:  make(map[string]*sync.RWMutex),
+		keyLocks:  make(map[string]*keyEntry),
 		store:     store,
 	}, nil
 }
@@ -84,17 +94,35 @@ func (n *Node) SetIBLTState(s IBLTUpdater) {
 // to perform direct Badger reads without going through the node's write path.
 func (n *Node) Store() *storage.Store { return n.store }
 
-// getKeyLock returns the per-key RWMutex for key, creating it lazily.
-// Must NOT be called while holding another getKeyLock.
-func (n *Node) getKeyLock(key string) *sync.RWMutex {
+// acquireKey locks the per-key mutex and returns a release function that unlocks
+// it and decrements the reference count, removing the entry from keyLocks if
+// the count reaches zero.
+//
+// Usage:
+//
+//	release := n.acquireKey(key)
+//	defer release()
+func (n *Node) acquireKey(key string) func() {
+	// Increment the ref count while holding locksMu so the entry cannot be
+	// deleted between the lookup and the mu.Lock() call below.
 	n.locksMu.Lock()
-	defer n.locksMu.Unlock()
-
-	if l, ok := n.keyLocks[key]; ok {
-		return l
+	e, ok := n.keyLocks[key]
+	if !ok {
+		e = &keyEntry{}
+		n.keyLocks[key] = e
 	}
+	e.refs++
+	n.locksMu.Unlock()
 
-	l := &sync.RWMutex{}
-	n.keyLocks[key] = l
-	return l
+	e.mu.Lock()
+
+	return func() {
+		e.mu.Unlock()
+		n.locksMu.Lock()
+		e.refs--
+		if e.refs == 0 {
+			delete(n.keyLocks, key)
+		}
+		n.locksMu.Unlock()
+	}
 }
