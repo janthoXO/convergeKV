@@ -25,9 +25,12 @@ func TestReceiveAdvancesBeyondBoth(t *testing.T) {
 	h := New()
 	local := h.Send()
 
-	// Create a remote timestamp well ahead of local.
+	// Create a remote timestamp well ahead of local but within drift limit.
 	remote := Timestamp{PhysicalMs: local.PhysicalMs + 1000, Logical: 5}
-	result := h.Receive(remote)
+	result, err := h.Receive(remote)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if !Less(local, result) {
 		t.Errorf("result %+v should be > local %+v", result, local)
@@ -47,10 +50,31 @@ func TestReceiveWithOlderRemote(t *testing.T) {
 
 	// Remote is far in the past.
 	remote := Timestamp{PhysicalMs: 1, Logical: 0}
-	result := h.Receive(remote)
+	result, err := h.Receive(remote)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if !Less(local, result) {
 		t.Errorf("result %+v should be > local %+v after Receive with old remote", result, local)
+	}
+}
+
+// TestReceiveFutureDriftRejected verifies that a remote timestamp beyond
+// MAX_CLOCK_DRIFT_MS in the future is rejected and the local clock is unchanged.
+func TestReceiveFutureDriftRejected(t *testing.T) {
+	h := New()
+	before := h.Send()
+
+	// Remote timestamp is way in the future (simulates a broken/malicious peer).
+	remote := Timestamp{PhysicalMs: before.PhysicalMs + MAX_CLOCK_DRIFT_MS + 1, Logical: 0}
+	result, err := h.Receive(remote)
+	if err != ErrClockDrift {
+		t.Fatalf("expected ErrClockDrift, got err=%v result=%+v", err, result)
+	}
+	// Local clock must be unchanged.
+	if !Equal(result, before) {
+		t.Errorf("clock advanced despite drift rejection: before=%+v after=%+v", before, result)
 	}
 }
 

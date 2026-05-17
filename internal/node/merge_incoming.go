@@ -18,7 +18,9 @@ import (
 //
 // Concurrent ApplyDelta calls for different keys proceed without blocking each other.
 func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, error) {
-	_ = n.hlc.Receive(incoming.Timestamp) // advance HLC; has its own internal mutex
+	if _, err := n.hlc.Receive(incoming.Timestamp); err != nil {
+		return false, err
+	}
 
 	release := n.acquireKey(key)
 	defer release()
