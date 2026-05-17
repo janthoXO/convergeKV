@@ -9,7 +9,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	cenv "github.com/caarlos0/env/v11"
@@ -59,7 +61,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("open storage: %v", err)
 	}
-	defer store.Close()
 
 	// ── 2. Node ────────────────────────────────────────────────────────────────
 	n, err := node.New(cfg.ReplicaID, store)
@@ -100,15 +101,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("start gossip: %v", err)
 	}
-	defer g.Leave(3 * time.Second)
 
 	// ── 6. Syncer ─────────────────────────────────────────────────────────────
 	sync := syncer.NewSyncer(n, g, ibltState, store, cfg.RF, time.Duration(cfg.SyncMs)*time.Millisecond)
-	defer sync.Close()
 
 	// ── 7. Forwarder and Coordinator ──────────────────────────────────────────
 	fwd := coordinator.NewForwarder()
-	defer fwd.Close()
 
 	coord := coordinator.New(n, g, fwd, sync, store, cfg.RF)
 
@@ -126,12 +124,25 @@ func main() {
 	log.Printf("[%s] gRPC listening on :%d", cfg.ReplicaID, cfg.GRPCPort)
 
 	// ── 9. Anti-entropy loop ──────────────────────────────────────────────────
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	go sync.Run(ctx)
 
-	// ── 10. Serve (blocking) ──────────────────────────────────────────────────
-	if err := srv.Serve(lis); err != nil {
+	// ── 10. Serve (blocking until signal) ─────────────────────────────────────
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(lis) }()
+
+	select {
+	case err := <-serveErr:
 		log.Fatalf("serve: %v", err)
+	case <-ctx.Done():
+		log.Printf("[%s] shutting down…", cfg.ReplicaID)
 	}
+
+	// Shutdown order: stop RPCs → sync → gossip → storage
+	srv.GracefulStop()
+	sync.Close()
+	fwd.Close()
+	g.Leave(3 * time.Second)
+	store.Close()
 }
