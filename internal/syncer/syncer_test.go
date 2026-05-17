@@ -31,8 +31,21 @@ func tempNode(t *testing.T, id string) *node.Node {
 	return n
 }
 
+// countRecords counts (key, field) pairs in a node's store via IterateAll.
+func countRecords(t *testing.T, n *node.Node) int {
+	t.Helper()
+	count := 0
+	if err := n.Store().IterateAll(func(_, _ string, _ crdt.FieldEntry) error {
+		count++
+		return nil
+	}); err != nil {
+		t.Fatalf("IterateAll: %v", err)
+	}
+	return count
+}
+
 // TestIBLTStateRoundTrip verifies that the IBLTState serialisation is
-// deterministic and that a snapshot matches the current node state.
+// deterministic and that an IBLT built from the store matches the live one.
 func TestIBLTStateRoundTrip(t *testing.T) {
 	n := tempNode(t, "test-node")
 	is := syncer.NewIBLTState(IBLT_DEFAULT_CELLS)
@@ -46,9 +59,11 @@ func TestIBLTStateRoundTrip(t *testing.T) {
 		}
 	}
 
-	// Build a second IBLTState from the snapshot and compare.
-	snap := n.Snapshot()
-	is2 := syncer.BuildFromSnapshot(snap, IBLT_DEFAULT_CELLS)
+	// Build a second IBLTState directly from the store and compare.
+	is2, err := syncer.BuildFromStore(n.Store(), IBLT_DEFAULT_CELLS)
+	if err != nil {
+		t.Fatalf("BuildFromStore: %v", err)
+	}
 
 	// The two IBLTs should have identical symmetric difference = empty.
 	diff := is.Snapshot().SubtractUnsafe(is2.Snapshot())
@@ -144,22 +159,23 @@ func TestIBLTConvergence(t *testing.T) {
 	}
 
 	// Now sync: n1 applies n2's items, n2 applies n1's items.
+	// Use GetField instead of iterating a full snapshot.
 	for _, itemBytes := range onlyInN2 {
 		k, f, rID, physMs, logical, deleted, valid := syncer.DeserialiseItem(itemBytes)
 		if !valid {
 			t.Fatal("invalid item bytes")
 		}
-		// Find the entry in n2's snapshot.
-		for _, r := range n2.Snapshot() {
-			if r.Key == k && r.Field == f &&
-				r.Entry.Timestamp.PhysicalMs == physMs &&
-				r.Entry.Timestamp.Logical == logical &&
-				r.Entry.ReplicaID == rID &&
-				r.Entry.Deleted == deleted {
-				if _, err := n1.ApplyDelta(r.Key, r.Field, r.Entry); err != nil {
-					t.Fatal(err)
-				}
-				break
+		entry, found, err := n2.Store().GetField(k, f)
+		if err != nil {
+			t.Fatalf("GetField n2 %s/%s: %v", k, f, err)
+		}
+		if found &&
+			entry.Timestamp.PhysicalMs == physMs &&
+			entry.Timestamp.Logical == logical &&
+			entry.ReplicaID == rID &&
+			entry.Deleted == deleted {
+			if _, err := n1.ApplyDelta(k, f, entry); err != nil {
+				t.Fatal(err)
 			}
 		}
 	}
@@ -168,27 +184,28 @@ func TestIBLTConvergence(t *testing.T) {
 		if !valid {
 			t.Fatal("invalid item bytes")
 		}
-		for _, r := range n1.Snapshot() {
-			if r.Key == k && r.Field == f &&
-				r.Entry.Timestamp.PhysicalMs == physMs &&
-				r.Entry.Timestamp.Logical == logical &&
-				r.Entry.ReplicaID == rID &&
-				r.Entry.Deleted == deleted {
-				if _, err := n2.ApplyDelta(r.Key, r.Field, r.Entry); err != nil {
-					t.Fatal(err)
-				}
-				break
+		entry, found, err := n1.Store().GetField(k, f)
+		if err != nil {
+			t.Fatalf("GetField n1 %s/%s: %v", k, f, err)
+		}
+		if found &&
+			entry.Timestamp.PhysicalMs == physMs &&
+			entry.Timestamp.Logical == logical &&
+			entry.ReplicaID == rID &&
+			entry.Deleted == deleted {
+			if _, err := n2.ApplyDelta(k, f, entry); err != nil {
+				t.Fatal(err)
 			}
 		}
 	}
 
 	// Both nodes should now have 10 keys.
-	snap1After := n1.Snapshot()
-	snap2After := n2.Snapshot()
-	if len(snap1After) != 10 {
-		t.Errorf("n1: expected 10 records after sync, got %d", len(snap1After))
+	count1 := countRecords(t, n1)
+	count2 := countRecords(t, n2)
+	if count1 != 10 {
+		t.Errorf("n1: expected 10 records after sync, got %d", count1)
 	}
-	if len(snap2After) != 10 {
-		t.Errorf("n2: expected 10 records after sync, got %d", len(snap2After))
+	if count2 != 10 {
+		t.Errorf("n2: expected 10 records after sync, got %d", count2)
 	}
 }

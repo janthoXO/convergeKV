@@ -1,5 +1,5 @@
 // Package syncer manages the IBLT-based anti-entropy synchronisation protocol.
-// It maintains an incremental IBLT that mirrors the node's in-memory state,
+// It maintains an incremental IBLT that mirrors the node's durable state,
 // and runs a background loop that reconciles state with every cluster peer.
 package syncer
 
@@ -8,11 +8,11 @@ import (
 
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/iblt"
-	"github.com/janthoXO/convergeKV/internal/node"
+	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
 // IBLTState wraps a live IBLT and an RWMutex.
-// It mirrors the entries in node.Node.state and is kept in sync with every write.
+// It mirrors the entries persisted in BadgerDB and is kept in sync with every write.
 // IBLTState implements node.IBLTUpdater.
 type IBLTState struct {
 	t        *iblt.IBLT
@@ -136,12 +136,16 @@ func (s *IBLTState) Snapshot() *iblt.IBLT {
 	return s.t.Snapshot()
 }
 
-// BuildFromSnapshot constructs an IBLTState from a full node snapshot.
-// Used on startup after loading all entries from BadgerDB.
-func BuildFromSnapshot(records []node.KeyFieldEntryTuple, numCells int) *IBLTState {
+// BuildFromStore constructs an IBLTState by streaming all entries from BadgerDB.
+// Called once at startup to initialise the IBLT from persisted data.
+func BuildFromStore(store *storage.Store, numCells int) (*IBLTState, error) {
 	s := NewIBLTState(numCells)
-	for _, r := range records {
-		s.InsertEntry(r.Key, r.Field, r.Entry)
+	err := store.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
+		s.InsertEntry(key, field, entry)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return s
+	return s, nil
 }

@@ -26,6 +26,19 @@ func openNode(t *testing.T, replicaID string) *Node {
 	return n
 }
 
+// countEntries returns the number of (key, field) records in the node's store.
+func countEntries(t *testing.T, n *Node) int {
+	t.Helper()
+	count := 0
+	if err := n.store.IterateAll(func(_, _ string, _ crdt.FieldEntry) error {
+		count++
+		return nil
+	}); err != nil {
+		t.Fatalf("IterateAll: %v", err)
+	}
+	return count
+}
+
 // TestPutThenGet verifies a Put followed by a Get on a single node.
 func TestPutThenGet(t *testing.T) {
 	n := openNode(t, "r1")
@@ -33,7 +46,10 @@ func TestPutThenGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	v, found := n.Get("user:1")
+	v, found, err := n.Get("user:1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found {
 		t.Fatal("Get: not found after Put")
 	}
@@ -63,7 +79,10 @@ func TestPutOverlappingFields(t *testing.T) {
 		t.Fatalf("Put 2: %v", err)
 	}
 
-	v, found := n.Get("user:1")
+	v, found, err := n.Get("user:1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found {
 		t.Fatal("Get: not found")
 	}
@@ -91,7 +110,10 @@ func TestDeleteThenGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	_, found := n.Get("user:1")
+	_, found, err := n.Get("user:1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if found {
 		t.Error("expected found=false after Delete")
 	}
@@ -122,7 +144,10 @@ func TestApplyDeltaHigherTimestampWins(t *testing.T) {
 		t.Error("expected changed=true")
 	}
 
-	v, found := n.Get("user:1")
+	v, found, err := n.Get("user:1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found {
 		t.Fatal("Get: not found")
 	}
@@ -159,7 +184,10 @@ func TestApplyDeltaLowerTimestampIsNoop(t *testing.T) {
 		t.Error("expected changed=false for lower-timestamp delta")
 	}
 
-	v, found := n.Get("user:1")
+	v, found, err := n.Get("user:1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found {
 		t.Fatal("Get: not found")
 	}
@@ -197,7 +225,11 @@ func TestConcurrentWritesDifferentKeys(t *testing.T) {
 
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key:%d", i)
-		v, found := n.Get(key)
+		v, found, err := n.Get(key)
+		if err != nil {
+			t.Errorf("key %s: Get error: %v", key, err)
+			continue
+		}
 		if !found {
 			t.Errorf("key %s not found after concurrent writes", key)
 			continue
@@ -212,8 +244,8 @@ func TestConcurrentWritesDifferentKeys(t *testing.T) {
 	}
 }
 
-// TestSnapshotAfterPuts verifies that Snapshot returns the correct number of entries
-// after a series of Put calls with different fields.
+// TestSnapshotAfterPuts verifies that the store contains the correct number of
+// (key, field) entries after a series of Put calls with different fields.
 func TestSnapshotAfterPuts(t *testing.T) {
 	n := openNode(t, "r1")
 	if _, err := n.Put("user:1", `{"name":"Alice"}`); err != nil {
@@ -223,14 +255,14 @@ func TestSnapshotAfterPuts(t *testing.T) {
 		t.Fatalf("Put city: %v", err)
 	}
 
-	snap := n.Snapshot()
-	if len(snap) != 2 {
-		t.Errorf("expected 2 snapshot entries (name + city fields), got %d", len(snap))
+	count := countEntries(t, n)
+	if count != 2 {
+		t.Errorf("expected 2 stored entries (name + city fields), got %d", count)
 	}
 }
 
 // TestSnapshotDifferentKeys verifies that two nodes with different values
-// for the same (key, field) both have one snapshot entry each.
+// for the same (key, field) both have one stored entry each.
 func TestSnapshotDifferentKeys(t *testing.T) {
 	nA := openNode(t, "r1")
 	nB := openNode(t, "r2")
@@ -242,13 +274,19 @@ func TestSnapshotDifferentKeys(t *testing.T) {
 		t.Fatalf("nodeB Put: %v", err)
 	}
 
-	snapA := nA.Snapshot()
-	snapB := nB.Snapshot()
-	if len(snapA) != 1 || len(snapB) != 1 {
-		t.Errorf("expected 1 entry each, got snapA=%d snapB=%d", len(snapA), len(snapB))
+	countA := countEntries(t, nA)
+	countB := countEntries(t, nB)
+	if countA != 1 || countB != 1 {
+		t.Errorf("expected 1 entry each, got countA=%d countB=%d", countA, countB)
 	}
-	// The values should differ.
-	if string(snapA[0].Entry.Value) == string(snapB[0].Entry.Value) {
+
+	// The stored values should differ.
+	eA, foundA, _ := nA.store.GetField("user:1", "name")
+	eB, foundB, _ := nB.store.GetField("user:1", "name")
+	if !foundA || !foundB {
+		t.Fatal("expected entries in both stores")
+	}
+	if string(eA.Value) == string(eB.Value) {
 		t.Error("expected different values, got same")
 	}
 }

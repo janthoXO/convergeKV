@@ -24,27 +24,28 @@ func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, er
 	kl.Lock()
 	defer kl.Unlock()
 
-	m := n.snapshotKey(key)
+	existingEntry, exists, err := n.store.GetField(key, field)
+	if err != nil {
+		return false, err
+	}
 
-	existing, exists := m.Fields[field]
-	if exists && !crdt.WinsOver(incoming, existing) {
+	if exists && !crdt.WinsOver(incoming, existingEntry) {
 		return false, nil // local entry already wins; no change
 	}
 
-	// incoming wins — update the IBLT.
+	// incoming wins — persist first, then update IBLT.
+	if err := n.store.SaveBatch([]storage.FieldUpdate{
+		{Key: key, Field: field, Entry: incoming},
+	}); err != nil {
+		return false, err
+	}
+
 	if n.ibltState != nil {
 		if exists {
-			n.ibltState.RemoveEntry(key, field, existing)
+			n.ibltState.RemoveEntry(key, field, existingEntry)
 		}
 		n.ibltState.InsertEntry(key, field, incoming)
 	}
 
-	crdt.Apply(&m, field, incoming)
-	n.commitKey(key, m)
-
-	err := n.store.SaveBatch([]storage.FieldUpdate{
-		{Key: key, Field: field, Entry: incoming},
-	})
-
-	return true, err
+	return true, nil
 }

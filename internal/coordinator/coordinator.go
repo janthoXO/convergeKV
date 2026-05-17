@@ -10,6 +10,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/gossip"
 	"github.com/janthoXO/convergeKV/internal/hrw"
 	"github.com/janthoXO/convergeKV/internal/node"
+	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
 // PushSyncer is the minimal interface the coordinator needs from the syncer
@@ -27,12 +28,13 @@ type Coordinator struct {
 	gossip    *gossip.Gossip
 	forwarder *Forwarder
 	syncer    PushSyncer
+	store     *storage.Store
 	rf        int
 }
 
 // New returns a Coordinator.
-func New(n *node.Node, g *gossip.Gossip, f *Forwarder, syncer PushSyncer, rf int) *Coordinator {
-	return &Coordinator{node: n, gossip: g, forwarder: f, syncer: syncer, rf: rf}
+func New(n *node.Node, g *gossip.Gossip, f *Forwarder, syncer PushSyncer, store *storage.Store, rf int) *Coordinator {
+	return &Coordinator{node: n, gossip: g, forwarder: f, syncer: syncer, store: store, rf: rf}
 }
 
 // Put handles a put request.
@@ -66,7 +68,10 @@ func (c *Coordinator) Get(ctx context.Context, req *kvpb.GetRequest) (*kvpb.GetR
 	localID := c.node.ReplicaID()
 
 	if len(replicas) == 0 || containsID(replicas, localID) {
-		v, found := c.node.Get(req.GetKey())
+		v, found, err := c.node.Get(req.GetKey())
+		if err != nil {
+			return nil, fmt.Errorf("coordinator: local get: %w", err)
+		}
 		return &kvpb.GetResponse{ValueJson: v, Found: found}, nil
 	}
 
@@ -115,26 +120,28 @@ func (c *Coordinator) handleLocalDelete(_ context.Context, req *kvpb.DeleteReque
 	}, nil
 }
 
-// pushWriteToPeers collects the current entries for key from the node snapshot
-// and pushes them to the other HRW replicas via PushEntries.
+// pushWriteToPeers reads the current entries for key from Badger and pushes
+// them to the other HRW replicas via PushEntries.
 // Called asynchronously from the write path; errors are logged but not retried.
 func (c *Coordinator) pushWriteToPeers(ctx context.Context, key string, replicas []gossip.MemberInfo, localID string) {
-	snap := c.node.Snapshot()
+	m, err := c.store.GetKey(key)
+	if err != nil {
+		log.Printf("[coordinator] pushWriteToPeers: GetKey %s: %v", key, err)
+		return
+	}
+
 	var entries []*repb.DeltaEntry
-	for _, r := range snap {
-		if r.Key != key {
-			continue
-		}
+	for field, e := range m.Fields {
 		entries = append(entries, &repb.DeltaEntry{
-			Key:       r.Key,
-			Field:     r.Field,
-			ValueJson: r.Entry.Value,
+			Key:       key,
+			Field:     field,
+			ValueJson: e.Value,
 			Timestamp: &kvpb.HLCTimestamp{
-				PhysicalMs: r.Entry.Timestamp.PhysicalMs,
-				Logical:    r.Entry.Timestamp.Logical,
+				PhysicalMs: e.Timestamp.PhysicalMs,
+				Logical:    e.Timestamp.Logical,
 			},
-			ReplicaId: r.Entry.ReplicaID,
-			Deleted:   r.Entry.Deleted,
+			ReplicaId: e.ReplicaID,
+			Deleted:   e.Deleted,
 		})
 	}
 	if len(entries) == 0 {

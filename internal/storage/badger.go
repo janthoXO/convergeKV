@@ -66,12 +66,83 @@ func (s *Store) SaveField(key, field string, entry crdt.FieldEntry) error {
 	})
 }
 
-// LoadAll reads every (key, field) record from BadgerDB and returns the full
-// in-memory state as map[key]AWLWWMap. Called once at node startup.
-func (s *Store) LoadAll() (map[string]crdt.AWLWWMap, error) {
-	result := make(map[string]crdt.AWLWWMap)
+// decodeEntry unmarshals a stored value blob into a crdt.FieldEntry.
+func decodeEntry(v []byte) (crdt.FieldEntry, error) {
+	var se StoredEntry
+	if err := json.Unmarshal(v, &se); err != nil {
+		return crdt.FieldEntry{}, err
+	}
+	return crdt.FieldEntry{
+		Value:     se.ValueJSON,
+		Timestamp: hlc.Timestamp{PhysicalMs: se.PhysicalMs, Logical: se.Logical},
+		ReplicaID: se.ReplicaID,
+		Deleted:   se.Deleted,
+	}, nil
+}
+
+// GetKey reads all fields for a key from BadgerDB and returns them as an AWLWWMap.
+// Returns an empty map (not an error) when the key has no records.
+func (s *Store) GetKey(key string) (crdt.AWLWWMap, error) {
+	m := crdt.NewAWLWWMap()
+	prefix := []byte(key + "\x00")
 
 	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			k := item.KeyCopy(nil)
+			v, err := item.ValueCopy(nil)
+			if err != nil {
+				return err
+			}
+			_, field := decodeKey(k)
+			entry, err := decodeEntry(v)
+			if err != nil {
+				return err
+			}
+			m.Fields[field] = entry
+		}
+		return nil
+	})
+	return m, err
+}
+
+// GetField reads a single (key, field) record from BadgerDB.
+// Returns (entry, true, nil) if found, (zero, false, nil) if absent.
+func (s *Store) GetField(key, field string) (crdt.FieldEntry, bool, error) {
+	var entry crdt.FieldEntry
+	var found bool
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(badgerKey(key, field))
+		if err == badger.ErrKeyNotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		v, err := item.ValueCopy(nil)
+		if err != nil {
+			return err
+		}
+		entry, err = decodeEntry(v)
+		if err != nil {
+			return err
+		}
+		found = true
+		return nil
+	})
+	return entry, found, err
+}
+
+// IterateAll streams every (key, field, entry) record from BadgerDB, calling fn
+// for each. Iteration stops early and returns fn's error if fn returns non-nil.
+func (s *Store) IterateAll(fn func(key, field string, entry crdt.FieldEntry) error) error {
+	return s.db.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
 
@@ -82,31 +153,17 @@ func (s *Store) LoadAll() (map[string]crdt.AWLWWMap, error) {
 			if err != nil {
 				return err
 			}
-
-			var se StoredEntry
-			if err := json.Unmarshal(v, &se); err != nil {
+			key, field := decodeKey(k)
+			entry, err := decodeEntry(v)
+			if err != nil {
 				return err
 			}
-
-			mapKey, field := decodeKey(k)
-			m, ok := result[mapKey]
-			if !ok {
-				m = crdt.NewAWLWWMap()
+			if err := fn(key, field, entry); err != nil {
+				return err
 			}
-
-			m.Fields[field] = crdt.FieldEntry{
-				Value:     se.ValueJSON,
-				Timestamp: hlc.Timestamp{PhysicalMs: se.PhysicalMs, Logical: se.Logical},
-				ReplicaID: se.ReplicaID,
-				Deleted:   se.Deleted,
-			}
-			result[mapKey] = m
 		}
-
 		return nil
 	})
-
-	return result, err
 }
 
 // SaveBatch persists a batch of field entries atomically (used during replication).
