@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	github.com/caarlos0/env/v11 v11.4.0
+	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/hashicorp/memberlist v0.5.4
 	github.com/joho/godotenv v1.5.1
@@ -13,7 +14,6 @@ require (
 
 require (
 	github.com/armon/go-metrics v0.4.1 // indirect
-	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dgraph-io/ristretto/v2 v2.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect

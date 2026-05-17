@@ -5,12 +5,13 @@
 package iblt
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
 	"sync"
+
+	"github.com/cespare/xxhash/v2"
 )
 
 const (
@@ -44,37 +45,28 @@ func New(numCells int) *IBLT {
 	}
 }
 
-// hashItem returns the uint64 fingerprint of an item used in HashSum.
-func hashItem(item []byte) uint64 {
-	h := sha256.Sum256(item)
-	return binary.BigEndian.Uint64(h[:8])
-}
+// itemHashes returns the fingerprint and deduplicated cell indices for item.
+// h1 = xxhash(item) is the fingerprint; h2 = xxhash(0xff || item) is an
+// independent secondary hash. The enhanced double-hashing formula
+// (h1 + i·h2) % numCells maps item to k cell indices in two hash calls.
+func itemHashes(item []byte, numCells int) (fingerprint uint64, indices []int) {
+	h1 := xxhash.Sum64(item)
 
-// cellIndex returns the i-th (0-indexed) cell index for item.
-// Uses SHA-256(seed_byte || item) to derive a stable, independent index.
-func cellIndex(item []byte, funcIdx int, numCells int) int {
-	h := sha256.New()
-	h.Write([]byte{byte(funcIdx)})
-	h.Write(item)
-	sum := h.Sum(nil)
-	idx := binary.BigEndian.Uint64(sum[:8])
-	return int(idx % uint64(numCells))
-}
+	var d xxhash.Digest
+	d.Reset()
+	d.Write([]byte{0xff})
+	d.Write(item)
+	h2 := d.Sum64()
 
-// cellIndices returns the deduplicated cell indices for item across all hash functions.
-// Duplicates occur when two hash functions map to the same cell; applying the same
-// cell twice corrupts Count and cancels the XOR.
-func cellIndices(item []byte, numCells int) []int {
-	out := make([]int, 0, numHashFuncs)
-
-	for i := range numHashFuncs {
-		idx := cellIndex(item, i, numCells)
-		if !slices.Contains(out, idx) {
-			out = append(out, idx)
+	fingerprint = h1
+	indices = make([]int, 0, numHashFuncs)
+	for i := range uint64(numHashFuncs) {
+		idx := int((h1 + i*h2) % uint64(numCells))
+		if !slices.Contains(indices, idx) {
+			indices = append(indices, idx)
 		}
 	}
-
-	return out
+	return
 }
 
 // lenPrefixed returns a new byte slice with a 4-byte big-endian length prefix followed by the item bytes.
@@ -87,13 +79,13 @@ func lenPrefixed(item []byte) []byte {
 
 // Insert adds item to the IBLT.
 func (t *IBLT) Insert(item []byte) {
-	hv := hashItem(item)
+	hv, indices := itemHashes(item, t.NumCells)
 	lp := lenPrefixed(item)
 
 	t.globalMu.RLock()
 	defer t.globalMu.RUnlock()
 
-	for _, idx := range cellIndices(item, t.NumCells) {
+	for _, idx := range indices {
 		t.mu[idx].Lock()
 		t.Cells[idx].Count++
 		t.Cells[idx].KeySum = xorBytes(t.Cells[idx].KeySum, lp)
@@ -103,10 +95,10 @@ func (t *IBLT) Insert(item []byte) {
 }
 
 func (t *IBLT) insertUnsafe(item []byte) {
-	hv := hashItem(item)
+	hv, indices := itemHashes(item, t.NumCells)
 	lp := lenPrefixed(item)
 
-	for _, idx := range cellIndices(item, t.NumCells) {
+	for _, idx := range indices {
 		t.Cells[idx].Count++
 		t.Cells[idx].KeySum = xorBytes(t.Cells[idx].KeySum, lp)
 		t.Cells[idx].HashSum ^= hv
@@ -116,13 +108,13 @@ func (t *IBLT) insertUnsafe(item []byte) {
 // Delete removes item from the IBLT.
 // Equivalent to Insert but decrements Count (XOR is its own inverse).
 func (t *IBLT) Delete(item []byte) {
-	hv := hashItem(item)
+	hv, indices := itemHashes(item, t.NumCells)
 	lp := lenPrefixed(item)
 
 	t.globalMu.RLock()
 	defer t.globalMu.RUnlock()
 
-	for _, idx := range cellIndices(item, t.NumCells) {
+	for _, idx := range indices {
 		t.mu[idx].Lock()
 		t.Cells[idx].Count--
 		t.Cells[idx].KeySum = xorBytes(t.Cells[idx].KeySum, lp)
@@ -132,10 +124,10 @@ func (t *IBLT) Delete(item []byte) {
 }
 
 func (t *IBLT) deleteUnsafe(item []byte) {
-	hv := hashItem(item)
+	hv, indices := itemHashes(item, t.NumCells)
 	lp := lenPrefixed(item)
 
-	for _, idx := range cellIndices(item, t.NumCells) {
+	for _, idx := range indices {
 		t.Cells[idx].Count--
 		t.Cells[idx].KeySum = xorBytes(t.Cells[idx].KeySum, lp)
 		t.Cells[idx].HashSum ^= hv
@@ -201,7 +193,7 @@ func isPure(c *Cell) bool {
 	if !ok {
 		return false
 	}
-	return hashItem(item) == c.HashSum
+	return xxhash.Sum64(item) == c.HashSum
 }
 
 // Decode attempts to peel the IBLT to recover the symmetric difference.
