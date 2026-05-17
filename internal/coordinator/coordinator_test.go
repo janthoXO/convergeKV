@@ -3,6 +3,7 @@ package coordinator_test
 import (
 	"context"
 	"os"
+	"sync/atomic"
 	"testing"
 
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
@@ -17,7 +18,7 @@ import (
 // It records calls so tests can assert that pushes were (or were not) triggered,
 // but performs no real network I/O.
 type noOpSyncer struct {
-	calls int
+	calls atomic.Int64
 }
 
 func (s *noOpSyncer) PushToPeers(
@@ -26,7 +27,7 @@ func (s *noOpSyncer) PushToPeers(
 	_ []gossip.MemberInfo,
 	_ string,
 ) {
-	s.calls++
+	s.calls.Add(1)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
