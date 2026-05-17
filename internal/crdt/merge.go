@@ -1,5 +1,7 @@
 package crdt
 
+import "maps"
+
 import "encoding/json"
 
 // Merge computes the join of two AWLWWMap values.
@@ -17,9 +19,7 @@ func Merge(a, b AWLWWMap) AWLWWMap {
 	result := NewAWLWWMap()
 
 	// Start with a copy of a.
-	for field, entry := range a.Fields {
-		result.Fields[field] = entry
-	}
+	maps.Copy(result.Fields, a.Fields)
 
 	// Merge in every field from b.
 	for field, bEntry := range b.Fields {
@@ -37,10 +37,13 @@ func Apply(m *AWLWWMap, field string, incoming FieldEntry) {
 	if m.Fields == nil {
 		m.Fields = make(map[string]FieldEntry)
 	}
+
 	existing, exists := m.Fields[field]
 	if !exists || WinsOver(incoming, existing) {
 		m.Fields[field] = incoming
 	}
+
+	// otherwise keep state of existing entry, which wins over incoming
 }
 
 // ToJSON reconstructs the JSON object represented by m.

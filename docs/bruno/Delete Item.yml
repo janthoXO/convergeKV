@@ -1,11 +1,11 @@
 info:
-  name: Get Item
+  name: Delete Item
   type: grpc
-  seq: 3
+  seq: 4
 
 grpc:
   url: "{{base_url}}"
-  method: /kv.KVService/Get
+  method: /kv.KVService/Delete
   methodType: unary
   protoFilePath: ../../proto/kv/kv.proto
   message: |-

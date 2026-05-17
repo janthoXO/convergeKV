@@ -211,3 +211,43 @@ func TestConcurrentWritesDifferentKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestMerkleTreeNonZeroAfterPuts verifies that the Merkle root is non-zero after
+// two Put calls for the same key with different fields.
+func TestMerkleTreeNonZeroAfterPuts(t *testing.T) {
+	n := openNode(t, "r1")
+	_, err := n.Put("user:1", `{"name":"Alice"}`)
+	if err != nil {
+		t.Fatalf("Put name: %v", err)
+	}
+	_, err = n.Put("user:1", `{"city":"Geneva"}`)
+	if err != nil {
+		t.Fatalf("Put city: %v", err)
+	}
+
+	var zeroHash [32]byte
+	root := n.MerkleTree().Root()
+	if root == zeroHash {
+		t.Error("expected non-zero Merkle root after two Puts, got zero hash")
+	}
+}
+
+// TestMerkleTreeDifferentRootsForDifferentValues verifies that two nodes with
+// different values for the same (key, field) produce different Merkle roots.
+func TestMerkleTreeDifferentRootsForDifferentValues(t *testing.T) {
+	nA := openNode(t, "r1")
+	nB := openNode(t, "r2")
+
+	if _, err := nA.Put("user:1", `{"name":"Alice"}`); err != nil {
+		t.Fatalf("nodeA Put: %v", err)
+	}
+	if _, err := nB.Put("user:1", `{"name":"Bob"}`); err != nil {
+		t.Fatalf("nodeB Put: %v", err)
+	}
+
+	rootA := nA.MerkleTree().Root()
+	rootB := nB.MerkleTree().Root()
+	if rootA == rootB {
+		t.Error("expected different Merkle roots for nodes with different values, but roots were equal")
+	}
+}

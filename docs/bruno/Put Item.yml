@@ -1,7 +1,7 @@
 info:
   name: Put Item
   type: grpc
-  seq: 1
+  seq: 2
 
 grpc:
   url: "{{base_url}}"
@@ -11,6 +11,6 @@ grpc:
   message: |-
     {
       "key": "user:1",
-      "value_json": "{\"neu\":30}"
+      "value_json": "{\"wo\":30}"
     }
   auth: inherit
