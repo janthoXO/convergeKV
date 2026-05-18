@@ -181,7 +181,7 @@ func (h *Handler) FullStateSync(stream repb.SyncService_FullStateSyncServer) err
 	if err := <-recvDone; err != nil {
 		return err
 	}
-	
+
 	log.Printf("[syncer/handler] FullStateSync from %s: applied %d, sent %d", initiatorID, applied, sent)
 	return nil
 }
