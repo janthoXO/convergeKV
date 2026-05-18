@@ -2,47 +2,27 @@ package coordinator
 
 import (
 	"context"
-	"sync"
-
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	fwdpb "github.com/janthoXO/convergeKV/gen/forward"
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
+	"github.com/janthoXO/convergeKV/internal/connpool"
 )
 
-// Forwarder maintains a pool of gRPC connections to peer nodes and
-// provides methods to forward client requests to them.
+// Forwarder forwards client requests to peer nodes over gRPC.
 type Forwarder struct {
-	mu    sync.Mutex
-	conns map[string]*grpc.ClientConn // keyed by grpc addr
+	pool *connpool.Pool
 }
 
-// NewForwarder returns an empty Forwarder.
-func NewForwarder() *Forwarder {
-	return &Forwarder{conns: make(map[string]*grpc.ClientConn)}
-}
-
-// Close shuts down all pooled connections.
-func (f *Forwarder) Close() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, c := range f.conns {
-		c.Close()
-	}
+// NewForwarder returns a Forwarder backed by the given shared connection pool.
+func NewForwarder(pool *connpool.Pool) *Forwarder {
+	return &Forwarder{pool: pool}
 }
 
 func (f *Forwarder) clientFor(addr string) (fwdpb.ForwardServiceClient, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if conn, ok := f.conns[addr]; ok {
-		return fwdpb.NewForwardServiceClient(conn), nil
-	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := f.pool.Get(addr)
 	if err != nil {
 		return nil, err
 	}
-	f.conns[addr] = conn
 	return fwdpb.NewForwardServiceClient(conn), nil
 }
 

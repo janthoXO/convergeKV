@@ -2,14 +2,12 @@ package syncer
 
 import (
 	"context"
+	"io"
 	"log"
-	"sync"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
 	repb "github.com/janthoXO/convergeKV/gen/replication"
+	"github.com/janthoXO/convergeKV/internal/connpool"
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/gossip"
 	"github.com/janthoXO/convergeKV/internal/hlc"
@@ -18,62 +16,30 @@ import (
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
-// connPool is a simple connection pool for gRPC connections to peers.
-type connPool struct {
-	mu    sync.Mutex
-	conns map[string]*grpc.ClientConn
-}
-
-func newConnPool() *connPool { return &connPool{conns: make(map[string]*grpc.ClientConn)} }
-
-func (p *connPool) get(addr string) (*grpc.ClientConn, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if c, ok := p.conns[addr]; ok {
-		return c, nil
-	}
-	c, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, err
-	}
-	p.conns[addr] = c
-	return c, nil
-}
-
-func (p *connPool) close() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, c := range p.conns {
-		c.Close()
-	}
-}
-
 // Syncer runs the IBLT-based anti-entropy loop and handles push-on-write.
 type Syncer struct {
 	node      *node.Node
 	gossip    *gossip.Gossip
 	ibltState *IBLTState
 	store     *storage.Store
-	pool      *connPool
-	rf        int
+	pool      *connpool.Pool
 	interval  time.Duration
 }
 
-// NewSyncer constructs a Syncer.
-func NewSyncer(n *node.Node, g *gossip.Gossip, ibltState *IBLTState, store *storage.Store, rf int, interval time.Duration) *Syncer {
+// NewSyncer constructs a Syncer backed by the given shared connection pool.
+func NewSyncer(n *node.Node, g *gossip.Gossip, ibltState *IBLTState, store *storage.Store, pool *connpool.Pool, interval time.Duration) *Syncer {
 	return &Syncer{
 		node:      n,
 		gossip:    g,
 		ibltState: ibltState,
 		store:     store,
-		pool:      newConnPool(),
-		rf:        rf,
+		pool:      pool,
 		interval:  interval,
 	}
 }
 
-// Close shuts down all pooled gRPC connections.
-func (s *Syncer) Close() { s.pool.close() }
+// Close is a no-op; the caller owns the pool's lifecycle.
+func (s *Syncer) Close() {}
 
 // Run starts the anti-entropy loop. Call in a goroutine. Stops when ctx is cancelled.
 func (s *Syncer) Run(ctx context.Context) {
@@ -97,7 +63,7 @@ func (s *Syncer) Run(ctx context.Context) {
 
 // SyncWithPeer runs the two-round IBLT reconciliation protocol as the initiator.
 func (s *Syncer) SyncWithPeer(ctx context.Context, peer gossip.MemberInfo) {
-	conn, err := s.pool.get(peer.GRPCAddr)
+	conn, err := s.pool.Get(peer.GRPCAddr)
 	if err != nil {
 		log.Printf("[syncer] dial %s: %v", peer.GRPCAddr, err)
 		return
@@ -166,37 +132,62 @@ func (s *Syncer) SyncWithPeer(ctx context.Context, peer gossip.MemberInfo) {
 }
 
 // FullStateFallback exchanges complete snapshots when IBLT decode fails.
+// Uses a bidirectional streaming RPC so neither side buffers the full dataset.
 func (s *Syncer) FullStateFallback(ctx context.Context, peer gossip.MemberInfo) {
-	conn, err := s.pool.get(peer.GRPCAddr)
+	conn, err := s.pool.Get(peer.GRPCAddr)
 	if err != nil {
 		log.Printf("[syncer] fallback dial %s: %v", peer.GRPCAddr, err)
 		return
 	}
-	client := repb.NewSyncServiceClient(conn)
-
-	// Stream our full state directly from Badger.
-	var entries []*repb.DeltaEntry
-	if err := s.store.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
-		entries = append(entries, entryToProto(key, field, entry))
-		return nil
-	}); err != nil {
-		log.Printf("[syncer] fallback iterate: %v", err)
+	stream, err := repb.NewSyncServiceClient(conn).FullStateSync(ctx)
+	if err != nil {
+		log.Printf("[syncer] FullStateSync open stream %s: %v", peer.GRPCAddr, err)
 		return
 	}
 
-	resp, err := client.FullStateSync(ctx, &repb.FullStateSyncRequest{
-		ReplicaId: s.node.ReplicaID(),
-		Entries:   entries,
+	// Send header first so the peer knows our replica ID.
+	err = stream.Send(&repb.FullStateSyncMessage{
+		Payload: &repb.FullStateSyncMessage_Header{
+			Header: &repb.FullStateSyncHeader{ReplicaId: s.node.ReplicaID()},
+		},
 	})
 	if err != nil {
-		log.Printf("[syncer] FullStateSync %s: %v", peer.GRPCAddr, err)
+		log.Printf("[syncer] FullStateSync send header %s: %v", peer.GRPCAddr, err)
 		return
 	}
 
-	for _, d := range resp.GetEntries() {
-		s.applyDeltaEntry(d)
+	// Send goroutine: iterate Badger and stream each entry, then half-close.
+	sendErr := make(chan error, 1)
+	go func() {
+		iterErr := s.store.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
+			return stream.Send(&repb.FullStateSyncMessage{
+				Payload: &repb.FullStateSyncMessage_Entry{Entry: entryToProto(key, field, entry)},
+			})
+		})
+		sendErr <- iterErr
+		stream.CloseSend()
+	}()
+
+	// Recv loop: apply every entry the peer streams back.
+	received := 0
+	for {
+		msg, err := stream.Recv()
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("[syncer] FullStateSync recv %s: %v", peer.GRPCAddr, err)
+			}
+			break
+		}
+		if d := msg.GetEntry(); d != nil {
+			s.applyDeltaEntry(d)
+			received++
+		}
 	}
-	log.Printf("[syncer] full state fallback with %s complete: received %d entries", peer.ReplicaID, len(resp.GetEntries()))
+
+	if err := <-sendErr; err != nil {
+		log.Printf("[syncer] FullStateSync send %s: %v", peer.GRPCAddr, err)
+	}
+	log.Printf("[syncer] full state fallback with %s complete: received %d entries", peer.ReplicaID, received)
 }
 
 // PushToPeers sends entries directly to a set of replica peers (fire-and-forget).
@@ -208,7 +199,7 @@ func (s *Syncer) PushToPeers(ctx context.Context, entries []*repb.DeltaEntry, re
 		}
 		peer := peer // capture for goroutine
 		go func() {
-			conn, err := s.pool.get(peer.GRPCAddr)
+			conn, err := s.pool.Get(peer.GRPCAddr)
 			if err != nil {
 				log.Printf("[syncer] push dial %s: %v", peer.GRPCAddr, err)
 				return

@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"io"
 	"log"
 
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
@@ -118,38 +119,71 @@ func (h *Handler) PushEntries(_ context.Context, req *repb.PushEntriesRequest) (
 	return &repb.PushEntriesResponse{Applied: applied}, nil
 }
 
-// FullStateSync is the full-state fallback handler.
-// Applies the initiator's full state, then returns the local full state.
-func (h *Handler) FullStateSync(_ context.Context, req *repb.FullStateSyncRequest) (*repb.FullStateSyncResponse, error) {
-	// Apply incoming entries.
-	for _, d := range req.GetEntries() {
-		ts := hlc.Timestamp{
-			PhysicalMs: d.GetTimestamp().GetPhysicalMs(),
-			Logical:    d.GetTimestamp().GetLogical(),
-		}
-		entry := crdt.FieldEntry{
-			Value:     d.GetValueJson(),
-			Timestamp: ts,
-			ReplicaID: d.GetReplicaId(),
-			Deleted:   d.GetDeleted(),
-		}
-		if _, err := h.node.ApplyDelta(d.GetKey(), d.GetField(), entry); err != nil {
-			log.Printf("[syncer/handler] FullStateSync apply key=%s field=%s: %v", d.GetKey(), d.GetField(), err)
-		}
-	}
+// FullStateSync is the full-state fallback handler (bidirectional streaming).
+// Concurrently receives and applies the initiator's entries while streaming
+// the local full state back, so neither side buffers the whole dataset.
+func (h *Handler) FullStateSync(stream repb.SyncService_FullStateSyncServer) error {
+	// Recv goroutine: apply every entry the initiator sends.
+	recvDone := make(chan error, 1)
 
-	// Stream our full state directly from Badger.
-	var resp []*repb.DeltaEntry
-	err := h.store.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
-		resp = append(resp, entryToProto(key, field, entry))
-		return nil
-	})
-	if err != nil {
+	var initiatorID string
+	applied := 0
+	go func() {
+		for {
+			msg, err := stream.Recv()
+			if err == io.EOF {
+				recvDone <- nil
+				return
+			}
+
+			if err != nil {
+				recvDone <- err
+				return
+			}
+
+			if hdr := msg.GetHeader(); hdr != nil {
+				initiatorID = hdr.GetReplicaId()
+				continue
+			}
+
+			if d := msg.GetEntry(); d != nil {
+				ts := hlc.Timestamp{
+					PhysicalMs: d.GetTimestamp().GetPhysicalMs(),
+					Logical:    d.GetTimestamp().GetLogical(),
+				}
+				entry := crdt.FieldEntry{
+					Value:     d.GetValueJson(),
+					Timestamp: ts,
+					ReplicaID: d.GetReplicaId(),
+					Deleted:   d.GetDeleted(),
+				}
+
+				if _, err := h.node.ApplyDelta(d.GetKey(), d.GetField(), entry); err != nil {
+					log.Printf("[syncer/handler] FullStateSync apply key=%s field=%s: %v", d.GetKey(), d.GetField(), err)
+				} else {
+					applied++
+				}
+			}
+		}
+	}()
+
+	// Stream local full state back while the recv goroutine runs.
+	sent := 0
+	if err := h.store.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
+		sent++
+		return stream.Send(&repb.FullStateSyncMessage{
+			Payload: &repb.FullStateSyncMessage_Entry{Entry: entryToProto(key, field, entry)},
+		})
+	}); err != nil {
 		log.Printf("[syncer/handler] FullStateSync iterate: %v", err)
 	}
 
-	log.Printf("[syncer/handler] FullStateSync from %s: applied %d, returning %d", req.GetReplicaId(), len(req.GetEntries()), len(resp))
-	return &repb.FullStateSyncResponse{Entries: resp}, nil
+	if err := <-recvDone; err != nil {
+		return err
+	}
+
+	log.Printf("[syncer/handler] FullStateSync from %s: applied %d, sent %d", initiatorID, applied, sent)
+	return nil
 }
 
 // entryToProto encodes a (key, field, entry) triple into a protobuf DeltaEntry.

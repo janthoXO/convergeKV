@@ -395,28 +395,29 @@ func (x *PushEntriesResponse) GetApplied() int32 {
 	return 0
 }
 
-type FullStateSyncRequest struct {
+// FullStateSyncHeader is sent as the first message on a FullStateSync stream
+// so the peer knows who is initiating.
+type FullStateSyncHeader struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ReplicaId     string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
-	Entries       []*DeltaEntry          `protobuf:"bytes,2,rep,name=entries,proto3" json:"entries,omitempty"` // sender's full state
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *FullStateSyncRequest) Reset() {
-	*x = FullStateSyncRequest{}
+func (x *FullStateSyncHeader) Reset() {
+	*x = FullStateSyncHeader{}
 	mi := &file_replication_replication_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *FullStateSyncRequest) String() string {
+func (x *FullStateSyncHeader) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*FullStateSyncRequest) ProtoMessage() {}
+func (*FullStateSyncHeader) ProtoMessage() {}
 
-func (x *FullStateSyncRequest) ProtoReflect() protoreflect.Message {
+func (x *FullStateSyncHeader) ProtoReflect() protoreflect.Message {
 	mi := &file_replication_replication_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -428,46 +429,46 @@ func (x *FullStateSyncRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use FullStateSyncRequest.ProtoReflect.Descriptor instead.
-func (*FullStateSyncRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use FullStateSyncHeader.ProtoReflect.Descriptor instead.
+func (*FullStateSyncHeader) Descriptor() ([]byte, []int) {
 	return file_replication_replication_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *FullStateSyncRequest) GetReplicaId() string {
+func (x *FullStateSyncHeader) GetReplicaId() string {
 	if x != nil {
 		return x.ReplicaId
 	}
 	return ""
 }
 
-func (x *FullStateSyncRequest) GetEntries() []*DeltaEntry {
-	if x != nil {
-		return x.Entries
-	}
-	return nil
-}
-
-type FullStateSyncResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Entries       []*DeltaEntry          `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"` // responder's full state
+// FullStateSyncMessage is the envelope for every message on the bidi stream.
+// The initiator sends a header first, then zero or more entries.
+// The responder mirrors the same layout in the opposite direction.
+type FullStateSyncMessage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Payload:
+	//
+	//	*FullStateSyncMessage_Header
+	//	*FullStateSyncMessage_Entry
+	Payload       isFullStateSyncMessage_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *FullStateSyncResponse) Reset() {
-	*x = FullStateSyncResponse{}
+func (x *FullStateSyncMessage) Reset() {
+	*x = FullStateSyncMessage{}
 	mi := &file_replication_replication_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *FullStateSyncResponse) String() string {
+func (x *FullStateSyncMessage) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*FullStateSyncResponse) ProtoMessage() {}
+func (*FullStateSyncMessage) ProtoMessage() {}
 
-func (x *FullStateSyncResponse) ProtoReflect() protoreflect.Message {
+func (x *FullStateSyncMessage) ProtoReflect() protoreflect.Message {
 	mi := &file_replication_replication_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -479,17 +480,51 @@ func (x *FullStateSyncResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use FullStateSyncResponse.ProtoReflect.Descriptor instead.
-func (*FullStateSyncResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use FullStateSyncMessage.ProtoReflect.Descriptor instead.
+func (*FullStateSyncMessage) Descriptor() ([]byte, []int) {
 	return file_replication_replication_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *FullStateSyncResponse) GetEntries() []*DeltaEntry {
+func (x *FullStateSyncMessage) GetPayload() isFullStateSyncMessage_Payload {
 	if x != nil {
-		return x.Entries
+		return x.Payload
 	}
 	return nil
 }
+
+func (x *FullStateSyncMessage) GetHeader() *FullStateSyncHeader {
+	if x != nil {
+		if x, ok := x.Payload.(*FullStateSyncMessage_Header); ok {
+			return x.Header
+		}
+	}
+	return nil
+}
+
+func (x *FullStateSyncMessage) GetEntry() *DeltaEntry {
+	if x != nil {
+		if x, ok := x.Payload.(*FullStateSyncMessage_Entry); ok {
+			return x.Entry
+		}
+	}
+	return nil
+}
+
+type isFullStateSyncMessage_Payload interface {
+	isFullStateSyncMessage_Payload()
+}
+
+type FullStateSyncMessage_Header struct {
+	Header *FullStateSyncHeader `protobuf:"bytes,1,opt,name=header,proto3,oneof"`
+}
+
+type FullStateSyncMessage_Entry struct {
+	Entry *DeltaEntry `protobuf:"bytes,2,opt,name=entry,proto3,oneof"`
+}
+
+func (*FullStateSyncMessage_Header) isFullStateSyncMessage_Payload() {}
+
+func (*FullStateSyncMessage_Entry) isFullStateSyncMessage_Payload() {}
 
 var File_replication_replication_proto protoreflect.FileDescriptor
 
@@ -527,17 +562,18 @@ const file_replication_replication_proto_rawDesc = "" +
 	"replica_id\x18\x01 \x01(\tR\treplicaId\x121\n" +
 	"\aentries\x18\x02 \x03(\v2\x17.replication.DeltaEntryR\aentries\"/\n" +
 	"\x13PushEntriesResponse\x12\x18\n" +
-	"\aapplied\x18\x01 \x01(\x05R\aapplied\"h\n" +
-	"\x14FullStateSyncRequest\x12\x1d\n" +
+	"\aapplied\x18\x01 \x01(\x05R\aapplied\"4\n" +
+	"\x13FullStateSyncHeader\x12\x1d\n" +
 	"\n" +
-	"replica_id\x18\x01 \x01(\tR\treplicaId\x121\n" +
-	"\aentries\x18\x02 \x03(\v2\x17.replication.DeltaEntryR\aentries\"J\n" +
-	"\x15FullStateSyncResponse\x121\n" +
-	"\aentries\x18\x01 \x03(\v2\x17.replication.DeltaEntryR\aentries2\x8c\x02\n" +
+	"replica_id\x18\x01 \x01(\tR\treplicaId\"\x8e\x01\n" +
+	"\x14FullStateSyncMessage\x12:\n" +
+	"\x06header\x18\x01 \x01(\v2 .replication.FullStateSyncHeaderH\x00R\x06header\x12/\n" +
+	"\x05entry\x18\x02 \x01(\v2\x17.replication.DeltaEntryH\x00R\x05entryB\t\n" +
+	"\apayload2\x8f\x02\n" +
 	"\vSyncService\x12S\n" +
 	"\fIBLTExchange\x12 .replication.IBLTExchangeRequest\x1a!.replication.IBLTExchangeResponse\x12P\n" +
-	"\vPushEntries\x12\x1f.replication.PushEntriesRequest\x1a .replication.PushEntriesResponse\x12V\n" +
-	"\rFullStateSync\x12!.replication.FullStateSyncRequest\x1a\".replication.FullStateSyncResponseB0Z.github.com/janthoXO/convergeKV/gen/replicationb\x06proto3"
+	"\vPushEntries\x12\x1f.replication.PushEntriesRequest\x1a .replication.PushEntriesResponse\x12Y\n" +
+	"\rFullStateSync\x12!.replication.FullStateSyncMessage\x1a!.replication.FullStateSyncMessage(\x010\x01B0Z.github.com/janthoXO/convergeKV/gen/replicationb\x06proto3"
 
 var (
 	file_replication_replication_proto_rawDescOnce sync.Once
@@ -553,29 +589,29 @@ func file_replication_replication_proto_rawDescGZIP() []byte {
 
 var file_replication_replication_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_replication_replication_proto_goTypes = []any{
-	(*DeltaEntry)(nil),            // 0: replication.DeltaEntry
-	(*ItemIdentifier)(nil),        // 1: replication.ItemIdentifier
-	(*IBLTExchangeRequest)(nil),   // 2: replication.IBLTExchangeRequest
-	(*IBLTExchangeResponse)(nil),  // 3: replication.IBLTExchangeResponse
-	(*PushEntriesRequest)(nil),    // 4: replication.PushEntriesRequest
-	(*PushEntriesResponse)(nil),   // 5: replication.PushEntriesResponse
-	(*FullStateSyncRequest)(nil),  // 6: replication.FullStateSyncRequest
-	(*FullStateSyncResponse)(nil), // 7: replication.FullStateSyncResponse
-	(*kv.HLCTimestamp)(nil),       // 8: kv.HLCTimestamp
+	(*DeltaEntry)(nil),           // 0: replication.DeltaEntry
+	(*ItemIdentifier)(nil),       // 1: replication.ItemIdentifier
+	(*IBLTExchangeRequest)(nil),  // 2: replication.IBLTExchangeRequest
+	(*IBLTExchangeResponse)(nil), // 3: replication.IBLTExchangeResponse
+	(*PushEntriesRequest)(nil),   // 4: replication.PushEntriesRequest
+	(*PushEntriesResponse)(nil),  // 5: replication.PushEntriesResponse
+	(*FullStateSyncHeader)(nil),  // 6: replication.FullStateSyncHeader
+	(*FullStateSyncMessage)(nil), // 7: replication.FullStateSyncMessage
+	(*kv.HLCTimestamp)(nil),      // 8: kv.HLCTimestamp
 }
 var file_replication_replication_proto_depIdxs = []int32{
 	8, // 0: replication.DeltaEntry.timestamp:type_name -> kv.HLCTimestamp
 	0, // 1: replication.IBLTExchangeResponse.items_for_initiator:type_name -> replication.DeltaEntry
 	1, // 2: replication.IBLTExchangeResponse.i_need:type_name -> replication.ItemIdentifier
 	0, // 3: replication.PushEntriesRequest.entries:type_name -> replication.DeltaEntry
-	0, // 4: replication.FullStateSyncRequest.entries:type_name -> replication.DeltaEntry
-	0, // 5: replication.FullStateSyncResponse.entries:type_name -> replication.DeltaEntry
+	6, // 4: replication.FullStateSyncMessage.header:type_name -> replication.FullStateSyncHeader
+	0, // 5: replication.FullStateSyncMessage.entry:type_name -> replication.DeltaEntry
 	2, // 6: replication.SyncService.IBLTExchange:input_type -> replication.IBLTExchangeRequest
 	4, // 7: replication.SyncService.PushEntries:input_type -> replication.PushEntriesRequest
-	6, // 8: replication.SyncService.FullStateSync:input_type -> replication.FullStateSyncRequest
+	7, // 8: replication.SyncService.FullStateSync:input_type -> replication.FullStateSyncMessage
 	3, // 9: replication.SyncService.IBLTExchange:output_type -> replication.IBLTExchangeResponse
 	5, // 10: replication.SyncService.PushEntries:output_type -> replication.PushEntriesResponse
-	7, // 11: replication.SyncService.FullStateSync:output_type -> replication.FullStateSyncResponse
+	7, // 11: replication.SyncService.FullStateSync:output_type -> replication.FullStateSyncMessage
 	9, // [9:12] is the sub-list for method output_type
 	6, // [6:9] is the sub-list for method input_type
 	6, // [6:6] is the sub-list for extension type_name
@@ -587,6 +623,10 @@ func init() { file_replication_replication_proto_init() }
 func file_replication_replication_proto_init() {
 	if File_replication_replication_proto != nil {
 		return
+	}
+	file_replication_replication_proto_msgTypes[7].OneofWrappers = []any{
+		(*FullStateSyncMessage_Header)(nil),
+		(*FullStateSyncMessage_Entry)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
