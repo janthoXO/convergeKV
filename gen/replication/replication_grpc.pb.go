@@ -30,7 +30,7 @@ const (
 type SyncServiceClient interface {
 	IBLTExchange(ctx context.Context, in *IBLTExchangeRequest, opts ...grpc.CallOption) (*IBLTExchangeResponse, error)
 	PushEntries(ctx context.Context, in *PushEntriesRequest, opts ...grpc.CallOption) (*PushEntriesResponse, error)
-	FullStateSync(ctx context.Context, in *FullStateSyncRequest, opts ...grpc.CallOption) (*FullStateSyncResponse, error)
+	FullStateSync(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[FullStateSyncMessage, FullStateSyncMessage], error)
 }
 
 type syncServiceClient struct {
@@ -61,15 +61,18 @@ func (c *syncServiceClient) PushEntries(ctx context.Context, in *PushEntriesRequ
 	return out, nil
 }
 
-func (c *syncServiceClient) FullStateSync(ctx context.Context, in *FullStateSyncRequest, opts ...grpc.CallOption) (*FullStateSyncResponse, error) {
+func (c *syncServiceClient) FullStateSync(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[FullStateSyncMessage, FullStateSyncMessage], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(FullStateSyncResponse)
-	err := c.cc.Invoke(ctx, SyncService_FullStateSync_FullMethodName, in, out, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &SyncService_ServiceDesc.Streams[0], SyncService_FullStateSync_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	x := &grpc.GenericClientStream[FullStateSyncMessage, FullStateSyncMessage]{ClientStream: stream}
+	return x, nil
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SyncService_FullStateSyncClient = grpc.BidiStreamingClient[FullStateSyncMessage, FullStateSyncMessage]
 
 // SyncServiceServer is the server API for SyncService service.
 // All implementations must embed UnimplementedSyncServiceServer
@@ -77,7 +80,7 @@ func (c *syncServiceClient) FullStateSync(ctx context.Context, in *FullStateSync
 type SyncServiceServer interface {
 	IBLTExchange(context.Context, *IBLTExchangeRequest) (*IBLTExchangeResponse, error)
 	PushEntries(context.Context, *PushEntriesRequest) (*PushEntriesResponse, error)
-	FullStateSync(context.Context, *FullStateSyncRequest) (*FullStateSyncResponse, error)
+	FullStateSync(grpc.BidiStreamingServer[FullStateSyncMessage, FullStateSyncMessage]) error
 	mustEmbedUnimplementedSyncServiceServer()
 }
 
@@ -94,8 +97,8 @@ func (UnimplementedSyncServiceServer) IBLTExchange(context.Context, *IBLTExchang
 func (UnimplementedSyncServiceServer) PushEntries(context.Context, *PushEntriesRequest) (*PushEntriesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PushEntries not implemented")
 }
-func (UnimplementedSyncServiceServer) FullStateSync(context.Context, *FullStateSyncRequest) (*FullStateSyncResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method FullStateSync not implemented")
+func (UnimplementedSyncServiceServer) FullStateSync(grpc.BidiStreamingServer[FullStateSyncMessage, FullStateSyncMessage]) error {
+	return status.Error(codes.Unimplemented, "method FullStateSync not implemented")
 }
 func (UnimplementedSyncServiceServer) mustEmbedUnimplementedSyncServiceServer() {}
 func (UnimplementedSyncServiceServer) testEmbeddedByValue()                     {}
@@ -154,23 +157,12 @@ func _SyncService_PushEntries_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _SyncService_FullStateSync_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(FullStateSyncRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(SyncServiceServer).FullStateSync(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: SyncService_FullStateSync_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SyncServiceServer).FullStateSync(ctx, req.(*FullStateSyncRequest))
-	}
-	return interceptor(ctx, in, info, handler)
+func _SyncService_FullStateSync_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(SyncServiceServer).FullStateSync(&grpc.GenericServerStream[FullStateSyncMessage, FullStateSyncMessage]{ServerStream: stream})
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SyncService_FullStateSyncServer = grpc.BidiStreamingServer[FullStateSyncMessage, FullStateSyncMessage]
 
 // SyncService_ServiceDesc is the grpc.ServiceDesc for SyncService service.
 // It's only intended for direct use with grpc.RegisterService,
@@ -187,11 +179,14 @@ var SyncService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "PushEntries",
 			Handler:    _SyncService_PushEntries_Handler,
 		},
+	},
+	Streams: []grpc.StreamDesc{
 		{
-			MethodName: "FullStateSync",
-			Handler:    _SyncService_FullStateSync_Handler,
+			StreamName:    "FullStateSync",
+			Handler:       _SyncService_FullStateSync_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
 	Metadata: "replication/replication.proto",
 }
