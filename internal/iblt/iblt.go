@@ -45,11 +45,13 @@ func New(numCells int) *IBLT {
 	}
 }
 
-// itemHashes returns the fingerprint and deduplicated cell indices for item.
-// h1 = xxhash(item) is the fingerprint; h2 = xxhash(0xff || item) is an
-// independent secondary hash. The enhanced double-hashing formula
-// (h1 + i·h2) % numCells maps item to k cell indices in two hash calls.
-func itemHashes(item []byte, numCells int) (fingerprint uint64, indices []int) {
+// itemHashes returns the fingerprint and exactly numHashFuncs deduplicated cell
+// indices for item. h1 = xxhash(item) is the fingerprint; h2 = xxhash(0xff ||
+// item) is an independent secondary hash. The enhanced double-hashing formula
+// (h1 + i·h2) % numCells drives index generation; i increments past
+// numHashFuncs when a collision forces a retry, guaranteeing exactly k unique
+// slots are always filled.
+func itemHashes(item []byte, numCells int) (fingerprint uint64, indices [numHashFuncs]int) {
 	h1 := xxhash.Sum64(item)
 
 	var d xxhash.Digest
@@ -57,13 +59,18 @@ func itemHashes(item []byte, numCells int) (fingerprint uint64, indices []int) {
 	d.Write([]byte{0xff})
 	d.Write(item)
 	h2 := d.Sum64()
+	// h2 must be odd so gcd(h2, numCells) == 1 for any power-of-2 cell count,
+	// guaranteeing the double-hashing sequence visits numCells distinct indices
+	// before repeating.
+	h2 |= 1
 
 	fingerprint = h1
-	indices = make([]int, 0, numHashFuncs)
-	for i := range uint64(numHashFuncs) {
+	count := 0
+	for i := uint64(0); count < numHashFuncs; i++ {
 		idx := int((h1 + i*h2) % uint64(numCells))
-		if !slices.Contains(indices, idx) {
-			indices = append(indices, idx)
+		if !slices.Contains(indices[:count], idx) {
+			indices[count] = idx
+			count++
 		}
 	}
 	return
