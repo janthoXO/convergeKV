@@ -147,20 +147,3 @@ func TestOrderIndependence(t *testing.T) {
 		}
 	}
 }
-
-// TestHighestScorer verifies HighestScorer returns the first element of Replicas(..., 1).
-func TestHighestScorer(t *testing.T) {
-	members := makeMembers(8)
-	rng := rand.New(rand.NewSource(55))
-	for i := 0; i < 300; i++ {
-		key := fmt.Sprintf("key-%d", rng.Int63())
-		top1 := hrw.Replicas(key, members, 1)
-		scorer := hrw.HighestScorer(key, members)
-		if len(top1) == 0 {
-			continue
-		}
-		if top1[0].ReplicaID != scorer.ReplicaID {
-			t.Errorf("key %s: HighestScorer=%s, Replicas[0]=%s", key, scorer.ReplicaID, top1[0].ReplicaID)
-		}
-	}
-}

@@ -4,22 +4,20 @@
 package hrw
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
 	"sort"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/janthoXO/convergeKV/internal/gossip"
 )
 
-// score computes a stable uint64 score for the (key, member) pair using the
-// first 8 bytes of SHA-256(key ∥ replicaID). SHA-256 is already used
-// throughout the codebase and is stable across restarts.
-func score(key string, replicaID string) uint64 {
-	h := sha256.New()
-	h.Write([]byte(key))
-	h.Write([]byte(replicaID))
-	sum := h.Sum(nil)
-	return binary.BigEndian.Uint64(sum[:8])
+// score computes a stable uint64 score for the (key, member) pair using
+// xxhash over key ∥ replicaID. xxhash is already a project dependency and
+// is ~10× faster than SHA-256 for this use case.
+func score(key, replicaID string) uint64 {
+	h := xxhash.New()
+	h.WriteString(key)
+	h.WriteString(replicaID)
+	return h.Sum64()
 }
 
 // Replicas returns the rf members with the highest HRW scores for key.
@@ -65,24 +63,4 @@ func IsReplica(key, nodeID string, members []gossip.MemberInfo, rf int) bool {
 		}
 	}
 	return false
-}
-
-// HighestScorer returns the single member with the highest HRW score for key.
-// Used by the coordinator when forwarding to a non-local replica: always
-// forward to the highest scorer for deterministic, consistent routing.
-// Returns the zero MemberInfo if members is empty.
-func HighestScorer(key string, members []gossip.MemberInfo) gossip.MemberInfo {
-	if len(members) == 0 {
-		return gossip.MemberInfo{}
-	}
-	best := members[0]
-	bestScore := score(key, best.ReplicaID)
-	for _, m := range members[1:] {
-		s := score(key, m.ReplicaID)
-		if s > bestScore || (s == bestScore && m.ReplicaID > best.ReplicaID) {
-			best = m
-			bestScore = s
-		}
-	}
-	return best
 }

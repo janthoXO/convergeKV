@@ -70,9 +70,9 @@ func (c *Coordinator) Put(ctx context.Context, req *kvpb.PutRequest) (*kvpb.PutR
 		return resp, nil
 	}
 
-	// Forward to the highest-scoring HRW member.
-	target := hrw.HighestScorer(req.GetKey(), members)
-	return c.forwarder.ForwardPut(ctx, target.GRPCAddr, req)
+	return forwardWithRetry(replicas, func(addr string) (*kvpb.PutResponse, error) {
+		return c.forwarder.ForwardPut(ctx, addr, req)
+	})
 }
 
 // Get handles a get request.
@@ -90,8 +90,9 @@ func (c *Coordinator) Get(ctx context.Context, req *kvpb.GetRequest) (*kvpb.GetR
 		return &kvpb.GetResponse{ValueJson: v, Found: found}, nil
 	}
 
-	target := hrw.HighestScorer(req.GetKey(), members)
-	return c.forwarder.ForwardGet(ctx, target.GRPCAddr, req)
+	return forwardWithRetry(replicas, func(addr string) (*kvpb.GetResponse, error) {
+		return c.forwarder.ForwardGet(ctx, addr, req)
+	})
 }
 
 // Delete handles a delete request. Same routing logic as Put.
@@ -109,8 +110,9 @@ func (c *Coordinator) Delete(ctx context.Context, req *kvpb.DeleteRequest) (*kvp
 		return resp, nil
 	}
 
-	target := hrw.HighestScorer(req.GetKey(), members)
-	return c.forwarder.ForwardDelete(ctx, target.GRPCAddr, req)
+	return forwardWithRetry(replicas, func(addr string) (*kvpb.DeleteResponse, error) {
+		return c.forwarder.ForwardDelete(ctx, addr, req)
+	})
 }
 
 // ── local write helpers ───────────────────────────────────────────────────────
@@ -142,13 +144,11 @@ func (c *Coordinator) launchPush(updates []storage.FieldUpdate, replicas []gossi
 	if len(updates) == 0 {
 		return
 	}
-	c.wg.Add(1)
-	go func() {
-		defer c.wg.Done()
+	c.wg.Go(func() {
 		pushCtx, cancel := context.WithTimeout(c.ctx, 2*time.Second)
 		defer cancel()
 		c.pushWriteToPeers(pushCtx, updates, replicas, localID)
-	}()
+	})
 }
 
 // pushWriteToPeers converts the written FieldUpdates to DeltaEntries and sends
@@ -184,4 +184,21 @@ func containsID(members []gossip.MemberInfo, id string) bool {
 		}
 	}
 	return false
+}
+
+// forwardWithRetry tries each replica in HRW-score order, returning on the
+// first success. If all attempts fail, the last error is returned.
+// This tolerates peers that gossip has not yet evicted after a crash.
+func forwardWithRetry[R any](replicas []gossip.MemberInfo, fn func(addr string) (R, error)) (R, error) {
+	var lastErr error
+	for _, m := range replicas {
+		if result, err := fn(m.GRPCAddr); err == nil {
+			return result, nil
+		} else {
+			log.Printf("[coordinator] forward to %s failed, trying next replica: %v", m.GRPCAddr, err)
+			lastErr = err
+		}
+	}
+	var zero R
+	return zero, lastErr
 }
