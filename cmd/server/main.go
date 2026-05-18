@@ -23,6 +23,7 @@ import (
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
 	repb "github.com/janthoXO/convergeKV/gen/replication"
 	"github.com/janthoXO/convergeKV/internal/api"
+	"github.com/janthoXO/convergeKV/internal/connpool"
 	"github.com/janthoXO/convergeKV/internal/coordinator"
 	"github.com/janthoXO/convergeKV/internal/gossip"
 	"github.com/janthoXO/convergeKV/internal/node"
@@ -87,8 +88,11 @@ func main() {
 		}
 	}
 
-	// ── 5. Gossip ─────────────────────────────────────────────────────────────
-	// OnChange is a no-op: HRW reads gossip.Members() on every request.
+	// ── 5. Shared gRPC connection pool ────────────────────────────────────────
+	pool := connpool.New()
+
+	// ── 6. Gossip ─────────────────────────────────────────────────────────────
+	// OnChange evicts connections for departed peers; HRW reads Members() live.
 	g, err := gossip.Start(gossip.Config{
 		BindAddr:  cfg.GossipBind,
 		BindPort:  cfg.GossipPort,
@@ -96,25 +100,30 @@ func main() {
 		Seeds:     seeds,
 		OnChange: func(members []gossip.MemberInfo) {
 			log.Printf("[gossip] membership changed: %d members", len(members))
+			keep := make(map[string]struct{}, len(members))
+			for _, m := range members {
+				keep[m.GRPCAddr] = struct{}{}
+			}
+			pool.EvictAbsent(keep)
 		},
 	})
 	if err != nil {
 		log.Fatalf("start gossip: %v", err)
 	}
 
-	// ── 6. Signal context (used by syncer, coordinator, and serve loop) ────────
+	// ── 7. Signal context (used by syncer, coordinator, and serve loop) ────────
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// ── 7. Syncer ─────────────────────────────────────────────────────────────
-	sync := syncer.NewSyncer(n, g, ibltState, store, cfg.RF, time.Duration(cfg.SyncMs)*time.Millisecond)
+	// ── 8. Syncer ─────────────────────────────────────────────────────────────
+	sync := syncer.NewSyncer(n, g, ibltState, store, pool, cfg.RF, time.Duration(cfg.SyncMs)*time.Millisecond)
 
-	// ── 8. Forwarder and Coordinator ──────────────────────────────────────────
-	fwd := coordinator.NewForwarder()
+	// ── 9. Forwarder and Coordinator ──────────────────────────────────────────
+	fwd := coordinator.NewForwarder(pool)
 
 	coord := coordinator.New(ctx, n, g, fwd, sync, cfg.RF)
 
-	// ── 9. gRPC server ────────────────────────────────────────────────────────
+	// ── 10. gRPC server ───────────────────────────────────────────────────────
 	srv := grpc.NewServer()
 	kvpb.RegisterKVServiceServer(srv, api.NewHandler(coord, n, seeds))
 	fwdpb.RegisterForwardServiceServer(srv, api.NewForwardHandler(coord))
@@ -127,10 +136,10 @@ func main() {
 	}
 	log.Printf("[%s] gRPC listening on :%d", cfg.ReplicaID, cfg.GRPCPort)
 
-	// ── 10. Anti-entropy loop ─────────────────────────────────────────────────
+	// ── 11. Anti-entropy loop ─────────────────────────────────────────────────
 	go sync.Run(ctx)
 
-	// ── 11. Serve (blocking until signal) ─────────────────────────────────────
+	// ── 12. Serve (blocking until signal) ─────────────────────────────────────
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(lis) }()
 
@@ -141,11 +150,10 @@ func main() {
 		log.Printf("[%s] shutting down…", cfg.ReplicaID)
 	}
 
-	// Shutdown order: stop RPCs → drain push goroutines → sync → gossip → storage
+	// Shutdown order: stop RPCs → drain push goroutines → pool → gossip → storage
 	srv.GracefulStop()
 	coord.Close()
-	sync.Close()
-	fwd.Close()
+	pool.Close()
 	g.Leave(3 * time.Second)
 	store.Close()
 }
