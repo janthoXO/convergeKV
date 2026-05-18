@@ -116,7 +116,7 @@ func main() {
 	defer stop()
 
 	// ── 8. Syncer ─────────────────────────────────────────────────────────────
-	sync := syncer.NewSyncer(n, g, ibltState, store, pool, cfg.RF, time.Duration(cfg.SyncMs)*time.Millisecond)
+	sync := syncer.NewSyncer(n, g, ibltState, store, pool, time.Duration(cfg.SyncMs)*time.Millisecond)
 
 	// ── 9. Forwarder and Coordinator ──────────────────────────────────────────
 	fwd := coordinator.NewForwarder(pool)

@@ -22,19 +22,17 @@ type Syncer struct {
 	ibltState *IBLTState
 	store     *storage.Store
 	pool      *connpool.Pool
-	rf        int
 	interval  time.Duration
 }
 
 // NewSyncer constructs a Syncer backed by the given shared connection pool.
-func NewSyncer(n *node.Node, g *gossip.Gossip, ibltState *IBLTState, store *storage.Store, pool *connpool.Pool, rf int, interval time.Duration) *Syncer {
+func NewSyncer(n *node.Node, g *gossip.Gossip, ibltState *IBLTState, store *storage.Store, pool *connpool.Pool, interval time.Duration) *Syncer {
 	return &Syncer{
 		node:      n,
 		gossip:    g,
 		ibltState: ibltState,
 		store:     store,
 		pool:      pool,
-		rf:        rf,
 		interval:  interval,
 	}
 }
