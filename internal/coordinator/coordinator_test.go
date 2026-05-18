@@ -8,6 +8,7 @@ import (
 
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
 	repb "github.com/janthoXO/convergeKV/gen/replication"
+	"github.com/janthoXO/convergeKV/internal/connpool"
 	"github.com/janthoXO/convergeKV/internal/coordinator"
 	"github.com/janthoXO/convergeKV/internal/gossip"
 	"github.com/janthoXO/convergeKV/internal/node"
@@ -67,10 +68,11 @@ func singleMemberGossip(t *testing.T, replicaID string, grpcPort, gossipPort int
 // for local-replica tests because forwarding is never invoked).
 func newCoord(t *testing.T, n *node.Node, g *gossip.Gossip, syncer *noOpSyncer) *coordinator.Coordinator {
 	t.Helper()
-	fwd := coordinator.NewForwarder()
-	t.Cleanup(fwd.Close)
+	connPool := connpool.New()
+	fwd := coordinator.NewForwarder(connPool)
 	coord := coordinator.New(context.Background(), n, g, fwd, syncer, 1 /*rf=1: local node is always the replica*/)
 	t.Cleanup(coord.Close)
+	t.Cleanup(connPool.Close)
 	return coord
 }
 

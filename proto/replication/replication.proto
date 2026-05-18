@@ -50,21 +50,28 @@ message PushEntriesResponse {
   int32 applied = 1; // number of entries that actually updated local state
 }
 
-// ─── Full State Sync (fallback) ──────────────────────────────────────────────
+// ─── Full State Sync (fallback, bidirectional streaming) ─────────────────────
 
-message FullStateSyncRequest {
+// FullStateSyncHeader is sent as the first message on a FullStateSync stream
+// so the peer knows who is initiating.
+message FullStateSyncHeader {
   string replica_id = 1;
-  repeated DeltaEntry entries = 2; // sender's full state
 }
 
-message FullStateSyncResponse {
-  repeated DeltaEntry entries = 1; // responder's full state
+// FullStateSyncMessage is the envelope for every message on the bidi stream.
+// The initiator sends a header first, then zero or more entries.
+// The responder mirrors the same layout in the opposite direction.
+message FullStateSyncMessage {
+  oneof payload {
+    FullStateSyncHeader header = 1;
+    DeltaEntry entry = 2;
+  }
 }
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 service SyncService {
-  rpc IBLTExchange  (IBLTExchangeRequest)   returns (IBLTExchangeResponse);
-  rpc PushEntries   (PushEntriesRequest)    returns (PushEntriesResponse);
-  rpc FullStateSync (FullStateSyncRequest)  returns (FullStateSyncResponse);
+  rpc IBLTExchange  (IBLTExchangeRequest)          returns (IBLTExchangeResponse);
+  rpc PushEntries   (PushEntriesRequest)           returns (PushEntriesResponse);
+  rpc FullStateSync (stream FullStateSyncMessage)  returns (stream FullStateSyncMessage);
 }
