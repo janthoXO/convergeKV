@@ -69,7 +69,9 @@ func newCoord(t *testing.T, n *node.Node, g *gossip.Gossip, syncer *noOpSyncer) 
 	t.Helper()
 	fwd := coordinator.NewForwarder()
 	t.Cleanup(fwd.Close)
-	return coordinator.New(n, g, fwd, syncer, n.Store(), 1 /*rf=1: local node is always the replica*/)
+	coord := coordinator.New(context.Background(), n, g, fwd, syncer, 1 /*rf=1: local node is always the replica*/)
+	t.Cleanup(coord.Close)
+	return coord
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -153,7 +155,7 @@ func TestGetLocalReplica(t *testing.T) {
 
 	// Write directly into the node (bypassing coordinator) so the coordinator
 	// is not involved in the write — we only test the read path here.
-	if _, err := n.Put("item:42", `{"v":42}`); err != nil {
+	if _, _, err := n.Put("item:42", `{"v":42}`); err != nil {
 		t.Fatalf("direct node.Put: %v", err)
 	}
 

@@ -43,7 +43,7 @@ func countEntries(t *testing.T, n *Node) int {
 // TestPutThenGet verifies a Put followed by a Get on a single node.
 func TestPutThenGet(t *testing.T) {
 	n := openNode(t, "r1")
-	_, err := n.Put("user:1", `{"name":"Alice","age":30}`)
+	_, _, err := n.Put("user:1", `{"name":"Alice","age":30}`)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -71,11 +71,11 @@ func TestPutThenGet(t *testing.T) {
 func TestPutOverlappingFields(t *testing.T) {
 	n := openNode(t, "r1")
 
-	_, err := n.Put("user:1", `{"name":"Alice"}`)
+	_, _, err := n.Put("user:1", `{"name":"Alice"}`)
 	if err != nil {
 		t.Fatalf("Put 1: %v", err)
 	}
-	_, err = n.Put("user:1", `{"age":30}`)
+	_, _, err = n.Put("user:1", `{"age":30}`)
 	if err != nil {
 		t.Fatalf("Put 2: %v", err)
 	}
@@ -103,11 +103,11 @@ func TestPutOverlappingFields(t *testing.T) {
 func TestDeleteThenGet(t *testing.T) {
 	n := openNode(t, "r1")
 
-	_, err := n.Put("user:1", `{"name":"Alice"}`)
+	_, _, err := n.Put("user:1", `{"name":"Alice"}`)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	_, err = n.Delete("user:1")
+	_, _, err = n.Delete("user:1")
 	if err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestDeleteThenGet(t *testing.T) {
 func TestApplyDeltaHigherTimestampWins(t *testing.T) {
 	n := openNode(t, "r1")
 
-	_, err := n.Put("user:1", `{"name":"Alice"}`)
+	_, _, err := n.Put("user:1", `{"name":"Alice"}`)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestApplyDeltaHigherTimestampWins(t *testing.T) {
 func TestApplyDeltaLowerTimestampIsNoop(t *testing.T) {
 	n := openNode(t, "r1")
 
-	_, err := n.Put("user:1", `{"name":"Alice"}`)
+	_, _, err := n.Put("user:1", `{"name":"Alice"}`)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestConcurrentWritesDifferentKeys(t *testing.T) {
 			defer wg.Done()
 			key := fmt.Sprintf("key:%d", i)
 			val := fmt.Sprintf(`{"n":%d}`, i)
-			if _, err := n.Put(key, val); err != nil {
+			if _, _, err := n.Put(key, val); err != nil {
 				t.Errorf("Put %s: %v", key, err)
 			}
 		}()
@@ -249,10 +249,10 @@ func TestConcurrentWritesDifferentKeys(t *testing.T) {
 // (key, field) entries after a series of Put calls with different fields.
 func TestSnapshotAfterPuts(t *testing.T) {
 	n := openNode(t, "r1")
-	if _, err := n.Put("user:1", `{"name":"Alice"}`); err != nil {
+	if _, _, err := n.Put("user:1", `{"name":"Alice"}`); err != nil {
 		t.Fatalf("Put name: %v", err)
 	}
-	if _, err := n.Put("user:1", `{"city":"Geneva"}`); err != nil {
+	if _, _, err := n.Put("user:1", `{"city":"Geneva"}`); err != nil {
 		t.Fatalf("Put city: %v", err)
 	}
 
@@ -268,10 +268,10 @@ func TestSnapshotDifferentKeys(t *testing.T) {
 	nA := openNode(t, "r1")
 	nB := openNode(t, "r2")
 
-	if _, err := nA.Put("user:1", `{"name":"Alice"}`); err != nil {
+	if _, _, err := nA.Put("user:1", `{"name":"Alice"}`); err != nil {
 		t.Fatalf("nodeA Put: %v", err)
 	}
-	if _, err := nB.Put("user:1", `{"name":"Bob"}`); err != nil {
+	if _, _, err := nB.Put("user:1", `{"name":"Bob"}`); err != nil {
 		t.Fatalf("nodeB Put: %v", err)
 	}
 

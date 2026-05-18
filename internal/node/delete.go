@@ -10,9 +10,11 @@ import (
 
 // Delete marks all current fields of key as tombstones.
 // Fields added after the delete timestamp are NOT affected (they will win on merge).
+// Returns the HLC timestamp and the exact tombstone entries written, so callers
+// can push them to peers without a second Badger read.
 //
 // Concurrent Deletes to different keys proceed without blocking each other.
-func (n *Node) Delete(key string) (hlc.Timestamp, error) {
+func (n *Node) Delete(key string) (hlc.Timestamp, []storage.FieldUpdate, error) {
 	ts := n.hlc.Send()
 
 	release := n.acquireKey(key)
@@ -20,10 +22,10 @@ func (n *Node) Delete(key string) (hlc.Timestamp, error) {
 
 	m, err := n.store.GetKey(key)
 	if err != nil {
-		return hlc.Timestamp{}, fmt.Errorf("delete: read error: %w", err)
+		return hlc.Timestamp{}, nil, fmt.Errorf("delete: read error: %w", err)
 	}
 	if len(m.Fields) == 0 {
-		return ts, nil // nothing to delete
+		return ts, nil, nil // nothing to delete
 	}
 
 	type ibltDelta struct {
@@ -47,7 +49,7 @@ func (n *Node) Delete(key string) (hlc.Timestamp, error) {
 
 	// Persist first, then update IBLT.
 	if err := n.store.SaveBatch(batch); err != nil {
-		return hlc.Timestamp{}, fmt.Errorf("delete: storage error: %w", err)
+		return hlc.Timestamp{}, nil, fmt.Errorf("delete: storage error: %w", err)
 	}
 
 	if n.ibltState != nil {
@@ -57,5 +59,5 @@ func (n *Node) Delete(key string) (hlc.Timestamp, error) {
 		}
 	}
 
-	return ts, nil
+	return ts, batch, nil
 }
