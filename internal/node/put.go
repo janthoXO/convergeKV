@@ -11,14 +11,15 @@ import (
 
 // Put writes a JSON object value to key. The value must be a JSON object
 // (i.e., start with '{'). Each field is stored independently.
-// Returns the HLC timestamp assigned to this write.
+// Returns the HLC timestamp and the exact entries written, so callers can
+// push them to peers without a second Badger read.
 //
 // Concurrent Puts to different keys proceed without blocking each other.
 // Concurrent Puts to the same key are serialised by the per-key lock.
-func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, error) {
+func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, []storage.FieldUpdate, error) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(valueJSON), &obj); err != nil {
-		return hlc.Timestamp{}, fmt.Errorf("put: value must be a JSON object: %w", err)
+		return hlc.Timestamp{}, nil, fmt.Errorf("put: value must be a JSON object: %w", err)
 	}
 
 	ts := n.hlc.Send()
@@ -30,7 +31,7 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, error) {
 	// Read current field values from Badger so we can compute IBLT removals.
 	existing, err := n.store.GetKey(key)
 	if err != nil {
-		return hlc.Timestamp{}, fmt.Errorf("put: read error: %w", err)
+		return hlc.Timestamp{}, nil, fmt.Errorf("put: read error: %w", err)
 	}
 
 	type ibltDelta struct {
@@ -56,7 +57,7 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, error) {
 
 	// Persist to Badger first; only update the IBLT on success.
 	if err := n.store.SaveBatch(batch); err != nil {
-		return hlc.Timestamp{}, fmt.Errorf("put: storage error: %w", err)
+		return hlc.Timestamp{}, nil, fmt.Errorf("put: storage error: %w", err)
 	}
 
 	if n.ibltState != nil {
@@ -68,5 +69,5 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, error) {
 		}
 	}
 
-	return ts, nil
+	return ts, batch, nil
 }

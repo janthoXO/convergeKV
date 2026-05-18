@@ -102,15 +102,19 @@ func main() {
 		log.Fatalf("start gossip: %v", err)
 	}
 
-	// ── 6. Syncer ─────────────────────────────────────────────────────────────
+	// ── 6. Signal context (used by syncer, coordinator, and serve loop) ────────
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// ── 7. Syncer ─────────────────────────────────────────────────────────────
 	sync := syncer.NewSyncer(n, g, ibltState, store, cfg.RF, time.Duration(cfg.SyncMs)*time.Millisecond)
 
-	// ── 7. Forwarder and Coordinator ──────────────────────────────────────────
+	// ── 8. Forwarder and Coordinator ──────────────────────────────────────────
 	fwd := coordinator.NewForwarder()
 
-	coord := coordinator.New(n, g, fwd, sync, store, cfg.RF)
+	coord := coordinator.New(ctx, n, g, fwd, sync, cfg.RF)
 
-	// ── 8. gRPC server ────────────────────────────────────────────────────────
+	// ── 9. gRPC server ────────────────────────────────────────────────────────
 	srv := grpc.NewServer()
 	kvpb.RegisterKVServiceServer(srv, api.NewHandler(coord, n, seeds))
 	fwdpb.RegisterForwardServiceServer(srv, api.NewForwardHandler(coord))
@@ -123,12 +127,10 @@ func main() {
 	}
 	log.Printf("[%s] gRPC listening on :%d", cfg.ReplicaID, cfg.GRPCPort)
 
-	// ── 9. Anti-entropy loop ──────────────────────────────────────────────────
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// ── 10. Anti-entropy loop ─────────────────────────────────────────────────
 	go sync.Run(ctx)
 
-	// ── 10. Serve (blocking until signal) ─────────────────────────────────────
+	// ── 11. Serve (blocking until signal) ─────────────────────────────────────
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(lis) }()
 
@@ -139,8 +141,9 @@ func main() {
 		log.Printf("[%s] shutting down…", cfg.ReplicaID)
 	}
 
-	// Shutdown order: stop RPCs → sync → gossip → storage
+	// Shutdown order: stop RPCs → drain push goroutines → sync → gossip → storage
 	srv.GracefulStop()
+	coord.Close()
 	sync.Close()
 	fwd.Close()
 	g.Leave(3 * time.Second)

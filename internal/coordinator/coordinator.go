@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
+	"time"
 
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
 	repb "github.com/janthoXO/convergeKV/gen/replication"
@@ -28,13 +30,26 @@ type Coordinator struct {
 	gossip    *gossip.Gossip
 	forwarder *Forwarder
 	syncer    PushSyncer
-	store     *storage.Store
 	rf        int
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
-// New returns a Coordinator.
-func New(n *node.Node, g *gossip.Gossip, f *Forwarder, syncer PushSyncer, store *storage.Store, rf int) *Coordinator {
-	return &Coordinator{node: n, gossip: g, forwarder: f, syncer: syncer, store: store, rf: rf}
+// New returns a Coordinator. ctx should be the server-lifetime context so that
+// in-flight push goroutines can be cancelled at shutdown via Close.
+func New(ctx context.Context, n *node.Node, g *gossip.Gossip, f *Forwarder, syncer PushSyncer, rf int) *Coordinator {
+	ctx, cancel := context.WithCancel(ctx)
+	return &Coordinator{node: n, gossip: g, forwarder: f, syncer: syncer, rf: rf, ctx: ctx, cancel: cancel}
+}
+
+// Close cancels the coordinator context and waits for all in-flight push
+// goroutines to finish. Call after srv.GracefulStop() so no new writes can
+// start new goroutines.
+func (c *Coordinator) Close() {
+	c.cancel()
+	c.wg.Wait()
 }
 
 // Put handles a put request.
@@ -47,11 +62,11 @@ func (c *Coordinator) Put(ctx context.Context, req *kvpb.PutRequest) (*kvpb.PutR
 	localID := c.node.ReplicaID()
 
 	if len(replicas) == 0 || containsID(replicas, localID) {
-		resp, err := c.handleLocalPut(ctx, req)
+		resp, updates, err := c.handleLocalPut(ctx, req)
 		if err != nil {
 			return nil, err
 		}
-		go c.pushWriteToPeers(context.Background(), req.GetKey(), replicas, localID)
+		c.launchPush(updates, replicas, localID)
 		return resp, nil
 	}
 
@@ -86,11 +101,11 @@ func (c *Coordinator) Delete(ctx context.Context, req *kvpb.DeleteRequest) (*kvp
 	localID := c.node.ReplicaID()
 
 	if len(replicas) == 0 || containsID(replicas, localID) {
-		resp, err := c.handleLocalDelete(ctx, req)
+		resp, updates, err := c.handleLocalDelete(ctx, req)
 		if err != nil {
 			return nil, err
 		}
-		go c.pushWriteToPeers(context.Background(), req.GetKey(), replicas, localID)
+		c.launchPush(updates, replicas, localID)
 		return resp, nil
 	}
 
@@ -100,52 +115,62 @@ func (c *Coordinator) Delete(ctx context.Context, req *kvpb.DeleteRequest) (*kvp
 
 // ── local write helpers ───────────────────────────────────────────────────────
 
-func (c *Coordinator) handleLocalPut(_ context.Context, req *kvpb.PutRequest) (*kvpb.PutResponse, error) {
-	ts, err := c.node.Put(req.GetKey(), req.GetValueJson())
+func (c *Coordinator) handleLocalPut(_ context.Context, req *kvpb.PutRequest) (*kvpb.PutResponse, []storage.FieldUpdate, error) {
+	ts, updates, err := c.node.Put(req.GetKey(), req.GetValueJson())
 	if err != nil {
-		return nil, fmt.Errorf("coordinator: local put: %w", err)
+		return nil, nil, fmt.Errorf("coordinator: local put: %w", err)
 	}
 	return &kvpb.PutResponse{
 		Timestamp: &kvpb.HLCTimestamp{PhysicalMs: ts.PhysicalMs, Logical: ts.Logical},
-	}, nil
+	}, updates, nil
 }
 
-func (c *Coordinator) handleLocalDelete(_ context.Context, req *kvpb.DeleteRequest) (*kvpb.DeleteResponse, error) {
-	ts, err := c.node.Delete(req.GetKey())
+func (c *Coordinator) handleLocalDelete(_ context.Context, req *kvpb.DeleteRequest) (*kvpb.DeleteResponse, []storage.FieldUpdate, error) {
+	ts, updates, err := c.node.Delete(req.GetKey())
 	if err != nil {
-		return nil, fmt.Errorf("coordinator: local delete: %w", err)
+		return nil, nil, fmt.Errorf("coordinator: local delete: %w", err)
 	}
 	return &kvpb.DeleteResponse{
 		Timestamp: &kvpb.HLCTimestamp{PhysicalMs: ts.PhysicalMs, Logical: ts.Logical},
-	}, nil
+	}, updates, nil
 }
 
-// pushWriteToPeers reads the current entries for key from Badger and pushes
-// them to the other HRW replicas via PushEntries.
-// Called asynchronously from the write path; errors are logged but not retried.
-func (c *Coordinator) pushWriteToPeers(ctx context.Context, key string, replicas []gossip.MemberInfo, localID string) {
-	m, err := c.store.GetKey(key)
-	if err != nil {
-		log.Printf("[coordinator] pushWriteToPeers: GetKey %s: %v", key, err)
+// launchPush starts a tracked goroutine that pushes updates to peer replicas.
+// The goroutine is bounded by a 2-second timeout derived from the coordinator
+// context, so it is cancelled promptly on shutdown.
+func (c *Coordinator) launchPush(updates []storage.FieldUpdate, replicas []gossip.MemberInfo, localID string) {
+	if len(updates) == 0 {
 		return
 	}
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		pushCtx, cancel := context.WithTimeout(c.ctx, 2*time.Second)
+		defer cancel()
+		c.pushWriteToPeers(pushCtx, updates, replicas, localID)
+	}()
+}
 
-	var entries []*repb.DeltaEntry
-	for field, e := range m.Fields {
+// pushWriteToPeers converts the written FieldUpdates to DeltaEntries and sends
+// them to the other HRW replicas via PushToPeers.
+// Called from launchPush; errors are logged but not retried.
+func (c *Coordinator) pushWriteToPeers(ctx context.Context, updates []storage.FieldUpdate, replicas []gossip.MemberInfo, localID string) {
+	entries := make([]*repb.DeltaEntry, 0, len(updates))
+	for _, u := range updates {
 		entries = append(entries, &repb.DeltaEntry{
-			Key:       key,
-			Field:     field,
-			ValueJson: e.Value,
+			Key:       u.Key,
+			Field:     u.Field,
+			ValueJson: u.Entry.Value,
 			Timestamp: &kvpb.HLCTimestamp{
-				PhysicalMs: e.Timestamp.PhysicalMs,
-				Logical:    e.Timestamp.Logical,
+				PhysicalMs: u.Entry.Timestamp.PhysicalMs,
+				Logical:    u.Entry.Timestamp.Logical,
 			},
-			ReplicaId: e.ReplicaID,
-			Deleted:   e.Deleted,
+			ReplicaId: u.Entry.ReplicaID,
+			Deleted:   u.Entry.Deleted,
 		})
 	}
-	if len(entries) == 0 {
-		log.Printf("[coordinator] pushWriteToPeers: no entries for key %s (already applied?)", key)
+	if err := ctx.Err(); err != nil {
+		log.Printf("[coordinator] pushWriteToPeers: context done before push: %v", err)
 		return
 	}
 	c.syncer.PushToPeers(ctx, entries, replicas, localID)

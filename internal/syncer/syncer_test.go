@@ -54,7 +54,7 @@ func TestIBLTStateRoundTrip(t *testing.T) {
 	// Write some data.
 	for i := 0; i < 20; i++ {
 		v := fmt.Sprintf(`{"x":%d}`, i)
-		if _, err := n.Put(fmt.Sprintf("key-%d", i), v); err != nil {
+		if _, _, err := n.Put(fmt.Sprintf("key-%d", i), v); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -128,13 +128,13 @@ func TestIBLTConvergence(t *testing.T) {
 
 	// Write 5 keys to n1 only.
 	for i := 0; i < 5; i++ {
-		if _, err := n1.Put(fmt.Sprintf("key-n1-%d", i), `{"v":1}`); err != nil {
+		if _, _, err := n1.Put(fmt.Sprintf("key-n1-%d", i), `{"v":1}`); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// Write 5 different keys to n2 only.
 	for i := 0; i < 5; i++ {
-		if _, err := n2.Put(fmt.Sprintf("key-n2-%d", i), `{"v":2}`); err != nil {
+		if _, _, err := n2.Put(fmt.Sprintf("key-n2-%d", i), `{"v":2}`); err != nil {
 			t.Fatal(err)
 		}
 	}
