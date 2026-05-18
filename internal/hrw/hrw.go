@@ -66,23 +66,3 @@ func IsReplica(key, nodeID string, members []gossip.MemberInfo, rf int) bool {
 	}
 	return false
 }
-
-// HighestScorer returns the single member with the highest HRW score for key.
-// Used by the coordinator when forwarding to a non-local replica: always
-// forward to the highest scorer for deterministic, consistent routing.
-// Returns the zero MemberInfo if members is empty.
-func HighestScorer(key string, members []gossip.MemberInfo) gossip.MemberInfo {
-	if len(members) == 0 {
-		return gossip.MemberInfo{}
-	}
-	best := members[0]
-	bestScore := score(key, best.ReplicaID)
-	for _, m := range members[1:] {
-		s := score(key, m.ReplicaID)
-		if s > bestScore || (s == bestScore && m.ReplicaID > best.ReplicaID) {
-			best = m
-			bestScore = s
-		}
-	}
-	return best
-}
