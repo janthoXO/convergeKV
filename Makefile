@@ -16,6 +16,12 @@ build:
 	mkdir -p dist
 	go build -o dist/ ./cmd/...
 
+lint:
+	go vet ./...
+
+format:
+	gofmt -s -w .
+
 test:
 	go test ./... -race -count=1
 
