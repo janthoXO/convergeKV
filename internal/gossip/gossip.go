@@ -91,7 +91,7 @@ func Start(cfg Config) (*Gossip, error) {
 
 	// Join seeds with retries.
 	if len(cfg.Seeds) > 0 {
-		go g.joinWithRetry(cfg.Seeds)
+		g.joinWithRetry(cfg.Seeds)
 	}
 
 	return g, nil

@@ -33,25 +33,41 @@ func (p *Pool) Get(addr string) (*grpc.ClientConn, error) {
 }
 
 // Evict closes and removes the connection for addr, if present.
-func (p *Pool) Evict(addr string) {
+func (p *Pool) Evict(addr ...string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if c, ok := p.conns[addr]; ok {
+
+	var toClose []*grpc.ClientConn
+	for _, a := range addr {
+		if c, ok := p.conns[a]; ok {
+			toClose = append(toClose, c)
+			delete(p.conns, a)
+		}
+	}
+	p.mu.Unlock()
+
+	for _, c := range toClose {
 		c.Close()
-		delete(p.conns, addr)
 	}
 }
 
 // EvictAbsent closes connections for every address not in keep.
 // Call this on every gossip membership snapshot to drop departed nodes.
+// Connections are removed from the map under the lock but closed outside it
+// so that c.Close() (which may block briefly on in-flight RPCs) does not
+// stall concurrent pool.Get callers.
 func (p *Pool) EvictAbsent(keep map[string]struct{}) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+
+	var toClose []*grpc.ClientConn
 	for addr, c := range p.conns {
 		if _, ok := keep[addr]; !ok {
-			c.Close()
+			toClose = append(toClose, c)
 			delete(p.conns, addr)
 		}
+	}
+	p.mu.Unlock()
+	for _, c := range toClose {
+		c.Close()
 	}
 }
 
