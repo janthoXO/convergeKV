@@ -70,6 +70,9 @@ func (s *Syncer) Run(ctx context.Context) {
 // If the diff is undecodable (too large), falls back to a full-state exchange:
 // push our entire store and pull the peer's entire store.
 func (s *Syncer) SyncWithPeer(ctx context.Context, peer gossip.MemberInfo) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	conn, err := s.pool.Get(peer.GRPCAddr)
 	if err != nil {
 		log.Printf("[syncer] dial %s: %v", peer.GRPCAddr, err)
