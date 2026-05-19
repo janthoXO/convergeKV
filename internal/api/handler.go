@@ -7,7 +7,9 @@ import (
 
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
 	"github.com/janthoXO/convergeKV/internal/coordinator"
+	"github.com/janthoXO/convergeKV/internal/gossip"
 	"github.com/janthoXO/convergeKV/internal/node"
+	"github.com/janthoXO/convergeKV/internal/utils"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -15,14 +17,14 @@ import (
 // Handler implements kvpb.KVServiceServer.
 type Handler struct {
 	kvpb.UnimplementedKVServiceServer
-	coord *coordinator.Coordinator
-	node  *node.Node // used only for Status
-	peers []string
+	coord  *coordinator.Coordinator
+	node   *node.Node     // used only for Status
+	gossip *gossip.Gossip // queried live for Status
 }
 
 // NewHandler returns a ready-to-register Handler.
-func NewHandler(coord *coordinator.Coordinator, n *node.Node, peers []string) *Handler {
-	return &Handler{coord: coord, node: n, peers: peers}
+func NewHandler(coord *coordinator.Coordinator, n *node.Node, g *gossip.Gossip) *Handler {
+	return &Handler{coord: coord, node: n, gossip: g}
 }
 
 // Put routes a put request through the coordinator.
@@ -66,6 +68,11 @@ func (h *Handler) Status(_ context.Context, _ *kvpb.StatusRequest) (*kvpb.Status
 	return &kvpb.StatusResponse{
 		ReplicaId: h.node.ReplicaID(),
 		Hlc:       &kvpb.HLCTimestamp{PhysicalMs: ts.PhysicalMs, Logical: ts.Logical},
-		Peers:     h.peers,
+		Peers: utils.FilterSlice(
+			utils.MapSlice(h.gossip.Members(), func(m gossip.MemberInfo) string { return m.ReplicaID }),
+			func(s string) bool {
+				return s != h.node.ReplicaID()
+			},
+		),
 	}, nil
 }

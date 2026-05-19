@@ -136,7 +136,7 @@ func main() {
 
 	// ── 10. gRPC server ───────────────────────────────────────────────────────
 	srv := grpc.NewServer()
-	kvpb.RegisterKVServiceServer(srv, api.NewHandler(coord, n, seeds))
+	kvpb.RegisterKVServiceServer(srv, api.NewHandler(coord, n, g))
 	fwdpb.RegisterForwardServiceServer(srv, api.NewForwardHandler(coord))
 	repb.RegisterSyncServiceServer(srv, syncer.NewHandler(n, ibltState, store))
 	reflection.Register(srv)
