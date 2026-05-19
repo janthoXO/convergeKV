@@ -1,0 +1,70 @@
+name: Compile Mermaid Diagrams
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**/*.mermaid"
+      - ".github/workflows/mermaid.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "docs/**/*.mermaid"
+      - ".github/workflows/mermaid.yml"
+
+jobs:
+  build-and-commit:
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to allow the GitHub Actions bot to push the new SVGs back to your repo
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install Mermaid CLI
+        run: npm install -g @mermaid-js/mermaid-cli
+
+      - name: Compile .mermaid files to .svg
+        run: |
+          # 1. Create a Puppeteer config to disable the sandbox
+          echo '{"args": ["--no-sandbox"]}' > puppeteer-config.json
+
+          # 2. Recursively find all .mermaid files inside the /docs folder
+          find ./docs -type f -name "*.mermaid" | while read -r file; do
+            echo "Compiling $file..."
+            outfile="${file%.mermaid}.svg"
+
+            # 3. Pass the config using the -p flag
+            mmdc -p puppeteer-config.json -i "$file" -o "$outfile"
+          done
+
+      - name: Check for changes
+        id: check_changes
+        run: |
+          if git diff --quiet docs/**/*.svg 2>/dev/null && git diff --quiet -- "docs/*.svg" 2>/dev/null; then
+            # Also handle new (untracked) SVG files
+            if [ -z "$(git ls-files --others --exclude-standard 'docs/*.svg' 'docs/**/*.svg')" ]; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and Push SVGs
+        if: steps.check_changes.outputs.changed == 'true' && github.event_name == 'push'
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          commit_message: "docs: auto-compile mermaid diagrams to svg"
+          # Only commit the generated SVGs so we don't accidentally push other WIP files
+          file_pattern: 'docs/*.svg docs/**/*.svg'

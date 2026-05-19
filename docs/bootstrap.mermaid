@@ -1,0 +1,31 @@
+sequenceDiagram
+    autonumber
+    actor Sig as OS signal
+    participant Main as main.go
+    participant Store as BadgerDB
+    participant Node as Node + HLC
+    participant IBLT as IBLTState
+    participant Gossip as Gossip
+    participant Coord as Coordinator + Syncer
+    participant Srv as gRPC server
+
+    Note over Main: Boot
+
+    Sig->>Main: start
+    Main->>Store: open
+    Store-->>Main: highest persisted HLC
+    Main->>Node: create (HLC seeded above disk)
+    Main->>IBLT: build from store
+    Main->>Gossip: start + join seeds (blocks)
+    Gossip-->>Main: ready
+    Main->>Coord: wire coordinator + syncer
+    Main->>Srv: register services + listen
+    Main->>Coord: start anti-entropy loop
+    Main->>Srv: serve
+
+    Sig->>Main: SIGINT / SIGTERM
+    Note over Main: Shutdown (reverse order)
+    Main->>Srv: GracefulStop
+    Main->>Coord: Close
+    Main->>Gossip: Leave
+    Main->>Store: Close

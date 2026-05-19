@@ -1,0 +1,29 @@
+sequenceDiagram
+    actor Tick as Sync Interval
+    participant Node as NodeA
+    participant Peer as NodeB
+
+    Tick->>Node: sync tick
+
+    Note over Node,Peer: Step 1 — fetch peer IBLT
+    Node->>Peer: GetIBLT
+    Peer-->>Node: encoded IBLT
+
+    Note over Node: Step 2 — subtract IBLTs and decode<br/>
+
+    alt diff decodes
+        Note over Node,Peer: Step 3 — push and pull concurrently
+        Node->>Peer: PushEntries (onlyLocal)
+        Peer->>Peer: ApplyDelta per entry
+        Peer-->>Node: PushAck
+        Node->>Peer: PullEntries (onlyRemote)
+        Peer-->>Node: stream entries
+        Node->>Node: ApplyDelta per entry
+    else fallback
+        Note over Node,Peer: Full-state fallback
+        Node->>Peer: PushEntries (entire local store)
+        Peer->>Peer: ApplyDelta per entry
+        Node->>Peer: PullEntries (entire peer store)
+        Peer-->>Node: stream entries
+        Node->>Node: ApplyDelta per entry
+    end
