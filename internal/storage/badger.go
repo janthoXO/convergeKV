@@ -227,30 +227,28 @@ func (s *Store) IterateAll(fn func(key, field string, entry crdt.FieldEntry) err
 	}
 }
 
-// SaveBatch persists a batch of field entries atomically (used during replication).
+// SaveBatch persists a batch of field entries in a single atomic transaction.
 // Accepts a slice of (key, field, FieldEntry) tuples.
 func (s *Store) SaveBatch(entries []FieldUpdate) error {
-	wb := s.db.NewWriteBatch()
-	defer wb.Cancel()
+	return s.db.Update(func(txn *badger.Txn) error {
+		for _, u := range entries {
+			se := StoredEntry{
+				ValueJSON:  u.Entry.Value,
+				PhysicalMs: u.Entry.Timestamp.PhysicalMs,
+				Logical:    u.Entry.Timestamp.Logical,
+				ReplicaID:  u.Entry.ReplicaID,
+				Deleted:    u.Entry.Deleted,
+			}
 
-	for _, u := range entries {
-		se := StoredEntry{
-			ValueJSON:  u.Entry.Value,
-			PhysicalMs: u.Entry.Timestamp.PhysicalMs,
-			Logical:    u.Entry.Timestamp.Logical,
-			ReplicaID:  u.Entry.ReplicaID,
-			Deleted:    u.Entry.Deleted,
+			b, err := json.Marshal(se)
+			if err != nil {
+				return err
+			}
+
+			if err := txn.Set(badgerKey(u.Key, u.Field), b); err != nil {
+				return err
+			}
 		}
-
-		b, err := json.Marshal(se)
-		if err != nil {
-			return err
-		}
-
-		if err := wb.Set(badgerKey(u.Key, u.Field), b); err != nil {
-			return err
-		}
-	}
-
-	return wb.Flush()
+		return nil
+	})
 }
