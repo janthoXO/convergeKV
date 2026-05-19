@@ -115,7 +115,7 @@ func main() {
 			for _, m := range members {
 				keep[m.GRPCAddr] = struct{}{}
 			}
-			pool.EvictAbsent(keep)
+			go pool.EvictAbsent(keep)
 		},
 	})
 	if err != nil {
