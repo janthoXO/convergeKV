@@ -70,7 +70,7 @@ func (c *Coordinator) Put(ctx context.Context, req *kvpb.PutRequest) (*kvpb.PutR
 		return resp, nil
 	}
 
-	return forwardWithRetry(replicas, func(addr string) (*kvpb.PutResponse, error) {
+	return forwardWithRetry(ctx, replicas, func(addr string) (*kvpb.PutResponse, error) {
 		return c.forwarder.ForwardPut(ctx, addr, req)
 	})
 }
@@ -90,7 +90,7 @@ func (c *Coordinator) Get(ctx context.Context, req *kvpb.GetRequest) (*kvpb.GetR
 		return &kvpb.GetResponse{ValueJson: v, Found: found}, nil
 	}
 
-	return forwardWithRetry(replicas, func(addr string) (*kvpb.GetResponse, error) {
+	return forwardWithRetry(ctx, replicas, func(addr string) (*kvpb.GetResponse, error) {
 		return c.forwarder.ForwardGet(ctx, addr, req)
 	})
 }
@@ -110,7 +110,7 @@ func (c *Coordinator) Delete(ctx context.Context, req *kvpb.DeleteRequest) (*kvp
 		return resp, nil
 	}
 
-	return forwardWithRetry(replicas, func(addr string) (*kvpb.DeleteResponse, error) {
+	return forwardWithRetry(ctx, replicas, func(addr string) (*kvpb.DeleteResponse, error) {
 		return c.forwarder.ForwardDelete(ctx, addr, req)
 	})
 }
@@ -189,9 +189,12 @@ func containsID(members []gossip.MemberInfo, id string) bool {
 // forwardWithRetry tries each replica in HRW-score order, returning on the
 // first success. If all attempts fail, the last error is returned.
 // This tolerates peers that gossip has not yet evicted after a crash.
-func forwardWithRetry[R any](replicas []gossip.MemberInfo, fn func(addr string) (R, error)) (R, error) {
+func forwardWithRetry[R any](ctx context.Context, replicas []gossip.MemberInfo, fn func(addr string) (R, error)) (R, error) {
 	var lastErr error
 	for _, m := range replicas {
+		if ctx.Err() != nil {
+			break
+		}
 		if result, err := fn(m.GRPCAddr); err == nil {
 			return result, nil
 		} else {
@@ -199,6 +202,10 @@ func forwardWithRetry[R any](replicas []gossip.MemberInfo, fn func(addr string) 
 			lastErr = err
 		}
 	}
+	
 	var zero R
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
 	return zero, lastErr
 }
