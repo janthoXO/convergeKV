@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
 )
+
+const iterPageSize = 1000
 
 // Store wraps a BadgerDB instance with CRDT-aware read/write helpers.
 type Store struct {
@@ -154,31 +157,74 @@ func (s *Store) MaxTimestamp() (hlc.Timestamp, error) {
 	return floor, err
 }
 
+// iterPage holds one decoded record collected within a single Badger transaction.
+type iterPage struct {
+	key    string
+	field  string
+	entry  crdt.FieldEntry
+	rawKey []byte // raw Badger key used as cursor for the next page
+}
+
 // IterateAll streams every (key, field, entry) record from BadgerDB, calling fn
 // for each. Iteration stops early and returns fn's error if fn returns non-nil.
+//
+// Internally the scan is split into pages of iterPageSize records. Each page
+// opens its own short-lived read transaction, so Badger's MVCC GC is not
+// blocked for the duration of a slow network send.
 func (s *Store) IterateAll(fn func(key, field string, entry crdt.FieldEntry) error) error {
-	return s.db.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
+	var cursor []byte // nil = start from the beginning
 
-		for it.Rewind(); it.Valid(); it.Next() {
-			item := it.Item()
-			k := item.KeyCopy(nil)
-			v, err := item.ValueCopy(nil)
-			if err != nil {
-				return err
+	for {
+		page := make([]iterPage, 0, iterPageSize)
+
+		if err := s.db.View(func(txn *badger.Txn) error {
+			it := txn.NewIterator(badger.DefaultIteratorOptions)
+			defer it.Close()
+
+			if cursor == nil {
+				it.Rewind()
+			} else {
+				it.Seek(cursor)
+				// Skip the key we already delivered at the end of the previous page.
+				if it.Valid() && bytes.Equal(it.Item().Key(), cursor) {
+					it.Next()
+				}
 			}
-			key, field := decodeKey(k)
-			entry, err := decodeEntry(v)
-			if err != nil {
-				return err
+
+			for ; it.Valid() && len(page) < iterPageSize; it.Next() {
+				item := it.Item()
+				k := item.KeyCopy(nil)
+				v, err := item.ValueCopy(nil)
+				if err != nil {
+					return err
+				}
+				key, field := decodeKey(k)
+				entry, err := decodeEntry(v)
+				if err != nil {
+					return err
+				}
+				page = append(page, iterPage{key: key, field: field, entry: entry, rawKey: k})
 			}
-			if err := fn(key, field, entry); err != nil {
+			return nil
+		}); err != nil {
+			return err
+		}
+
+		if len(page) == 0 {
+			return nil
+		}
+
+		for _, rec := range page {
+			if err := fn(rec.key, rec.field, rec.entry); err != nil {
 				return err
 			}
 		}
-		return nil
-	})
+
+		cursor = page[len(page)-1].rawKey
+		if len(page) < iterPageSize {
+			return nil // last page
+		}
+	}
 }
 
 // SaveBatch persists a batch of field entries atomically (used during replication).
