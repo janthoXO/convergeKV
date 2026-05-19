@@ -15,10 +15,13 @@ import (
 //
 // Concurrent Deletes to different keys proceed without blocking each other.
 func (n *Node) Delete(key string) (hlc.Timestamp, []storage.FieldUpdate, error) {
-	ts := n.hlc.Send()
-
 	release := n.acquireKey(key)
 	defer release()
+
+	ts, err := n.hlc.Send()
+	if err != nil {
+		return hlc.Timestamp{}, nil, fmt.Errorf("delete: %w", err)
+	}
 
 	m, err := n.store.GetKey(key)
 	if err != nil {
