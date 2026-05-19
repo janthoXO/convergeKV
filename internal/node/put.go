@@ -22,7 +22,10 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, []storage.FieldUpdate,
 		return hlc.Timestamp{}, nil, fmt.Errorf("put: value must be a JSON object: %w", err)
 	}
 
-	ts := n.hlc.Send()
+	ts, err := n.hlc.Send()
+	if err != nil {
+		return hlc.Timestamp{}, nil, fmt.Errorf("put: %w", err)
+	}
 
 	// Serialise writes to this key; writes to other keys are unaffected.
 	release := n.acquireKey(key)

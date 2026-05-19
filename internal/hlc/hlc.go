@@ -9,9 +9,10 @@ import (
 	"time"
 )
 
-// ErrClockDrift is returned by Receive when the remote timestamp is more than
-// MAX_CLOCK_DRIFT_MS ahead of local wall time.
-var ErrClockDrift = errors.New("hlc: remote timestamp exceeds max clock drift")
+// ErrClockDrift is returned when a clock value is more than MAX_CLOCK_DRIFT_MS
+// from local wall time: by Send when the HLC is stuck that far in the future,
+// or by Receive when a remote timestamp is that far in the future.
+var ErrClockDrift = errors.New("hlc: clock value exceeds max drift from wall time")
 
 // Timestamp is a Hybrid Logical Clock value.
 // It is totally ordered: compare PhysicalMs first, then Logical.
@@ -31,17 +32,25 @@ func New() *HLC { return &HLC{} }
 
 // Send is called before originating a local event (a write).
 // It advances the clock and returns the new timestamp.
-func (h *HLC) Send() Timestamp {
+// Returns ErrClockDrift if the HLC's physical time is more than
+// MAX_CLOCK_DRIFT_MS ahead of local wall time — meaning the clock is stuck in
+// the future after a forward wall-clock jump that was later corrected. The
+// clock is left unchanged so the caller can retry or surface the error.
+func (h *HLC) Send() (Timestamp, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	pt := wallMs()
+	pt := wallNow()
+
+	if h.currentTimestamp.PhysicalMs > pt+MAX_CLOCK_DRIFT_MS {
+		return h.currentTimestamp, ErrClockDrift
+	}
+
 	if pt > h.currentTimestamp.PhysicalMs {
 		h.currentTimestamp = Timestamp{PhysicalMs: pt, Logical: 0}
 	} else {
 		h.currentTimestamp.Logical++
 	}
-
-	return h.currentTimestamp
+	return h.currentTimestamp, nil
 }
 
 const MAX_CLOCK_DRIFT_MS = 10 * 60 * 1000 // 10 minutes
@@ -54,7 +63,7 @@ const MAX_CLOCK_DRIFT_MS = 10 * 60 * 1000 // 10 minutes
 func (h *HLC) Receive(remoteTimestamp Timestamp) (Timestamp, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	pt := wallMs()
+	pt := wallNow()
 
 	if remoteTimestamp.PhysicalMs > pt+MAX_CLOCK_DRIFT_MS {
 		return h.currentTimestamp, ErrClockDrift
@@ -116,4 +125,5 @@ func Equal(a, b Timestamp) bool {
 	return a.PhysicalMs == b.PhysicalMs && a.Logical == b.Logical
 }
 
-func wallMs() uint64 { return uint64(time.Now().UnixMilli()) }
+// wallNow returns the current wall time in milliseconds.
+func wallNow() uint64 { return uint64(time.Now().UnixMilli()) }
