@@ -202,7 +202,7 @@ func forwardWithRetry[R any](ctx context.Context, replicas []gossip.MemberInfo, 
 			lastErr = err
 		}
 	}
-	
+
 	var zero R
 	if err := ctx.Err(); err != nil {
 		return zero, err
