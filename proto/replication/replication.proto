@@ -16,8 +16,7 @@ message DeltaEntry {
 }
 
 // ItemIdentifier is the minimal information needed to look up a specific
-// field version in local state. Used in Round 2 of the IBLT protocol to
-// tell the initiator which entries to send back.
+// field version in local state. Used in PullEntries to request missing entries.
 message ItemIdentifier {
   string key = 1;
   string field = 2;
@@ -26,52 +25,33 @@ message ItemIdentifier {
   string replica_id = 5;
 }
 
-// ─── IBLT Exchange (Round 1) ─────────────────────────────────────────────────
+// ─── GetIBLT ─────────────────────────────────────────────────────────────────
 
-message IBLTExchangeRequest {
-  string replica_id = 1;
-  bytes iblt_data = 2; // serialised IBLT (output of iblt.Encode())
+message GetIBLTRequest {
+  string replica_id = 1; // initiator id, for logging
 }
 
-message IBLTExchangeResponse {
-  bool decodable = 1; // whether the responder successfully decoded the diff
-  repeated DeltaEntry items_for_initiator = 2; // entries the initiator is missing
-  repeated ItemIdentifier i_need = 3;           // items the responder needs from initiator
+message GetIBLTResponse {
+  bytes iblt_data = 1; // output of iblt.Encode()
 }
 
-// ─── Push Entries (write-path push) ─────────────────────────────────────────
+// ─── PushEntries (client-streaming) ──────────────────────────────────────────
 
-message PushEntriesRequest {
-  string replica_id = 1;
-  repeated DeltaEntry entries = 2;
-}
-
-message PushEntriesResponse {
+message PushAck {
   int32 applied = 1; // number of entries that actually updated local state
 }
 
-// ─── Full State Sync (fallback, bidirectional streaming) ─────────────────────
+// ─── PullEntries (server-streaming) ──────────────────────────────────────────
 
-// FullStateSyncHeader is sent as the first message on a FullStateSync stream
-// so the peer knows who is initiating.
-message FullStateSyncHeader {
-  string replica_id = 1;
-}
-
-// FullStateSyncMessage is the envelope for every message on the bidi stream.
-// The initiator sends a header first, then zero or more entries.
-// The responder mirrors the same layout in the opposite direction.
-message FullStateSyncMessage {
-  oneof payload {
-    FullStateSyncHeader header = 1;
-    DeltaEntry entry = 2;
-  }
+message PullRequest {
+  string replica_id = 1;                   // initiator id, for logging
+  repeated ItemIdentifier identifiers = 2; // empty = send full local state
 }
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 service SyncService {
-  rpc IBLTExchange  (IBLTExchangeRequest)          returns (IBLTExchangeResponse);
-  rpc PushEntries   (PushEntriesRequest)           returns (PushEntriesResponse);
-  rpc FullStateSync (stream FullStateSyncMessage)  returns (stream FullStateSyncMessage);
+  rpc GetIBLT     (GetIBLTRequest)    returns (GetIBLTResponse);
+  rpc PushEntries (stream DeltaEntry) returns (PushAck);
+  rpc PullEntries (PullRequest)       returns (stream DeltaEntry);
 }

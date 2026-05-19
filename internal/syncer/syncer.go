@@ -61,8 +61,18 @@ func (s *Syncer) Run(ctx context.Context) {
 	}
 }
 
-// SyncWithPeer runs the two-round IBLT reconciliation protocol as the initiator.
+// SyncWithPeer runs the three-step IBLT reconciliation protocol as the initiator.
+//
+//  1. Fetch peer's IBLT via GetIBLT.
+//  2. Compute the symmetric difference locally.
+//  3. Concurrently push what the peer is missing and pull what we are missing.
+//
+// If the diff is undecodable (too large), falls back to a full-state exchange:
+// push our entire store and pull the peer's entire store.
 func (s *Syncer) SyncWithPeer(ctx context.Context, peer gossip.MemberInfo) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	conn, err := s.pool.Get(peer.GRPCAddr)
 	if err != nil {
 		log.Printf("[syncer] dial %s: %v", peer.GRPCAddr, err)
@@ -70,124 +80,154 @@ func (s *Syncer) SyncWithPeer(ctx context.Context, peer gossip.MemberInfo) {
 	}
 	client := repb.NewSyncServiceClient(conn)
 
-	// ── Round 1: send our IBLT, receive what they have vs what we need ─────────
-	encoded := s.ibltState.t.Encode()
-
-	resp, err := client.IBLTExchange(ctx, &repb.IBLTExchangeRequest{
-		ReplicaId: s.node.ReplicaID(),
-		IbltData:  encoded,
-	})
+	// ── Step 1: fetch peer's IBLT ────────────────────────────────────────────
+	ibltResp, err := client.GetIBLT(ctx, &repb.GetIBLTRequest{ReplicaId: s.node.ReplicaID()})
 	if err != nil {
-		log.Printf("[syncer] IBLTExchange %s: %v", peer.GRPCAddr, err)
+		log.Printf("[syncer] GetIBLT %s: %v", peer.GRPCAddr, err)
 		return
 	}
 
-	if !resp.GetDecodable() {
-		log.Printf("[syncer] IBLT diff too large with %s — falling back to full state sync", peer.ReplicaID)
-		s.FullStateFallback(ctx, peer)
+	remoteIBLT, err := IBLTFromEncoded(ibltResp.GetIbltData())
+	if err != nil {
+		log.Printf("[syncer] decode remote IBLT from %s: %v", peer.GRPCAddr, err)
 		return
 	}
 
-	// Apply entries the peer sent us (items they have that we don't).
-	for _, d := range resp.GetItemsForInitiator() {
-		s.applyDeltaEntry(d)
-	}
+	// ── Step 2: compute symmetric difference locally ─────────────────────────
+	localSnap := s.ibltState.Snapshot()
+	diff := localSnap.SubtractUnsafe(remoteIBLT)
+	onlyLocal, onlyRemote, ok := diff.Decode()
 
-	// ── Round 2: send entries the peer is missing ────────────────────────────
-
-	iNeed := resp.GetINeed()
-	if len(iNeed) == 0 {
+	if !ok {
+		log.Printf("[syncer] IBLT diff too large with %s — falling back to full state exchange", peer.ReplicaID)
+		s.fullStateFallback(ctx, client, peer)
 		return
 	}
 
-	var toSend []*repb.DeltaEntry
-	for _, id := range iNeed {
-		entry, found, err := s.store.GetField(id.GetKey(), id.GetField())
-		if err != nil {
-			log.Printf("[syncer] GetField key=%s field=%s: %v", id.GetKey(), id.GetField(), err)
+	// ── Step 3a: build push batch (entries peer is missing) ─────────────────
+	var pushBatch []*repb.DeltaEntry
+	for _, itemBytes := range onlyLocal {
+		key, field, replicaID, physMs, logical, deleted, valid := DeserialiseItem(itemBytes)
+		if !valid {
 			continue
 		}
-		if !found {
+		entry, found, err := s.store.GetField(key, field)
+		if err != nil || !found {
 			continue
 		}
-		// Verify it's the exact version the peer expects.
-		if entry.Timestamp.PhysicalMs != id.GetPhysicalMs() ||
-			entry.Timestamp.Logical != id.GetLogical() ||
-			entry.ReplicaID != id.GetReplicaId() {
+		// Only forward the exact version the IBLT encodes; if it's been superseded
+		// since the snapshot was taken, the next sync round will reconcile it.
+		if entry.Timestamp.PhysicalMs != physMs ||
+			entry.Timestamp.Logical != logical ||
+			entry.ReplicaID != replicaID ||
+			entry.Deleted != deleted {
 			continue
 		}
-		toSend = append(toSend, entryToProto(id.GetKey(), id.GetField(), entry))
+		pushBatch = append(pushBatch, entryToProto(key, field, entry))
 	}
 
-	if len(toSend) == 0 {
-		return
+	// ── Step 3b: build pull request (items we are missing) ──────────────────
+	pullIDs := make([]*repb.ItemIdentifier, 0, len(onlyRemote))
+	for _, itemBytes := range onlyRemote {
+		key, field, replicaID, physMs, logical, _, valid := DeserialiseItem(itemBytes)
+		if !valid {
+			continue
+		}
+		pullIDs = append(pullIDs, &repb.ItemIdentifier{
+			Key:        key,
+			Field:      field,
+			PhysicalMs: physMs,
+			Logical:    logical,
+			ReplicaId:  replicaID,
+		})
 	}
 
-	if _, err := client.PushEntries(ctx, &repb.PushEntriesRequest{
-		ReplicaId: s.node.ReplicaID(),
-		Entries:   toSend,
-	}); err != nil {
-		log.Printf("[syncer] PushEntries (round 2) to %s: %v", peer.GRPCAddr, err)
+	// ── Step 3c: push and pull concurrently ─────────────────────────────────
+	pushErr := make(chan error, 1)
+	go func() {
+		pushErr <- s.pushEntries(ctx, client, pushBatch)
+	}()
+
+	s.pullAndApply(ctx, client, peer, pullIDs)
+
+	if err := <-pushErr; err != nil {
+		log.Printf("[syncer] PushEntries to %s: %v", peer.GRPCAddr, err)
 	}
 }
 
-// FullStateFallback exchanges complete snapshots when IBLT decode fails.
-// Uses a bidirectional streaming RPC so neither side buffers the full dataset.
-func (s *Syncer) FullStateFallback(ctx context.Context, peer gossip.MemberInfo) {
-	conn, err := s.pool.Get(peer.GRPCAddr)
-	if err != nil {
-		log.Printf("[syncer] fallback dial %s: %v", peer.GRPCAddr, err)
-		return
+// pushEntries opens a client-streaming PushEntries call and sends each entry.
+// entries may be nil/empty, in which case the call is skipped.
+func (s *Syncer) pushEntries(ctx context.Context, client repb.SyncServiceClient, entries []*repb.DeltaEntry) error {
+	if len(entries) == 0 {
+		return nil
 	}
-	stream, err := repb.NewSyncServiceClient(conn).FullStateSync(ctx)
+	stream, err := client.PushEntries(ctx)
 	if err != nil {
-		log.Printf("[syncer] FullStateSync open stream %s: %v", peer.GRPCAddr, err)
-		return
+		return err
 	}
+	for _, e := range entries {
+		if err := stream.Send(e); err != nil {
+			return err
+		}
+	}
+	if _, err := stream.CloseAndRecv(); err != nil {
+		return err
+	}
+	return nil
+}
 
-	// Send header first so the peer knows our replica ID.
-	err = stream.Send(&repb.FullStateSyncMessage{
-		Payload: &repb.FullStateSyncMessage_Header{
-			Header: &repb.FullStateSyncHeader{ReplicaId: s.node.ReplicaID()},
-		},
+// pullAndApply calls PullEntries and applies every streamed entry.
+// ids may be empty to request the peer's full state (fallback).
+func (s *Syncer) pullAndApply(ctx context.Context, client repb.SyncServiceClient, peer gossip.MemberInfo, ids []*repb.ItemIdentifier) {
+	pullStream, err := client.PullEntries(ctx, &repb.PullRequest{
+		ReplicaId:   s.node.ReplicaID(),
+		Identifiers: ids,
 	})
 	if err != nil {
-		log.Printf("[syncer] FullStateSync send header %s: %v", peer.GRPCAddr, err)
+		log.Printf("[syncer] PullEntries %s: %v", peer.GRPCAddr, err)
 		return
 	}
-
-	// Send goroutine: iterate Badger and stream each entry, then half-close.
-	sendErr := make(chan error, 1)
-	go func() {
-		iterErr := s.store.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
-			return stream.Send(&repb.FullStateSyncMessage{
-				Payload: &repb.FullStateSyncMessage_Entry{Entry: entryToProto(key, field, entry)},
-			})
-		})
-		sendErr <- iterErr
-		stream.CloseSend()
-	}()
-
-	// Recv loop: apply every entry the peer streams back.
 	received := 0
 	for {
-		msg, err := stream.Recv()
+		d, err := pullStream.Recv()
 		if err != nil {
 			if err != io.EOF {
-				log.Printf("[syncer] FullStateSync recv %s: %v", peer.GRPCAddr, err)
+				log.Printf("[syncer] PullEntries recv %s: %v", peer.GRPCAddr, err)
 			}
 			break
 		}
-		if d := msg.GetEntry(); d != nil {
-			s.applyDeltaEntry(d)
-			received++
-		}
+		s.applyDeltaEntry(d)
+		received++
 	}
+	if len(ids) == 0 {
+		log.Printf("[syncer] full-state pull from %s complete: received %d entries", peer.ReplicaID, received)
+	}
+}
 
-	if err := <-sendErr; err != nil {
-		log.Printf("[syncer] FullStateSync send %s: %v", peer.GRPCAddr, err)
+// fullStateFallback exchanges complete snapshots when the IBLT diff is undecodable.
+// Concurrently pushes our full store to the peer and pulls the peer's full store.
+func (s *Syncer) fullStateFallback(ctx context.Context, client repb.SyncServiceClient, peer gossip.MemberInfo) {
+	pushErr := make(chan error, 1)
+	go func() {
+		stream, err := client.PushEntries(ctx)
+		if err != nil {
+			pushErr <- err
+			return
+		}
+		iterErr := s.store.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
+			return stream.Send(entryToProto(key, field, entry))
+		})
+		if _, closeErr := stream.CloseAndRecv(); closeErr != nil && iterErr == nil {
+			iterErr = closeErr
+		}
+		pushErr <- iterErr
+	}()
+
+	s.pullAndApply(ctx, client, peer, nil)
+
+	if err := <-pushErr; err != nil {
+		log.Printf("[syncer] full-state push to %s: %v", peer.GRPCAddr, err)
 	}
-	log.Printf("[syncer] full state fallback with %s complete: received %d entries", peer.ReplicaID, received)
 }
 
 // PushToPeers sends entries directly to a set of replica peers (fire-and-forget).
@@ -205,10 +245,7 @@ func (s *Syncer) PushToPeers(ctx context.Context, entries []*repb.DeltaEntry, re
 				return
 			}
 			client := repb.NewSyncServiceClient(conn)
-			if _, err := client.PushEntries(ctx, &repb.PushEntriesRequest{
-				ReplicaId: localID,
-				Entries:   entries,
-			}); err != nil {
+			if err := s.pushEntries(ctx, client, entries); err != nil {
 				log.Printf("[syncer] push to %s: %v (IBLT sync will reconcile)", peer.ReplicaID, err)
 			}
 		}()

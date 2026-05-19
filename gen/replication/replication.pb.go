@@ -109,8 +109,7 @@ func (x *DeltaEntry) GetDeleted() bool {
 }
 
 // ItemIdentifier is the minimal information needed to look up a specific
-// field version in local state. Used in Round 2 of the IBLT protocol to
-// tell the initiator which entries to send back.
+// field version in local state. Used in PullEntries to request missing entries.
 type ItemIdentifier struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -187,28 +186,27 @@ func (x *ItemIdentifier) GetReplicaId() string {
 	return ""
 }
 
-type IBLTExchangeRequest struct {
+type GetIBLTRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	ReplicaId     string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
-	IbltData      []byte                 `protobuf:"bytes,2,opt,name=iblt_data,json=ibltData,proto3" json:"iblt_data,omitempty"` // serialised IBLT (output of iblt.Encode())
+	ReplicaId     string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"` // initiator id, for logging
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *IBLTExchangeRequest) Reset() {
-	*x = IBLTExchangeRequest{}
+func (x *GetIBLTRequest) Reset() {
+	*x = GetIBLTRequest{}
 	mi := &file_replication_replication_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *IBLTExchangeRequest) String() string {
+func (x *GetIBLTRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*IBLTExchangeRequest) ProtoMessage() {}
+func (*GetIBLTRequest) ProtoMessage() {}
 
-func (x *IBLTExchangeRequest) ProtoReflect() protoreflect.Message {
+func (x *GetIBLTRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_replication_replication_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -220,159 +218,84 @@ func (x *IBLTExchangeRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use IBLTExchangeRequest.ProtoReflect.Descriptor instead.
-func (*IBLTExchangeRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use GetIBLTRequest.ProtoReflect.Descriptor instead.
+func (*GetIBLTRequest) Descriptor() ([]byte, []int) {
 	return file_replication_replication_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *IBLTExchangeRequest) GetReplicaId() string {
+func (x *GetIBLTRequest) GetReplicaId() string {
 	if x != nil {
 		return x.ReplicaId
 	}
 	return ""
 }
 
-func (x *IBLTExchangeRequest) GetIbltData() []byte {
+type GetIBLTResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	IbltData      []byte                 `protobuf:"bytes,1,opt,name=iblt_data,json=ibltData,proto3" json:"iblt_data,omitempty"` // output of iblt.Encode()
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetIBLTResponse) Reset() {
+	*x = GetIBLTResponse{}
+	mi := &file_replication_replication_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetIBLTResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetIBLTResponse) ProtoMessage() {}
+
+func (x *GetIBLTResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_replication_replication_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetIBLTResponse.ProtoReflect.Descriptor instead.
+func (*GetIBLTResponse) Descriptor() ([]byte, []int) {
+	return file_replication_replication_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *GetIBLTResponse) GetIbltData() []byte {
 	if x != nil {
 		return x.IbltData
 	}
 	return nil
 }
 
-type IBLTExchangeResponse struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Decodable         bool                   `protobuf:"varint,1,opt,name=decodable,proto3" json:"decodable,omitempty"`                                           // whether the responder successfully decoded the diff
-	ItemsForInitiator []*DeltaEntry          `protobuf:"bytes,2,rep,name=items_for_initiator,json=itemsForInitiator,proto3" json:"items_for_initiator,omitempty"` // entries the initiator is missing
-	INeed             []*ItemIdentifier      `protobuf:"bytes,3,rep,name=i_need,json=iNeed,proto3" json:"i_need,omitempty"`                                       // items the responder needs from initiator
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
-}
-
-func (x *IBLTExchangeResponse) Reset() {
-	*x = IBLTExchangeResponse{}
-	mi := &file_replication_replication_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *IBLTExchangeResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*IBLTExchangeResponse) ProtoMessage() {}
-
-func (x *IBLTExchangeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_replication_replication_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use IBLTExchangeResponse.ProtoReflect.Descriptor instead.
-func (*IBLTExchangeResponse) Descriptor() ([]byte, []int) {
-	return file_replication_replication_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *IBLTExchangeResponse) GetDecodable() bool {
-	if x != nil {
-		return x.Decodable
-	}
-	return false
-}
-
-func (x *IBLTExchangeResponse) GetItemsForInitiator() []*DeltaEntry {
-	if x != nil {
-		return x.ItemsForInitiator
-	}
-	return nil
-}
-
-func (x *IBLTExchangeResponse) GetINeed() []*ItemIdentifier {
-	if x != nil {
-		return x.INeed
-	}
-	return nil
-}
-
-type PushEntriesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ReplicaId     string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
-	Entries       []*DeltaEntry          `protobuf:"bytes,2,rep,name=entries,proto3" json:"entries,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *PushEntriesRequest) Reset() {
-	*x = PushEntriesRequest{}
-	mi := &file_replication_replication_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *PushEntriesRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*PushEntriesRequest) ProtoMessage() {}
-
-func (x *PushEntriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_replication_replication_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use PushEntriesRequest.ProtoReflect.Descriptor instead.
-func (*PushEntriesRequest) Descriptor() ([]byte, []int) {
-	return file_replication_replication_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *PushEntriesRequest) GetReplicaId() string {
-	if x != nil {
-		return x.ReplicaId
-	}
-	return ""
-}
-
-func (x *PushEntriesRequest) GetEntries() []*DeltaEntry {
-	if x != nil {
-		return x.Entries
-	}
-	return nil
-}
-
-type PushEntriesResponse struct {
+type PushAck struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Applied       int32                  `protobuf:"varint,1,opt,name=applied,proto3" json:"applied,omitempty"` // number of entries that actually updated local state
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *PushEntriesResponse) Reset() {
-	*x = PushEntriesResponse{}
-	mi := &file_replication_replication_proto_msgTypes[5]
+func (x *PushAck) Reset() {
+	*x = PushAck{}
+	mi := &file_replication_replication_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *PushEntriesResponse) String() string {
+func (x *PushAck) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*PushEntriesResponse) ProtoMessage() {}
+func (*PushAck) ProtoMessage() {}
 
-func (x *PushEntriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_replication_replication_proto_msgTypes[5]
+func (x *PushAck) ProtoReflect() protoreflect.Message {
+	mi := &file_replication_replication_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -383,42 +306,41 @@ func (x *PushEntriesResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use PushEntriesResponse.ProtoReflect.Descriptor instead.
-func (*PushEntriesResponse) Descriptor() ([]byte, []int) {
-	return file_replication_replication_proto_rawDescGZIP(), []int{5}
+// Deprecated: Use PushAck.ProtoReflect.Descriptor instead.
+func (*PushAck) Descriptor() ([]byte, []int) {
+	return file_replication_replication_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *PushEntriesResponse) GetApplied() int32 {
+func (x *PushAck) GetApplied() int32 {
 	if x != nil {
 		return x.Applied
 	}
 	return 0
 }
 
-// FullStateSyncHeader is sent as the first message on a FullStateSync stream
-// so the peer knows who is initiating.
-type FullStateSyncHeader struct {
+type PullRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	ReplicaId     string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
+	ReplicaId     string                 `protobuf:"bytes,1,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"` // initiator id, for logging
+	Identifiers   []*ItemIdentifier      `protobuf:"bytes,2,rep,name=identifiers,proto3" json:"identifiers,omitempty"`              // empty = send full local state
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *FullStateSyncHeader) Reset() {
-	*x = FullStateSyncHeader{}
-	mi := &file_replication_replication_proto_msgTypes[6]
+func (x *PullRequest) Reset() {
+	*x = PullRequest{}
+	mi := &file_replication_replication_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *FullStateSyncHeader) String() string {
+func (x *PullRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*FullStateSyncHeader) ProtoMessage() {}
+func (*PullRequest) ProtoMessage() {}
 
-func (x *FullStateSyncHeader) ProtoReflect() protoreflect.Message {
-	mi := &file_replication_replication_proto_msgTypes[6]
+func (x *PullRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_replication_replication_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -429,102 +351,24 @@ func (x *FullStateSyncHeader) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use FullStateSyncHeader.ProtoReflect.Descriptor instead.
-func (*FullStateSyncHeader) Descriptor() ([]byte, []int) {
-	return file_replication_replication_proto_rawDescGZIP(), []int{6}
+// Deprecated: Use PullRequest.ProtoReflect.Descriptor instead.
+func (*PullRequest) Descriptor() ([]byte, []int) {
+	return file_replication_replication_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *FullStateSyncHeader) GetReplicaId() string {
+func (x *PullRequest) GetReplicaId() string {
 	if x != nil {
 		return x.ReplicaId
 	}
 	return ""
 }
 
-// FullStateSyncMessage is the envelope for every message on the bidi stream.
-// The initiator sends a header first, then zero or more entries.
-// The responder mirrors the same layout in the opposite direction.
-type FullStateSyncMessage struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Types that are valid to be assigned to Payload:
-	//
-	//	*FullStateSyncMessage_Header
-	//	*FullStateSyncMessage_Entry
-	Payload       isFullStateSyncMessage_Payload `protobuf_oneof:"payload"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *FullStateSyncMessage) Reset() {
-	*x = FullStateSyncMessage{}
-	mi := &file_replication_replication_proto_msgTypes[7]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *FullStateSyncMessage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*FullStateSyncMessage) ProtoMessage() {}
-
-func (x *FullStateSyncMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_replication_replication_proto_msgTypes[7]
+func (x *PullRequest) GetIdentifiers() []*ItemIdentifier {
 	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use FullStateSyncMessage.ProtoReflect.Descriptor instead.
-func (*FullStateSyncMessage) Descriptor() ([]byte, []int) {
-	return file_replication_replication_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *FullStateSyncMessage) GetPayload() isFullStateSyncMessage_Payload {
-	if x != nil {
-		return x.Payload
+		return x.Identifiers
 	}
 	return nil
 }
-
-func (x *FullStateSyncMessage) GetHeader() *FullStateSyncHeader {
-	if x != nil {
-		if x, ok := x.Payload.(*FullStateSyncMessage_Header); ok {
-			return x.Header
-		}
-	}
-	return nil
-}
-
-func (x *FullStateSyncMessage) GetEntry() *DeltaEntry {
-	if x != nil {
-		if x, ok := x.Payload.(*FullStateSyncMessage_Entry); ok {
-			return x.Entry
-		}
-	}
-	return nil
-}
-
-type isFullStateSyncMessage_Payload interface {
-	isFullStateSyncMessage_Payload()
-}
-
-type FullStateSyncMessage_Header struct {
-	Header *FullStateSyncHeader `protobuf:"bytes,1,opt,name=header,proto3,oneof"`
-}
-
-type FullStateSyncMessage_Entry struct {
-	Entry *DeltaEntry `protobuf:"bytes,2,opt,name=entry,proto3,oneof"`
-}
-
-func (*FullStateSyncMessage_Header) isFullStateSyncMessage_Payload() {}
-
-func (*FullStateSyncMessage_Entry) isFullStateSyncMessage_Payload() {}
 
 var File_replication_replication_proto protoreflect.FileDescriptor
 
@@ -548,32 +392,22 @@ const file_replication_replication_proto_rawDesc = "" +
 	"physicalMs\x12\x18\n" +
 	"\alogical\x18\x04 \x01(\rR\alogical\x12\x1d\n" +
 	"\n" +
-	"replica_id\x18\x05 \x01(\tR\treplicaId\"Q\n" +
-	"\x13IBLTExchangeRequest\x12\x1d\n" +
+	"replica_id\x18\x05 \x01(\tR\treplicaId\"/\n" +
+	"\x0eGetIBLTRequest\x12\x1d\n" +
 	"\n" +
-	"replica_id\x18\x01 \x01(\tR\treplicaId\x12\x1b\n" +
-	"\tiblt_data\x18\x02 \x01(\fR\bibltData\"\xb1\x01\n" +
-	"\x14IBLTExchangeResponse\x12\x1c\n" +
-	"\tdecodable\x18\x01 \x01(\bR\tdecodable\x12G\n" +
-	"\x13items_for_initiator\x18\x02 \x03(\v2\x17.replication.DeltaEntryR\x11itemsForInitiator\x122\n" +
-	"\x06i_need\x18\x03 \x03(\v2\x1b.replication.ItemIdentifierR\x05iNeed\"f\n" +
-	"\x12PushEntriesRequest\x12\x1d\n" +
+	"replica_id\x18\x01 \x01(\tR\treplicaId\".\n" +
+	"\x0fGetIBLTResponse\x12\x1b\n" +
+	"\tiblt_data\x18\x01 \x01(\fR\bibltData\"#\n" +
+	"\aPushAck\x12\x18\n" +
+	"\aapplied\x18\x01 \x01(\x05R\aapplied\"k\n" +
+	"\vPullRequest\x12\x1d\n" +
 	"\n" +
-	"replica_id\x18\x01 \x01(\tR\treplicaId\x121\n" +
-	"\aentries\x18\x02 \x03(\v2\x17.replication.DeltaEntryR\aentries\"/\n" +
-	"\x13PushEntriesResponse\x12\x18\n" +
-	"\aapplied\x18\x01 \x01(\x05R\aapplied\"4\n" +
-	"\x13FullStateSyncHeader\x12\x1d\n" +
-	"\n" +
-	"replica_id\x18\x01 \x01(\tR\treplicaId\"\x8e\x01\n" +
-	"\x14FullStateSyncMessage\x12:\n" +
-	"\x06header\x18\x01 \x01(\v2 .replication.FullStateSyncHeaderH\x00R\x06header\x12/\n" +
-	"\x05entry\x18\x02 \x01(\v2\x17.replication.DeltaEntryH\x00R\x05entryB\t\n" +
-	"\apayload2\x8f\x02\n" +
-	"\vSyncService\x12S\n" +
-	"\fIBLTExchange\x12 .replication.IBLTExchangeRequest\x1a!.replication.IBLTExchangeResponse\x12P\n" +
-	"\vPushEntries\x12\x1f.replication.PushEntriesRequest\x1a .replication.PushEntriesResponse\x12Y\n" +
-	"\rFullStateSync\x12!.replication.FullStateSyncMessage\x1a!.replication.FullStateSyncMessage(\x010\x01B0Z.github.com/janthoXO/convergeKV/gen/replicationb\x06proto3"
+	"replica_id\x18\x01 \x01(\tR\treplicaId\x12=\n" +
+	"\videntifiers\x18\x02 \x03(\v2\x1b.replication.ItemIdentifierR\videntifiers2\xd7\x01\n" +
+	"\vSyncService\x12D\n" +
+	"\aGetIBLT\x12\x1b.replication.GetIBLTRequest\x1a\x1c.replication.GetIBLTResponse\x12>\n" +
+	"\vPushEntries\x12\x17.replication.DeltaEntry\x1a\x14.replication.PushAck(\x01\x12B\n" +
+	"\vPullEntries\x12\x18.replication.PullRequest\x1a\x17.replication.DeltaEntry0\x01B0Z.github.com/janthoXO/convergeKV/gen/replicationb\x06proto3"
 
 var (
 	file_replication_replication_proto_rawDescOnce sync.Once
@@ -587,36 +421,30 @@ func file_replication_replication_proto_rawDescGZIP() []byte {
 	return file_replication_replication_proto_rawDescData
 }
 
-var file_replication_replication_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_replication_replication_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_replication_replication_proto_goTypes = []any{
-	(*DeltaEntry)(nil),           // 0: replication.DeltaEntry
-	(*ItemIdentifier)(nil),       // 1: replication.ItemIdentifier
-	(*IBLTExchangeRequest)(nil),  // 2: replication.IBLTExchangeRequest
-	(*IBLTExchangeResponse)(nil), // 3: replication.IBLTExchangeResponse
-	(*PushEntriesRequest)(nil),   // 4: replication.PushEntriesRequest
-	(*PushEntriesResponse)(nil),  // 5: replication.PushEntriesResponse
-	(*FullStateSyncHeader)(nil),  // 6: replication.FullStateSyncHeader
-	(*FullStateSyncMessage)(nil), // 7: replication.FullStateSyncMessage
-	(*kv.HLCTimestamp)(nil),      // 8: kv.HLCTimestamp
+	(*DeltaEntry)(nil),      // 0: replication.DeltaEntry
+	(*ItemIdentifier)(nil),  // 1: replication.ItemIdentifier
+	(*GetIBLTRequest)(nil),  // 2: replication.GetIBLTRequest
+	(*GetIBLTResponse)(nil), // 3: replication.GetIBLTResponse
+	(*PushAck)(nil),         // 4: replication.PushAck
+	(*PullRequest)(nil),     // 5: replication.PullRequest
+	(*kv.HLCTimestamp)(nil), // 6: kv.HLCTimestamp
 }
 var file_replication_replication_proto_depIdxs = []int32{
-	8, // 0: replication.DeltaEntry.timestamp:type_name -> kv.HLCTimestamp
-	0, // 1: replication.IBLTExchangeResponse.items_for_initiator:type_name -> replication.DeltaEntry
-	1, // 2: replication.IBLTExchangeResponse.i_need:type_name -> replication.ItemIdentifier
-	0, // 3: replication.PushEntriesRequest.entries:type_name -> replication.DeltaEntry
-	6, // 4: replication.FullStateSyncMessage.header:type_name -> replication.FullStateSyncHeader
-	0, // 5: replication.FullStateSyncMessage.entry:type_name -> replication.DeltaEntry
-	2, // 6: replication.SyncService.IBLTExchange:input_type -> replication.IBLTExchangeRequest
-	4, // 7: replication.SyncService.PushEntries:input_type -> replication.PushEntriesRequest
-	7, // 8: replication.SyncService.FullStateSync:input_type -> replication.FullStateSyncMessage
-	3, // 9: replication.SyncService.IBLTExchange:output_type -> replication.IBLTExchangeResponse
-	5, // 10: replication.SyncService.PushEntries:output_type -> replication.PushEntriesResponse
-	7, // 11: replication.SyncService.FullStateSync:output_type -> replication.FullStateSyncMessage
-	9, // [9:12] is the sub-list for method output_type
-	6, // [6:9] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	6, // 0: replication.DeltaEntry.timestamp:type_name -> kv.HLCTimestamp
+	1, // 1: replication.PullRequest.identifiers:type_name -> replication.ItemIdentifier
+	2, // 2: replication.SyncService.GetIBLT:input_type -> replication.GetIBLTRequest
+	0, // 3: replication.SyncService.PushEntries:input_type -> replication.DeltaEntry
+	5, // 4: replication.SyncService.PullEntries:input_type -> replication.PullRequest
+	3, // 5: replication.SyncService.GetIBLT:output_type -> replication.GetIBLTResponse
+	4, // 6: replication.SyncService.PushEntries:output_type -> replication.PushAck
+	0, // 7: replication.SyncService.PullEntries:output_type -> replication.DeltaEntry
+	5, // [5:8] is the sub-list for method output_type
+	2, // [2:5] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_replication_replication_proto_init() }
@@ -624,17 +452,13 @@ func file_replication_replication_proto_init() {
 	if File_replication_replication_proto != nil {
 		return
 	}
-	file_replication_replication_proto_msgTypes[7].OneofWrappers = []any{
-		(*FullStateSyncMessage_Header)(nil),
-		(*FullStateSyncMessage_Entry)(nil),
-	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_replication_replication_proto_rawDesc), len(file_replication_replication_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

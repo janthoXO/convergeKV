@@ -79,7 +79,7 @@ func TestSymmetricDifference(t *testing.T) {
 
 // TestDecodeSmallSucceedsLargeFails verifies capacity boundaries.
 // With 512 cells and k=3, the IBLT reliably decodes diffs of up to ~40 items.
-// Larger diffs fall back to full-state sync (FullStateSync RPC).
+// Larger diffs fall back to full-state sync (PullEntries with empty ids).
 func TestDecodeSmallSucceedsLargeFails(t *testing.T) {
 	// Small N = 40 reliably decodes with 512 cells + k=3.
 	a := iblt.New(IBLT_DEFAULT_CELLS)

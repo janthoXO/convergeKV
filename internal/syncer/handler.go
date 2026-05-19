@@ -11,6 +11,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/node"
 	"github.com/janthoXO/convergeKV/internal/storage"
+	"google.golang.org/grpc"
 )
 
 // Handler implements repb.SyncServiceServer.
@@ -26,84 +27,32 @@ func NewHandler(n *node.Node, ibltState *IBLTState, store *storage.Store) *Handl
 	return &Handler{node: n, ibltState: ibltState, store: store}
 }
 
-// IBLTExchange is the responder side of Round 1.
-// Receives the initiator's IBLT, XORs with local, decodes, returns the diff.
-func (h *Handler) IBLTExchange(_ context.Context, req *repb.IBLTExchangeRequest) (*repb.IBLTExchangeResponse, error) {
-	// Decode the initiator's IBLT.
-	remoteIBLT, err := IBLTFromEncoded(req.GetIbltData())
-	if err != nil {
-		log.Printf("[syncer/handler] IBLTExchange decode remote IBLT from %s: %v", req.GetReplicaId(), err)
-		return &repb.IBLTExchangeResponse{Decodable: false}, nil
-	}
-
-	// Compute the symmetric difference IBLT.
-	localSnap := h.ibltState.Snapshot()
-	diff := localSnap.SubtractUnsafe(remoteIBLT)
-
-	onlyLocal, onlyRemote, ok := diff.Decode()
-	if !ok {
-		log.Printf("[syncer/handler] IBLT diff too large from %s — signalling fallback", req.GetReplicaId())
-		return &repb.IBLTExchangeResponse{Decodable: false}, nil
-	}
-
-	// onlyLocal: items we have that the initiator doesn't → send full entries.
-	// onlyRemote: items the initiator has that we don't → tell it to send them.
-
-	itemsForInitiator := make([]*repb.DeltaEntry, 0, len(onlyLocal))
-	for _, itemBytes := range onlyLocal {
-		key, field, replicaID, physMs, logical, deleted, valid := DeserialiseItem(itemBytes)
-		if !valid {
-			continue
-		}
-		entry, found, err := h.store.GetField(key, field)
-		if err != nil || !found {
-			continue
-		}
-		// Verify it's the exact version the IBLT encodes (timestamps must match).
-		if entry.Timestamp.PhysicalMs != physMs ||
-			entry.Timestamp.Logical != logical ||
-			entry.ReplicaID != replicaID ||
-			entry.Deleted != deleted {
-			continue
-		}
-		itemsForInitiator = append(itemsForInitiator, entryToProto(key, field, entry))
-	}
-
-	iNeed := make([]*repb.ItemIdentifier, 0, len(onlyRemote))
-	for _, itemBytes := range onlyRemote {
-		key, field, replicaID, physMs, logical, _, valid := DeserialiseItem(itemBytes)
-		if !valid {
-			continue
-		}
-		iNeed = append(iNeed, &repb.ItemIdentifier{
-			Key:        key,
-			Field:      field,
-			PhysicalMs: physMs,
-			Logical:    logical,
-			ReplicaId:  replicaID,
-		})
-	}
-
-	return &repb.IBLTExchangeResponse{
-		Decodable:         true,
-		ItemsForInitiator: itemsForInitiator,
-		INeed:             iNeed,
-	}, nil
+// GetIBLT returns a snapshot of the local IBLT so the initiator can compute
+// the symmetric difference on its own side.
+func (h *Handler) GetIBLT(_ context.Context, req *repb.GetIBLTRequest) (*repb.GetIBLTResponse, error) {
+	encoded := h.ibltState.Snapshot().Encode()
+	log.Printf("[syncer/handler] GetIBLT from %s: sent %d bytes", req.GetReplicaId(), len(encoded))
+	return &repb.GetIBLTResponse{IbltData: encoded}, nil
 }
 
-// PushEntries is called by a peer to deliver entries it has written.
-// Each entry is applied via CRDT merge; the IBLT is updated by ApplyDelta
-// (which calls ibltState.InsertEntry/RemoveEntry through the node's ibltState field).
-func (h *Handler) PushEntries(_ context.Context, req *repb.PushEntriesRequest) (*repb.PushEntriesResponse, error) {
+// PushEntries receives a client-side stream of DeltaEntry messages and applies
+// each one via CRDT merge. Used for both write-path push and anti-entropy push.
+func (h *Handler) PushEntries(stream grpc.ClientStreamingServer[repb.DeltaEntry, repb.PushAck]) error {
 	applied := int32(0)
-	for _, d := range req.GetEntries() {
-		ts := hlc.Timestamp{
-			PhysicalMs: d.GetTimestamp().GetPhysicalMs(),
-			Logical:    d.GetTimestamp().GetLogical(),
+	for {
+		d, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
 		}
 		entry := crdt.FieldEntry{
-			Value:     d.GetValueJson(),
-			Timestamp: ts,
+			Value: d.GetValueJson(),
+			Timestamp: hlc.Timestamp{
+				PhysicalMs: d.GetTimestamp().GetPhysicalMs(),
+				Logical:    d.GetTimestamp().GetLogical(),
+			},
 			ReplicaID: d.GetReplicaId(),
 			Deleted:   d.GetDeleted(),
 		}
@@ -116,73 +65,42 @@ func (h *Handler) PushEntries(_ context.Context, req *repb.PushEntriesRequest) (
 			applied++
 		}
 	}
-	return &repb.PushEntriesResponse{Applied: applied}, nil
+	return stream.SendAndClose(&repb.PushAck{Applied: applied})
 }
 
-// FullStateSync is the full-state fallback handler (bidirectional streaming).
-// Concurrently receives and applies the initiator's entries while streaming
-// the local full state back, so neither side buffers the whole dataset.
-func (h *Handler) FullStateSync(stream repb.SyncService_FullStateSyncServer) error {
-	// Recv goroutine: apply every entry the initiator sends.
-	recvDone := make(chan error, 1)
-
-	var initiatorID string
-	applied := 0
-	go func() {
-		for {
-			msg, err := stream.Recv()
-			if err == io.EOF {
-				recvDone <- nil
-				return
-			}
-
-			if err != nil {
-				recvDone <- err
-				return
-			}
-
-			if hdr := msg.GetHeader(); hdr != nil {
-				initiatorID = hdr.GetReplicaId()
-				continue
-			}
-
-			if d := msg.GetEntry(); d != nil {
-				ts := hlc.Timestamp{
-					PhysicalMs: d.GetTimestamp().GetPhysicalMs(),
-					Logical:    d.GetTimestamp().GetLogical(),
-				}
-				entry := crdt.FieldEntry{
-					Value:     d.GetValueJson(),
-					Timestamp: ts,
-					ReplicaID: d.GetReplicaId(),
-					Deleted:   d.GetDeleted(),
-				}
-
-				if _, err := h.node.ApplyDelta(d.GetKey(), d.GetField(), entry); err != nil {
-					log.Printf("[syncer/handler] FullStateSync apply key=%s field=%s: %v", d.GetKey(), d.GetField(), err)
-				} else {
-					applied++
-				}
-			}
+// PullEntries streams entries back to the initiator.
+// If req.Identifiers is empty, the full local state is streamed (fallback path).
+// Otherwise, each requested (key, field) is looked up and sent as-is.
+func (h *Handler) PullEntries(req *repb.PullRequest, stream grpc.ServerStreamingServer[repb.DeltaEntry]) error {
+	if len(req.GetIdentifiers()) == 0 {
+		sent := 0
+		if err := h.store.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
+			sent++
+			return stream.Send(entryToProto(key, field, entry))
+		}); err != nil {
+			log.Printf("[syncer/handler] PullEntries full-state iterate: %v", err)
+			return err
 		}
-	}()
+		log.Printf("[syncer/handler] PullEntries full-state to %s: sent %d entries", req.GetReplicaId(), sent)
+		return nil
+	}
 
-	// Stream local full state back while the recv goroutine runs.
 	sent := 0
-	if err := h.store.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
+	for _, id := range req.GetIdentifiers() {
+		entry, found, err := h.store.GetField(id.GetKey(), id.GetField())
+		if err != nil {
+			log.Printf("[syncer/handler] PullEntries GetField key=%s field=%s: %v", id.GetKey(), id.GetField(), err)
+			continue
+		}
+		if !found {
+			continue
+		}
+		if err := stream.Send(entryToProto(id.GetKey(), id.GetField(), entry)); err != nil {
+			return err
+		}
 		sent++
-		return stream.Send(&repb.FullStateSyncMessage{
-			Payload: &repb.FullStateSyncMessage_Entry{Entry: entryToProto(key, field, entry)},
-		})
-	}); err != nil {
-		log.Printf("[syncer/handler] FullStateSync iterate: %v", err)
 	}
-
-	if err := <-recvDone; err != nil {
-		return err
-	}
-
-	log.Printf("[syncer/handler] FullStateSync from %s: applied %d, sent %d", initiatorID, applied, sent)
+	log.Printf("[syncer/handler] PullEntries to %s: sent %d/%d entries", req.GetReplicaId(), sent, len(req.GetIdentifiers()))
 	return nil
 }
 

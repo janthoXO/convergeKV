@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	// Larger differences trigger the full-state fallback (FullStateSync RPC).
+	// Larger differences trigger the full-state fallback (PullEntries with empty ids).
 	// numHashFuncs is fixed at 3, the standard choice.
 	numHashFuncs = 3
 )
