@@ -83,6 +83,18 @@ func (h *HLC) Receive(remoteTimestamp Timestamp) (Timestamp, error) {
 	return h.currentTimestamp, nil
 }
 
+// Seed advances the clock so that future Send calls will never return a
+// timestamp below floor. Call once at startup with the highest timestamp
+// found in durable storage to restore monotonicity after a crash or a
+// backwards NTP correction.
+func (h *HLC) Seed(floor Timestamp) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if Less(h.currentTimestamp, floor) {
+		h.currentTimestamp = floor
+	}
+}
+
 // Now returns the current clock value without advancing it.
 func (h *HLC) Now() Timestamp {
 	h.mu.Lock()

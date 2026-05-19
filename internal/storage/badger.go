@@ -139,6 +139,21 @@ func (s *Store) GetField(key, field string) (crdt.FieldEntry, bool, error) {
 	return entry, found, err
 }
 
+// MaxTimestamp scans all persisted entries and returns the highest HLC timestamp
+// found. Returns a zero timestamp when the store is empty.
+// Used at startup to seed the HLC above any value written before a crash so
+// a backwards NTP correction cannot break LWW causality.
+func (s *Store) MaxTimestamp() (hlc.Timestamp, error) {
+	var floor hlc.Timestamp
+	err := s.IterateAll(func(_, _ string, e crdt.FieldEntry) error {
+		if hlc.Less(floor, e.Timestamp) {
+			floor = e.Timestamp
+		}
+		return nil
+	})
+	return floor, err
+}
+
 // IterateAll streams every (key, field, entry) record from BadgerDB, calling fn
 // for each. Iteration stops early and returns fn's error if fn returns non-nil.
 func (s *Store) IterateAll(fn func(key, field string, entry crdt.FieldEntry) error) error {

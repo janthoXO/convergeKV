@@ -61,15 +61,33 @@ type Node struct {
 	store *storage.Store
 }
 
+// NodeOption configures a Node at construction time.
+type NodeOption func(*Node)
+
+// WithHLCFloor seeds the HLC so it will never issue a timestamp below floor.
+// Pass the highest timestamp found in durable storage to restore monotonicity
+// across restarts when the system clock has been corrected backwards by NTP.
+func WithHLCFloor(floor hlc.Timestamp) NodeOption {
+	return func(n *Node) {
+		if hlc.Less(n.hlc.Now(), floor) {
+			n.hlc.Seed(floor)
+		}
+	}
+}
+
 // New constructs a Node. State is served directly from BadgerDB — no upfront
 // bulk load into memory.
-func New(replicaID string, store *storage.Store) (*Node, error) {
-	return &Node{
+func New(replicaID string, store *storage.Store, opts ...NodeOption) (*Node, error) {
+	n := &Node{
 		replicaID: replicaID,
 		hlc:       hlc.New(),
 		keyLocks:  make(map[string]*keyEntry),
 		store:     store,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(n)
+	}
+	return n, nil
 }
 
 // ReplicaID returns the node's stable identifier.

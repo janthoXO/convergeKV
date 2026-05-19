@@ -63,13 +63,24 @@ func main() {
 		log.Fatalf("open storage: %v", err)
 	}
 
-	// ── 2. Node ────────────────────────────────────────────────────────────────
-	n, err := node.New(cfg.ReplicaID, store)
+	// ── 2. HLC floor — find highest persisted timestamp ───────────────────────
+	// If the system clock was corrected backwards (NTP), a freshly initialised
+	// HLC could issue timestamps older than ones already written to storage,
+	// silently breaking LWW causality. Seeding from the highest persisted
+	// timestamp guarantees the clock stays monotone across restarts.
+	hlcFloor, err := store.MaxTimestamp()
+	if err != nil {
+		log.Fatalf("scan HLC floor: %v", err)
+	}
+	log.Printf("[hlc] seeded floor ts=%d.%d", hlcFloor.PhysicalMs, hlcFloor.Logical)
+
+	// ── 3. Node ────────────────────────────────────────────────────────────────
+	n, err := node.New(cfg.ReplicaID, store, node.WithHLCFloor(hlcFloor))
 	if err != nil {
 		log.Fatalf("create node: %v", err)
 	}
 
-	// ── 3. IBLT State — build by streaming persisted data from Badger ─────────
+	// ── 4. IBLT State — build by streaming persisted data from Badger ─────────
 	ibltState, err := syncer.BuildFromStore(store, cfg.IBLTCells)
 	if err != nil {
 		log.Fatalf("build IBLT: %v", err)
@@ -77,7 +88,7 @@ func main() {
 	n.SetIBLTState(ibltState)
 	log.Printf("[iblt] built IBLT from persisted records (%d cells)", cfg.IBLTCells)
 
-	// ── 4. Seeds ───────────────────────────────────────────────────────────────
+	// ── 5. Seeds ───────────────────────────────────────────────────────────────
 	var seeds []string
 	if cfg.Seeds != "" {
 		for _, s := range strings.Split(cfg.Seeds, ",") {
@@ -88,7 +99,7 @@ func main() {
 		}
 	}
 
-	// ── 5. Shared gRPC connection pool ────────────────────────────────────────
+	// ── 6. Shared gRPC connection pool ────────────────────────────────────────
 	pool := connpool.New()
 
 	// ── 6. Gossip ─────────────────────────────────────────────────────────────
