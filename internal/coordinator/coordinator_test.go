@@ -11,6 +11,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/connpool"
 	"github.com/janthoXO/convergeKV/internal/coordinator"
 	"github.com/janthoXO/convergeKV/internal/gossip"
+	"github.com/janthoXO/convergeKV/internal/iblt"
 	"github.com/janthoXO/convergeKV/internal/node"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
@@ -41,11 +42,7 @@ func tempNode(t *testing.T, id string) *node.Node {
 		t.Fatalf("open storage for %s: %v", id, err)
 	}
 	t.Cleanup(func() { store.Close(); os.RemoveAll(dir) })
-	n, err := node.New(id, store)
-	if err != nil {
-		t.Fatalf("create node %s: %v", id, err)
-	}
-	return n
+	return node.New(id, store, iblt.NewIBLTState(512))
 }
 
 // singleMemberGossip starts a one-node gossip instance so that the local node
@@ -70,8 +67,7 @@ func newCoord(t *testing.T, n *node.Node, g *gossip.Gossip, syncer *noOpSyncer) 
 	t.Helper()
 	connPool := connpool.New()
 	fwd := coordinator.NewForwarder(connPool)
-	coord := coordinator.New(context.Background(), n, g, fwd, syncer, 1 /*rf=1: local node is always the replica*/)
-	t.Cleanup(coord.Close)
+	coord := coordinator.New(n, g, fwd, syncer, 1)
 	t.Cleanup(connPool.Close)
 	return coord
 }

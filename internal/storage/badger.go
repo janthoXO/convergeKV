@@ -49,26 +49,6 @@ func decodeKey(b []byte) (key, field string) {
 	return parts[0], parts[1]
 }
 
-// SaveField persists a single FieldEntry.
-func (s *Store) SaveField(key, field string, entry crdt.FieldEntry) error {
-	se := StoredEntry{
-		ValueJSON:  entry.Value,
-		PhysicalMs: entry.Timestamp.PhysicalMs,
-		Logical:    entry.Timestamp.Logical,
-		ReplicaID:  entry.ReplicaID,
-		Deleted:    entry.Deleted,
-	}
-
-	b, err := json.Marshal(se)
-	if err != nil {
-		return err
-	}
-
-	return s.db.Update(func(txn *badger.Txn) error {
-		return txn.Set(badgerKey(key, field), b)
-	})
-}
-
 // decodeEntry unmarshals a stored value blob into a crdt.FieldEntry.
 func decodeEntry(v []byte) (crdt.FieldEntry, error) {
 	var se StoredEntry

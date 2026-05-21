@@ -1,8 +1,4 @@
 name: local
 variables:
-  - name: node_1
+  - name: seed
     value: http://localhost:50051
-  - name: node_2
-    value: http://localhost:50052
-  - name: node_3
-    value: http://localhost:50053

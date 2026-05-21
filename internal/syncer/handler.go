@@ -10,27 +10,24 @@ import (
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/node"
-	"github.com/janthoXO/convergeKV/internal/storage"
 	"google.golang.org/grpc"
 )
 
 // Handler implements repb.SyncServiceServer.
 type Handler struct {
 	repb.UnimplementedSyncServiceServer
-	node      *node.Node
-	ibltState *IBLTState
-	store     *storage.Store
+	node *node.Node
 }
 
 // NewHandler returns a Handler ready to register with a gRPC server.
-func NewHandler(n *node.Node, ibltState *IBLTState, store *storage.Store) *Handler {
-	return &Handler{node: n, ibltState: ibltState, store: store}
+func NewHandler(n *node.Node) *Handler {
+	return &Handler{node: n}
 }
 
 // GetIBLT returns a snapshot of the local IBLT so the initiator can compute
 // the symmetric difference on its own side.
 func (h *Handler) GetIBLT(_ context.Context, req *repb.GetIBLTRequest) (*repb.GetIBLTResponse, error) {
-	encoded := h.ibltState.Snapshot().Encode()
+	encoded := h.node.IBLTSnapshot().Encode()
 	log.Printf("[syncer/handler] GetIBLT from %s: sent %d bytes", req.GetReplicaId(), len(encoded))
 	return &repb.GetIBLTResponse{IbltData: encoded}, nil
 }
@@ -47,16 +44,7 @@ func (h *Handler) PushEntries(stream grpc.ClientStreamingServer[repb.DeltaEntry,
 		if err != nil {
 			return err
 		}
-		entry := crdt.FieldEntry{
-			Value: d.GetValueJson(),
-			Timestamp: hlc.Timestamp{
-				PhysicalMs: d.GetTimestamp().GetPhysicalMs(),
-				Logical:    d.GetTimestamp().GetLogical(),
-			},
-			ReplicaID: d.GetReplicaId(),
-			Deleted:   d.GetDeleted(),
-		}
-		changed, err := h.node.ApplyDelta(d.GetKey(), d.GetField(), entry)
+		changed, err := h.node.ApplyDelta(d.GetKey(), d.GetField(), protoToEntry(d))
 		if err != nil {
 			log.Printf("[syncer/handler] PushEntries apply key=%s field=%s: %v", d.GetKey(), d.GetField(), err)
 			continue
@@ -74,7 +62,7 @@ func (h *Handler) PushEntries(stream grpc.ClientStreamingServer[repb.DeltaEntry,
 func (h *Handler) PullEntries(req *repb.PullRequest, stream grpc.ServerStreamingServer[repb.DeltaEntry]) error {
 	if len(req.GetIdentifiers()) == 0 {
 		sent := 0
-		if err := h.store.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
+		if err := h.node.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
 			sent++
 			return stream.Send(entryToProto(key, field, entry))
 		}); err != nil {
@@ -87,7 +75,7 @@ func (h *Handler) PullEntries(req *repb.PullRequest, stream grpc.ServerStreaming
 
 	sent := 0
 	for _, id := range req.GetIdentifiers() {
-		entry, found, err := h.store.GetField(id.GetKey(), id.GetField())
+		entry, found, err := h.node.GetField(id.GetKey(), id.GetField())
 		if err != nil {
 			log.Printf("[syncer/handler] PullEntries GetField key=%s field=%s: %v", id.GetKey(), id.GetField(), err)
 			continue
@@ -116,5 +104,18 @@ func entryToProto(key, field string, e crdt.FieldEntry) *repb.DeltaEntry {
 		},
 		ReplicaId: e.ReplicaID,
 		Deleted:   e.Deleted,
+	}
+}
+
+// protoToEntry decodes a DeltaEntry proto into a crdt.FieldEntry.
+func protoToEntry(d *repb.DeltaEntry) crdt.FieldEntry {
+	return crdt.FieldEntry{
+		Value: d.GetValueJson(),
+		Timestamp: hlc.Timestamp{
+			PhysicalMs: d.GetTimestamp().GetPhysicalMs(),
+			Logical:    d.GetTimestamp().GetLogical(),
+		},
+		ReplicaID: d.GetReplicaId(),
+		Deleted:   d.GetDeleted(),
 	}
 }

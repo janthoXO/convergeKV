@@ -142,8 +142,8 @@ func TestGetField(t *testing.T) {
 	}
 }
 
-// TestSaveFieldSingle verifies the single-field save path via GetField.
-func TestSaveFieldSingle(t *testing.T) {
+// TestSaveBatchSingleField verifies a one-entry SaveBatch write is readable via GetField.
+func TestSaveBatchSingleField(t *testing.T) {
 	store := openTestStore(t)
 
 	entry := crdt.FieldEntry{
@@ -152,8 +152,8 @@ func TestSaveFieldSingle(t *testing.T) {
 		ReplicaID: "r9",
 		Deleted:   false,
 	}
-	if err := store.SaveField("user:2", "name", entry); err != nil {
-		t.Fatalf("SaveField: %v", err)
+	if err := store.SaveBatch([]FieldUpdate{{Key: "user:2", Field: "name", Entry: entry}}); err != nil {
+		t.Fatalf("SaveBatch: %v", err)
 	}
 
 	got, found, err := store.GetField("user:2", "name")
@@ -161,7 +161,7 @@ func TestSaveFieldSingle(t *testing.T) {
 		t.Fatalf("GetField: %v", err)
 	}
 	if !found {
-		t.Fatal("missing key user:2/name after SaveField")
+		t.Fatal("missing key user:2/name after SaveBatch")
 	}
 	checkField(t, crdt.AWLWWMap{Fields: map[string]crdt.FieldEntry{"name": got}}, "name", `"Bob"`, 999, 3, "r9", false)
 }

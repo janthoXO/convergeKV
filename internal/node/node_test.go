@@ -9,6 +9,7 @@ import (
 
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
+	"github.com/janthoXO/convergeKV/internal/iblt"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
@@ -20,11 +21,7 @@ func openNode(t *testing.T, replicaID string) *Node {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
-	n, err := New(replicaID, store)
-	if err != nil {
-		t.Fatalf("new node: %v", err)
-	}
-	return n
+	return New(replicaID, store, iblt.NewIBLTState(512))
 }
 
 // countEntries returns the number of (key, field) records in the node's store.

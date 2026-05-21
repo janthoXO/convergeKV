@@ -1,0 +1,15 @@
+info:
+  name: Get All Entries
+  type: grpc
+  seq: 5
+
+grpc:
+  url: "{{seed}}"
+  method: /replication.SyncService/PullEntries
+  methodType: server-streaming
+  protoFilePath: ../../proto/replication/replication.proto
+  message: |-
+    {
+      "replicaId": 1
+    }
+  auth: inherit

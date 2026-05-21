@@ -11,10 +11,9 @@ import (
 	"github.com/janthoXO/convergeKV/internal/iblt"
 	"github.com/janthoXO/convergeKV/internal/node"
 	"github.com/janthoXO/convergeKV/internal/storage"
-	"github.com/janthoXO/convergeKV/internal/syncer"
 )
 
-const IBLT_DEFAULT_CELLS = 512
+const ibltDefaultCells = 512
 
 func tempNode(t *testing.T, id string) *node.Node {
 	t.Helper()
@@ -24,18 +23,14 @@ func tempNode(t *testing.T, id string) *node.Node {
 		t.Fatalf("open storage for %s: %v", id, err)
 	}
 	t.Cleanup(func() { store.Close(); os.RemoveAll(dir) })
-	n, err := node.New(id, store)
-	if err != nil {
-		t.Fatalf("create node %s: %v", id, err)
-	}
-	return n
+	return node.New(id, store, iblt.NewIBLTState(ibltDefaultCells))
 }
 
-// countRecords counts (key, field) pairs in a node's store via IterateAll.
+// countRecords counts (key, field) pairs in a node via IterateAll.
 func countRecords(t *testing.T, n *node.Node) int {
 	t.Helper()
 	count := 0
-	if err := n.Store().IterateAll(func(_, _ string, _ crdt.FieldEntry) error {
+	if err := n.IterateAll(func(_, _ string, _ crdt.FieldEntry) error {
 		count++
 		return nil
 	}); err != nil {
@@ -47,9 +42,15 @@ func countRecords(t *testing.T, n *node.Node) int {
 // TestIBLTStateRoundTrip verifies that the IBLTState serialisation is
 // deterministic and that an IBLT built from the store matches the live one.
 func TestIBLTStateRoundTrip(t *testing.T) {
-	n := tempNode(t, "test-node")
-	is := syncer.NewIBLTState(IBLT_DEFAULT_CELLS)
-	n.SetIBLTState(is)
+	dir := t.TempDir()
+	store, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	t.Cleanup(func() { store.Close(); os.RemoveAll(dir) })
+
+	is := iblt.NewIBLTState(ibltDefaultCells)
+	n := node.New("test-node", store, is)
 
 	// Write some data.
 	for i := 0; i < 20; i++ {
@@ -60,7 +61,7 @@ func TestIBLTStateRoundTrip(t *testing.T) {
 	}
 
 	// Build a second IBLTState directly from the store and compare.
-	is2, err := syncer.BuildFromStore(n.Store(), IBLT_DEFAULT_CELLS)
+	is2, err := iblt.BuildFromStore(store, ibltDefaultCells)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
@@ -87,15 +88,12 @@ func TestDeserialiseItemRoundTrip(t *testing.T) {
 	}
 	key, field := "my-key", "my-field"
 
-	is := syncer.NewIBLTState(IBLT_DEFAULT_CELLS)
+	is := iblt.NewIBLTState(ibltDefaultCells)
 	is.InsertEntry(key, field, entry)
 
-	// Export the item bytes and verify deserialisation.
-	// We need to access the serialised form; we'll use the exported DeserialiseItem.
-	// Build item bytes manually.
+	// Extract the item bytes by subtracting an empty IBLT.
 	snap := is.Snapshot()
-	// We inserted 1 item; subtract empty to get the diff = the one item.
-	diff := snap.SubtractUnsafe(iblt.New(IBLT_DEFAULT_CELLS))
+	diff := snap.SubtractUnsafe(iblt.New(ibltDefaultCells))
 	onlyA, _, ok := diff.Decode()
 	if !ok {
 		t.Fatal("decode failed")
@@ -104,7 +102,7 @@ func TestDeserialiseItemRoundTrip(t *testing.T) {
 		t.Fatalf("expected 1 item, got %d", len(onlyA))
 	}
 
-	k, f, rID, physMs, logical, deleted, valid := syncer.DeserialiseItem(onlyA[0])
+	k, f, rID, physMs, logical, deleted, valid := iblt.DeserialiseItem(onlyA[0])
 	if !valid {
 		t.Fatal("DeserialiseItem returned invalid")
 	}
@@ -121,10 +119,6 @@ func TestDeserialiseItemRoundTrip(t *testing.T) {
 func TestIBLTConvergence(t *testing.T) {
 	n1 := tempNode(t, "n1")
 	n2 := tempNode(t, "n2")
-	is1 := syncer.NewIBLTState(IBLT_DEFAULT_CELLS)
-	is2 := syncer.NewIBLTState(IBLT_DEFAULT_CELLS)
-	n1.SetIBLTState(is1)
-	n2.SetIBLTState(is2)
 
 	// Write 5 keys to n1 only.
 	for i := 0; i < 5; i++ {
@@ -139,11 +133,11 @@ func TestIBLTConvergence(t *testing.T) {
 		}
 	}
 
-	// Simulate IBLT exchange: n1 sends its IBLT to n2.
-	snap1 := is1.Snapshot()
-	snap2 := is2.Snapshot()
+	// Simulate IBLT exchange: compute diff from n2's perspective.
+	snap1 := n1.IBLTSnapshot()
+	snap2 := n2.IBLTSnapshot()
 
-	diff := snap2.SubtractUnsafe(snap1) // from n2's perspective
+	diff := snap2.SubtractUnsafe(snap1)
 	onlyInN2, onlyInN1, ok := diff.Decode()
 	if !ok {
 		t.Fatal("IBLT decode failed")
@@ -158,14 +152,13 @@ func TestIBLTConvergence(t *testing.T) {
 		t.Errorf("expected 5 items in onlyInN1, got %d", len(onlyInN1))
 	}
 
-	// Now sync: n1 applies n2's items, n2 applies n1's items.
-	// Use GetField instead of iterating a full snapshot.
+	// Sync: n1 applies n2's items, n2 applies n1's items.
 	for _, itemBytes := range onlyInN2 {
-		k, f, rID, physMs, logical, deleted, valid := syncer.DeserialiseItem(itemBytes)
+		k, f, rID, physMs, logical, deleted, valid := iblt.DeserialiseItem(itemBytes)
 		if !valid {
 			t.Fatal("invalid item bytes")
 		}
-		entry, found, err := n2.Store().GetField(k, f)
+		entry, found, err := n2.GetField(k, f)
 		if err != nil {
 			t.Fatalf("GetField n2 %s/%s: %v", k, f, err)
 		}
@@ -180,11 +173,11 @@ func TestIBLTConvergence(t *testing.T) {
 		}
 	}
 	for _, itemBytes := range onlyInN1 {
-		k, f, rID, physMs, logical, deleted, valid := syncer.DeserialiseItem(itemBytes)
+		k, f, rID, physMs, logical, deleted, valid := iblt.DeserialiseItem(itemBytes)
 		if !valid {
 			t.Fatal("invalid item bytes")
 		}
-		entry, found, err := n1.Store().GetField(k, f)
+		entry, found, err := n1.GetField(k, f)
 		if err != nil {
 			t.Fatalf("GetField n1 %s/%s: %v", k, f, err)
 		}

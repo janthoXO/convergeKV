@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sync"
-	"time"
 
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
 	repb "github.com/janthoXO/convergeKV/gen/replication"
@@ -31,25 +29,12 @@ type Coordinator struct {
 	forwarder *Forwarder
 	syncer    PushSyncer
 	rf        int
-
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
 }
 
-// New returns a Coordinator. ctx should be the server-lifetime context so that
-// in-flight push goroutines can be cancelled at shutdown via Close.
-func New(ctx context.Context, n *node.Node, g *gossip.Gossip, f *Forwarder, syncer PushSyncer, rf int) *Coordinator {
-	ctx, cancel := context.WithCancel(ctx)
-	return &Coordinator{node: n, gossip: g, forwarder: f, syncer: syncer, rf: rf, ctx: ctx, cancel: cancel}
-}
-
-// Close cancels the coordinator context and waits for all in-flight push
-// goroutines to finish. Call after srv.GracefulStop() so no new writes can
-// start new goroutines.
-func (c *Coordinator) Close() {
-	c.cancel()
-	c.wg.Wait()
+// New returns a Coordinator.
+func New(n *node.Node, g *gossip.Gossip, f *Forwarder, syncer PushSyncer, rf int) *Coordinator {
+	c := &Coordinator{node: n, gossip: g, forwarder: f, syncer: syncer, rf: rf}
+	return c
 }
 
 // Put handles a put request.
@@ -61,12 +46,12 @@ func (c *Coordinator) Put(ctx context.Context, req *kvpb.PutRequest) (*kvpb.PutR
 	replicas := hrw.Replicas(req.GetKey(), members, c.rf)
 	localID := c.node.ReplicaID()
 
-	if len(replicas) == 0 || containsID(replicas, localID) {
+	if containsID(replicas, localID) {
 		resp, updates, err := c.handleLocalPut(ctx, req)
 		if err != nil {
 			return nil, err
 		}
-		c.launchPush(updates, replicas, localID)
+		c.pushWriteToPeers(ctx, updates, replicas, localID)
 		return resp, nil
 	}
 
@@ -82,7 +67,7 @@ func (c *Coordinator) Get(ctx context.Context, req *kvpb.GetRequest) (*kvpb.GetR
 	replicas := hrw.Replicas(req.GetKey(), members, c.rf)
 	localID := c.node.ReplicaID()
 
-	if len(replicas) == 0 || containsID(replicas, localID) {
+	if containsID(replicas, localID) {
 		v, found, err := c.node.Get(req.GetKey())
 		if err != nil {
 			return nil, fmt.Errorf("coordinator: local get: %w", err)
@@ -101,12 +86,12 @@ func (c *Coordinator) Delete(ctx context.Context, req *kvpb.DeleteRequest) (*kvp
 	replicas := hrw.Replicas(req.GetKey(), members, c.rf)
 	localID := c.node.ReplicaID()
 
-	if len(replicas) == 0 || containsID(replicas, localID) {
+	if containsID(replicas, localID) {
 		resp, updates, err := c.handleLocalDelete(ctx, req)
 		if err != nil {
 			return nil, err
 		}
-		c.launchPush(updates, replicas, localID)
+		c.pushWriteToPeers(ctx, updates, replicas, localID)
 		return resp, nil
 	}
 
@@ -137,24 +122,12 @@ func (c *Coordinator) handleLocalDelete(_ context.Context, req *kvpb.DeleteReque
 	}, updates, nil
 }
 
-// launchPush starts a tracked goroutine that pushes updates to peer replicas.
-// The goroutine is bounded by a 2-second timeout derived from the coordinator
-// context, so it is cancelled promptly on shutdown.
-func (c *Coordinator) launchPush(updates []storage.FieldUpdate, replicas []gossip.MemberInfo, localID string) {
+// pushWriteToPeers converts the written FieldUpdates to DeltaEntries and fans
+// them out to the other HRW replicas. The syncer owns goroutine tracking and timeouts.
+func (c *Coordinator) pushWriteToPeers(ctx context.Context, updates []storage.FieldUpdate, replicas []gossip.MemberInfo, localID string) {
 	if len(updates) == 0 {
 		return
 	}
-	c.wg.Go(func() {
-		pushCtx, cancel := context.WithTimeout(c.ctx, 2*time.Second)
-		defer cancel()
-		c.pushWriteToPeers(pushCtx, updates, replicas, localID)
-	})
-}
-
-// pushWriteToPeers converts the written FieldUpdates to DeltaEntries and sends
-// them to the other HRW replicas via PushToPeers.
-// Called from launchPush; errors are logged but not retried.
-func (c *Coordinator) pushWriteToPeers(ctx context.Context, updates []storage.FieldUpdate, replicas []gossip.MemberInfo, localID string) {
 	entries := make([]*repb.DeltaEntry, 0, len(updates))
 	for _, u := range updates {
 		entries = append(entries, &repb.DeltaEntry{
@@ -168,10 +141,6 @@ func (c *Coordinator) pushWriteToPeers(ctx context.Context, updates []storage.Fi
 			ReplicaId: u.Entry.ReplicaID,
 			Deleted:   u.Entry.Deleted,
 		})
-	}
-	if err := ctx.Err(); err != nil {
-		log.Printf("[coordinator] pushWriteToPeers: context done before push: %v", err)
-		return
 	}
 	c.syncer.PushToPeers(ctx, entries, replicas, localID)
 }

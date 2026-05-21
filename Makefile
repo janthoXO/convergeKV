@@ -25,8 +25,10 @@ format:
 test:
 	go test ./... -race -count=1
 
+N ?= 2
+
 docker-up:
-	docker compose up --build -d
+	docker compose up --build -d --scale worker=$(N)
 
 docker-down:
 	docker compose down -v

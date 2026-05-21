@@ -72,10 +72,18 @@ func (p *Pool) EvictAbsent(keep map[string]struct{}) {
 }
 
 // Close shuts down all pooled connections.
+// Connections are removed from the map under the lock but closed outside it,
+// matching the Evict / EvictAbsent pattern.
 func (p *Pool) Close() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	toClose := make([]*grpc.ClientConn, 0, len(p.conns))
 	for _, c := range p.conns {
+		toClose = append(toClose, c)
+	}
+	p.conns = make(map[string]*grpc.ClientConn)
+	p.mu.Unlock()
+
+	for _, c := range toClose {
 		c.Close()
 	}
 }

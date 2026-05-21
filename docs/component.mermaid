@@ -1,0 +1,90 @@
+architecture-beta
+  service handler(server)[Handler]
+  service forwardHandler(server)[ForwardHandler]
+
+  service coordinator(server)[Coordinator]
+  service gossip(server)[Gossip]
+  service connPool(server)[ConnPool]
+  service forwarder(server)[Forwarder]
+  service hrw(server)[HRW]
+
+  service node(server)[Node]
+
+  service syncer(server)[Syncer]
+  service ibltState(server)[IBLTState]
+  service iblt(server)[IBLT]
+  service hlc(server)[HLC]
+  service crdt(server)[CRDT]
+
+  service store(database)[Store]
+
+  junction handlerJunction
+  junction forwardHandlerJunction
+  
+  handler:R -- L:handlerJunction
+  forwardHandler:R -- L:forwardHandlerJunction
+  forwardHandlerJunction:B -- T:handlerJunction
+  handlerJunction:R --> L:coordinator
+
+  junction coordTopJunction
+  hrw:B <-- T:coordTopJunction
+  coordTopJunction:B -- T:coordinator
+
+  junction coordBotJunction
+  junction forwarderTopJunction
+  junction syncerTopJunction
+  coordBotJunction:T -- B:coordinator
+  gossip:T <-- B:coordBotJunction
+  forwarderTopJunction:R -- L:coordBotJunction
+  forwarder:T <-- B:forwarderTopJunction
+  syncerTopJunction:L -- R:coordBotJunction
+  syncer:T <-- B:syncerTopJunction
+  syncer:L --> R:gossip
+
+  junction poolTopJunction
+  junction forwarderBotJunction
+  junction syncerBotJunction
+  poolTopJunction:B --> T:connPool
+  gossip:B -- T:poolTopJunction
+  forwarder:B -- T:forwarderBotJunction
+  forwarderBotJunction:R -- L:poolTopJunction
+  syncer:B -- T:syncerBotJunction
+  syncerBotJunction:R -- L:poolTopJunction
+
+
+  junction coordRightJunction
+  junction nodeLeftJunction
+  coordinator:R -- L:coordRightJunction
+  coordRightJunction:R -- L:nodeLeftJunction
+  nodeLeftJunction:R --> L:node
+
+  junction syncerRightJunction
+  syncer:R -- L:syncerRightJunction
+  syncerRightJunction:T -- B:nodeLeftJunction
+
+  junction nodeTopJunction
+  junction hlcBotJunction
+  junction crdtBotJunction
+  nodeTopJunction:B -- T:node
+  hlcBotJunction:T --> B:hlc
+  hlcBotJunction:R -- L:nodeTopJunction
+  crdtBotJunction:T --> B:crdt
+  crdtBotJunction:L -- R:nodeTopJunction
+
+  junction nodeBotJunction
+  node:B -- T:nodeBotJunction
+  nodeBotJunction:B --> T:ibltState
+  ibltState:R --> L:iblt
+
+  junction nodeRightJunction
+  node:R -- L:nodeRightJunction
+  nodeRightJunction:R --> L:store
+
+  %% forwarder --> pool
+  %% gossip --> pool indirectly
+
+  %% syncer --> pool
+  %% syncer --> node
+  %% syncer --> ibltState
+
+  %% node --> crdt

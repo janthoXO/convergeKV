@@ -41,12 +41,10 @@ func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, er
 		return false, err
 	}
 
-	if n.ibltState != nil {
-		if exists {
-			n.ibltState.RemoveEntry(key, field, existingEntry)
-		}
-		n.ibltState.InsertEntry(key, field, incoming)
+	if exists {
+		n.ibltState.RemoveEntry(key, field, existingEntry)
 	}
+	n.ibltState.InsertEntry(key, field, incoming)
 
 	return true, nil
 }

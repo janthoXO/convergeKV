@@ -4,13 +4,13 @@ info:
   seq: 2
 
 grpc:
-  url: "{{node_1}}"
+  url: "{{seed}}"
   method: /kv.KVService/Put
   methodType: unary
   protoFilePath: ../../proto/kv/kv.proto
   message: |-
     {
       "key": "user:1",
-      "value_json": "{\"wo\":30}"
+      "value_json": "{\"name\":30}"
     }
   auth: inherit

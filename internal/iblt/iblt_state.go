@@ -1,41 +1,37 @@
-// Package syncer manages the IBLT-based anti-entropy synchronisation protocol.
-// It maintains an incremental IBLT that mirrors the node's durable state,
-// and runs a background loop that reconciles state with every cluster peer.
-package syncer
+package iblt
 
 import (
 	"encoding/binary"
 
 	"github.com/janthoXO/convergeKV/internal/crdt"
-	"github.com/janthoXO/convergeKV/internal/iblt"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
-// IBLTState wraps a live IBLT and an RWMutex.
-// It mirrors the entries persisted in BadgerDB and is kept in sync with every write.
-// IBLTState implements node.IBLTUpdater.
+// IBLTState is an in-memory mirror of the node's durable store encoded as an
+// IBLT. Every persisted (key, field, entry) triple is serialised to a
+// fixed-width binary item and tracked in the IBLT so that the anti-entropy
+// syncer can compute set differences cheaply.
 type IBLTState struct {
-	t        *iblt.IBLT
-	numCells int
+	t *IBLT
 }
 
 // NewIBLTState constructs an empty IBLTState.
 func NewIBLTState(numCells int) *IBLTState {
-	return &IBLTState{t: iblt.New(numCells), numCells: numCells}
+	return &IBLTState{t: New(numCells)}
 }
 
 // serialiseItem produces the canonical fixed-width binary representation of a
 // field entry for IBLT membership. The format is:
 //
-//	key_len     uint32
-//	key         []byte
-//	field_len   uint32
-//	field       []byte
-//	physical_ms uint64
-//	logical     uint32
+//	key_len       uint32
+//	key           []byte
+//	field_len     uint32
+//	field         []byte
+//	physical_ms   uint64
+//	logical       uint32
 //	replicaID_len uint32
-//	replicaID   []byte
-//	deleted     uint8  (0 or 1)
+//	replicaID     []byte
+//	deleted       uint8  (0 or 1)
 func serialiseItem(key, field string, e crdt.FieldEntry) []byte {
 	kb := []byte(key)
 	fb := []byte(field)
@@ -76,7 +72,7 @@ func serialiseItem(key, field string, e crdt.FieldEntry) []byte {
 }
 
 // DeserialiseItem parses the canonical serialisation back into its components.
-// Returns (key, field, physicalMs, logical, replicaID, deleted, ok).
+// Returns (key, field, replicaID, physicalMs, logical, deleted, ok).
 func DeserialiseItem(b []byte) (key, field, replicaID string, physMs uint64, logical uint32, deleted bool, ok bool) {
 	pos := 0
 	readStr := func() (string, bool) {
@@ -122,21 +118,22 @@ func DeserialiseItem(b []byte) (key, field, replicaID string, physMs uint64, log
 	return
 }
 
-// InsertEntry adds an entry to the IBLT. Implements node.IBLTUpdater.
+// InsertEntry adds an entry to the IBLT.
 func (s *IBLTState) InsertEntry(key, field string, e crdt.FieldEntry) {
 	s.t.Insert(serialiseItem(key, field, e))
 }
 
-// RemoveEntry removes an entry from the IBLT. Implements node.IBLTUpdater.
+// RemoveEntry removes an entry from the IBLT.
 func (s *IBLTState) RemoveEntry(key, field string, e crdt.FieldEntry) {
 	s.t.Delete(serialiseItem(key, field, e))
 }
 
-func (s *IBLTState) Snapshot() *iblt.IBLT {
+// Snapshot returns a consistent deep copy of the underlying IBLT.
+func (s *IBLTState) Snapshot() *IBLT {
 	return s.t.Snapshot()
 }
 
-// BuildFromStore constructs an IBLTState by streaming all entries from BadgerDB.
+// BuildFromStore constructs an IBLTState by streaming all entries from storage.
 // Called once at startup to initialise the IBLT from persisted data.
 func BuildFromStore(store *storage.Store, numCells int) (*IBLTState, error) {
 	s := NewIBLTState(numCells)

@@ -4,7 +4,7 @@ info:
   seq: 3
 
 grpc:
-  url: "{{node_1}}"
+  url: "{{seed}}"
   method: /kv.KVService/Get
   methodType: unary
   protoFilePath: ../../proto/kv/kv.proto

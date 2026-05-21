@@ -1,74 +1,48 @@
-version: "3.9"
+x-shared-env: &shared-env
+  GRPC_PORT:   "50051"
+  GOSSIP_PORT: "7946"
+  GOSSIP_BIND: "0.0.0.0"
+  DATA_DIR:    "/data"
+  RF:          "3"
+  SYNC_MS:     "20000"
+  IBLT_CELLS:  "512"
 
 x-node-defaults: &node-defaults
   build: .
   restart: unless-stopped
   networks:
     - convergekv
+  volumes:
+    - /data  # anonymous volume — each container gets its own, replicas don't share data
 
 networks:
   convergekv:
     driver: bridge
 
 services:
-  replica1:
+  # Static bootstrap node. Workers discover the cluster through it.
+  seed:
     <<: *node-defaults
-    container_name: replica1
-    hostname: replica1
+    container_name: seed
+    hostname: seed
     environment:
-      REPLICA_ID:    "replica1"
-      GRPC_PORT:     "50051"
-      GOSSIP_PORT:   "7946"
-      GOSSIP_BIND:   "0.0.0.0"
-      SEEDS:         "replica2:7946,replica3:7946"
-      DATA_DIR:      "/data"
-      RF:            "3"
-      SYNC_MS:       "2000"
-      IBLT_CELLS:    "512"
-    volumes:
-      - replica1-data:/data
+      <<: *shared-env
+      REPLICA_ID:  "seed"
+      SEEDS:       ""  # bootstrap node; no seeds needed
     ports:
       - "50051:50051"
 
-  replica2:
+  # Scalable workers. Change replicas here, or override with --scale worker=N.
+  # REPLICA_ID is unset — each container falls back to $HOSTNAME (auto-assigned
+  # by Docker as <project>-worker-<index>, unique per replica).
+  worker:
     <<: *node-defaults
-    container_name: replica2
-    hostname: replica2
+    depends_on:
+      - seed
+    deploy:
+      replicas: 5
     environment:
-      REPLICA_ID:    "replica2"
-      GRPC_PORT:     "50051"
-      GOSSIP_PORT:   "7946"
-      GOSSIP_BIND:   "0.0.0.0"
-      SEEDS:         "replica1:7946,replica3:7946"
-      DATA_DIR:      "/data"
-      RF:            "3"
-      SYNC_MS:       "2000"
-      IBLT_CELLS:    "512"
-    volumes:
-      - replica2-data:/data
+      <<: *shared-env
+      SEEDS:       "seed:7946"
     ports:
-      - "50052:50051"
-
-  replica3:
-    <<: *node-defaults
-    container_name: replica3
-    hostname: replica3
-    environment:
-      REPLICA_ID:    "replica3"
-      GRPC_PORT:     "50051"
-      GOSSIP_PORT:   "7946"
-      GOSSIP_BIND:   "0.0.0.0"
-      SEEDS:         "replica1:7946,replica2:7946"
-      DATA_DIR:      "/data"
-      RF:            "3"
-      SYNC_MS:       "2000"
-      IBLT_CELLS:    "512"
-    volumes:
-      - replica3-data:/data
-    ports:
-      - "50053:50051"
-
-volumes:
-  replica1-data:
-  replica2-data:
-  replica3-data:
+      - "50051"  # random host port per replica; find with: docker compose port worker 50051 --index N

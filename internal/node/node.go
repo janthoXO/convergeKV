@@ -1,6 +1,6 @@
 // Package node implements the central state holder for a ConvergeKV replica.
-// It owns the HLC and the storage layer. All state is persisted in BadgerDB;
-// there is no in-memory copy of the CRDT map.
+// It owns the HLC, the storage layer, and the IBLT mirror.
+// All state is persisted in BadgerDB; there is no in-memory copy of the CRDT map.
 // All exported methods are safe for concurrent use.
 package node
 
@@ -9,20 +9,9 @@ import (
 
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
+	"github.com/janthoXO/convergeKV/internal/iblt"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
-
-// IBLTUpdater is the minimal interface that the IBLT state object must satisfy.
-// Defined here to avoid a circular import between node and syncer.
-// syncer.IBLTState implements this interface.
-type IBLTUpdater interface {
-	InsertEntry(key, field string, e crdt.FieldEntry)
-	RemoveEntry(key, field string, e crdt.FieldEntry)
-}
-
-// DeltaRecord is a flat (key, field, entry) triple used in replication.
-// Replaces the old KeyFieldEntryTuple name for clarity.
-type DeltaRecord = KeyFieldEntryTuple
 
 // keyEntry is the per-key lock with a reference count.
 // refs counts goroutines that have acquired (or are waiting to acquire) the lock.
@@ -49,10 +38,7 @@ type keyEntry struct {
 type Node struct {
 	replicaID string
 	hlc       *hlc.HLC
-
-	// ibltState mirrors the node's durable state in an IBLT for sync.
-	// It is injected after construction via SetIBLTState; nil means not yet set.
-	ibltState IBLTUpdater
+	ibltState *iblt.IBLTState
 
 	// locksMu guards the keyLocks map itself (not the per-key locks).
 	locksMu  sync.Mutex
@@ -76,18 +62,19 @@ func WithHLCFloor(floor hlc.Timestamp) NodeOption {
 }
 
 // New constructs a Node. State is served directly from BadgerDB — no upfront
-// bulk load into memory.
-func New(replicaID string, store *storage.Store, opts ...NodeOption) (*Node, error) {
+// bulk load into memory. ibltState must be pre-built via iblt.BuildFromStore.
+func New(replicaID string, store *storage.Store, ibltState *iblt.IBLTState, opts ...NodeOption) *Node {
 	n := &Node{
 		replicaID: replicaID,
 		hlc:       hlc.New(),
+		ibltState: ibltState,
 		keyLocks:  make(map[string]*keyEntry),
 		store:     store,
 	}
 	for _, opt := range opts {
 		opt(n)
 	}
-	return n, nil
+	return n
 }
 
 // ReplicaID returns the node's stable identifier.
@@ -101,25 +88,22 @@ func (n *Node) ReceiveHLC(remote hlc.Timestamp) (hlc.Timestamp, error) {
 	return n.hlc.Receive(remote)
 }
 
-// SetIBLTState injects the IBLT state object. Called from main.go after
-// both node and IBLTState are constructed. Thread-safe: called once at startup
-// before any concurrent requests.
-func (n *Node) SetIBLTState(s IBLTUpdater) {
-	n.ibltState = s
+// IBLTSnapshot returns a consistent point-in-time copy of the IBLT for sync.
+func (n *Node) IBLTSnapshot() *iblt.IBLT {
+	return n.ibltState.Snapshot()
 }
 
-// Store returns the underlying storage handle. Used by syncer and coordinator
-// to perform direct Badger reads without going through the node's write path.
-func (n *Node) Store() *storage.Store { return n.store }
+// GetField reads a single field entry directly from storage.
+func (n *Node) GetField(key, field string) (crdt.FieldEntry, bool, error) {
+	return n.store.GetField(key, field)
+}
 
-// acquireKey locks the per-key mutex and returns a release function that unlocks
-// it and decrements the reference count, removing the entry from keyLocks if
-// the count reaches zero.
-//
-// Usage:
-//
-//	release := n.acquireKey(key)
-//	defer release()
+// IterateAll streams all persisted entries to fn. Paginates internally.
+func (n *Node) IterateAll(fn func(key, field string, entry crdt.FieldEntry) error) error {
+	return n.store.IterateAll(fn)
+}
+
+// acquireKey locks the per-key mutex and returns a release function.
 func (n *Node) acquireKey(key string) func() {
 	// Increment the ref count while holding locksMu so the entry cannot be
 	// deleted between the lookup and the mu.Lock() call below.

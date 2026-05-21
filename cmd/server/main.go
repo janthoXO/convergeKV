@@ -26,6 +26,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/connpool"
 	"github.com/janthoXO/convergeKV/internal/coordinator"
 	"github.com/janthoXO/convergeKV/internal/gossip"
+	"github.com/janthoXO/convergeKV/internal/iblt"
 	"github.com/janthoXO/convergeKV/internal/node"
 	"github.com/janthoXO/convergeKV/internal/storage"
 	"github.com/janthoXO/convergeKV/internal/syncer"
@@ -33,7 +34,7 @@ import (
 
 // config holds all server configuration parsed from environment variables.
 type config struct {
-	ReplicaID  string `env:"REPLICA_ID,required"`
+	ReplicaID  string `env:"REPLICA_ID"` // optional; falls back to os.Hostname()
 	GRPCPort   int    `env:"GRPC_PORT"     envDefault:"50051"`
 	GossipPort int    `env:"GOSSIP_PORT"   envDefault:"7946"`
 	GossipBind string `env:"GOSSIP_BIND"   envDefault:"0.0.0.0"`
@@ -53,6 +54,13 @@ func main() {
 	var cfg config
 	if err := cenv.Parse(&cfg); err != nil {
 		log.Fatalf("config: %v", err)
+	}
+	if cfg.ReplicaID == "" {
+		h, err := os.Hostname()
+		if err != nil || h == "" {
+			log.Fatalf("config: REPLICA_ID unset and os.Hostname() failed: %v", err)
+		}
+		cfg.ReplicaID = h
 	}
 	log.Printf("[config] replica=%s grpc=%d gossip=%d seeds=%q dataDir=%s rf=%d syncMs=%d ibltCells=%d",
 		cfg.ReplicaID, cfg.GRPCPort, cfg.GossipPort, cfg.Seeds, cfg.DataDir, cfg.RF, cfg.SyncMs, cfg.IBLTCells)
@@ -74,35 +82,33 @@ func main() {
 	}
 	log.Printf("[hlc] seeded floor ts=%d.%d", hlcFloor.PhysicalMs, hlcFloor.Logical)
 
-	// ── 3. Node ────────────────────────────────────────────────────────────────
-	n, err := node.New(cfg.ReplicaID, store, node.WithHLCFloor(hlcFloor))
-	if err != nil {
-		log.Fatalf("create node: %v", err)
-	}
-
-	// ── 4. IBLT State — build by streaming persisted data from Badger ─────────
-	ibltState, err := syncer.BuildFromStore(store, cfg.IBLTCells)
+	// ── 3. IBLT State — build by streaming persisted data from Badger ─────────
+	ibltState, err := iblt.BuildFromStore(store, cfg.IBLTCells)
 	if err != nil {
 		log.Fatalf("build IBLT: %v", err)
 	}
-	n.SetIBLTState(ibltState)
 	log.Printf("[iblt] built IBLT from persisted records (%d cells)", cfg.IBLTCells)
+
+	// ── 4. Node ────────────────────────────────────────────────────────────────
+	n := node.New(cfg.ReplicaID, store, ibltState, node.WithHLCFloor(hlcFloor))
 
 	// ── 5. Seeds ───────────────────────────────────────────────────────────────
 	var seeds []string
 	if cfg.Seeds != "" {
-		for _, s := range strings.Split(cfg.Seeds, ",") {
+		for s := range strings.SplitSeq(cfg.Seeds, ",") {
 			s = strings.TrimSpace(s)
-			if s != "" {
-				seeds = append(seeds, s)
+			if s == "" {
+				continue
 			}
+
+			seeds = append(seeds, s)
 		}
 	}
 
 	// ── 6. Shared gRPC connection pool ────────────────────────────────────────
 	pool := connpool.New()
 
-	// ── 6. Gossip ─────────────────────────────────────────────────────────────
+	// ── 7. Gossip ─────────────────────────────────────────────────────────────
 	// OnChange evicts connections for departed peers; HRW reads Members() live.
 	g, err := gossip.Start(gossip.Config{
 		BindAddr:  cfg.GossipBind,
@@ -122,23 +128,25 @@ func main() {
 		log.Fatalf("start gossip: %v", err)
 	}
 
-	// ── 7. Signal context (used by syncer, coordinator, and serve loop) ────────
+	// ── 8. Signal context ─────────────────────────────────────────────────────
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// ── 8. Syncer ─────────────────────────────────────────────────────────────
-	sync := syncer.NewSyncer(n, g, ibltState, store, pool, time.Duration(cfg.SyncMs)*time.Millisecond)
+	// ── 9. Syncer ─────────────────────────────────────────────────────────────
+	sync := syncer.New(n, g, pool,
+		syncer.WithContext(ctx),
+		syncer.WithSyncInterval(time.Duration(cfg.SyncMs)*time.Millisecond),
+	)
 
-	// ── 9. Forwarder and Coordinator ──────────────────────────────────────────
+	// ── 10. Forwarder and Coordinator ─────────────────────────────────────────
 	fwd := coordinator.NewForwarder(pool)
+	coord := coordinator.New(n, g, fwd, sync, cfg.RF)
 
-	coord := coordinator.New(ctx, n, g, fwd, sync, cfg.RF)
-
-	// ── 10. gRPC server ───────────────────────────────────────────────────────
+	// ── 11. gRPC server ───────────────────────────────────────────────────────
 	srv := grpc.NewServer()
 	kvpb.RegisterKVServiceServer(srv, api.NewHandler(coord, n, g))
 	fwdpb.RegisterForwardServiceServer(srv, api.NewForwardHandler(coord))
-	repb.RegisterSyncServiceServer(srv, syncer.NewHandler(n, ibltState, store))
+	repb.RegisterSyncServiceServer(srv, syncer.NewHandler(n))
 	reflection.Register(srv)
 
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.GRPCPort))
@@ -147,10 +155,10 @@ func main() {
 	}
 	log.Printf("[%s] gRPC listening on :%d", cfg.ReplicaID, cfg.GRPCPort)
 
-	// ── 11. Anti-entropy loop ─────────────────────────────────────────────────
-	go sync.Run(ctx)
+	// ── 12. Anti-entropy loop ─────────────────────────────────────────────────
+	sync.Run()
 
-	// ── 12. Serve (blocking until signal) ─────────────────────────────────────
+	// ── 13. Serve (blocking until signal) ─────────────────────────────────────
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(lis) }()
 
@@ -161,9 +169,9 @@ func main() {
 		log.Printf("[%s] shutting down…", cfg.ReplicaID)
 	}
 
-	// Shutdown order: stop RPCs → drain push goroutines → pool → gossip → storage
+	// Shutdown order: stop RPCs → drain syncer goroutines → pool → gossip → storage
 	srv.GracefulStop()
-	coord.Close()
+	sync.Close()
 	pool.Close()
 	g.Leave(3 * time.Second)
 	store.Close()

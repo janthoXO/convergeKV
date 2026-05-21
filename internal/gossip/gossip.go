@@ -154,9 +154,6 @@ func (g *Gossip) rebuildMembers() {
 	g.mu.RLock()
 	list := g.list
 	g.mu.RUnlock()
-	if list == nil {
-		return
-	}
 
 	// Call list.Members() outside g.mu to avoid AB-BA deadlock.
 	nodes := list.Members()

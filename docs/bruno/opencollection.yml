@@ -7,6 +7,10 @@ config:
     protoFiles:
       - type: file
         path: ../../proto/kv/kv.proto
+      - type: file
+        path: ../../proto/replication/replication.proto
+    importPaths:
+      - path: ../../proto
   proxy:
     inherit: true
     config:

@@ -37,25 +37,14 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, []storage.FieldUpdate,
 		return hlc.Timestamp{}, nil, fmt.Errorf("put: read error: %w", err)
 	}
 
-	type ibltDelta struct {
-		field    string
-		newEntry crdt.FieldEntry
-		oldEntry crdt.FieldEntry
-		hadOld   bool
-	}
-	var deltas []ibltDelta
 	var batch []storage.FieldUpdate
-
 	for field, raw := range obj {
-		entry := crdt.FieldEntry{
+		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: crdt.FieldEntry{
 			Value:     raw,
 			Timestamp: ts,
 			ReplicaID: n.replicaID,
 			Deleted:   false,
-		}
-		old, hadOld := existing.Fields[field]
-		deltas = append(deltas, ibltDelta{field, entry, old, hadOld})
-		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: entry})
+		}})
 	}
 
 	// Persist to Badger first; only update the IBLT on success.
@@ -63,13 +52,11 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, []storage.FieldUpdate,
 		return hlc.Timestamp{}, nil, fmt.Errorf("put: storage error: %w", err)
 	}
 
-	if n.ibltState != nil {
-		for _, d := range deltas {
-			if d.hadOld {
-				n.ibltState.RemoveEntry(key, d.field, d.oldEntry)
-			}
-			n.ibltState.InsertEntry(key, d.field, d.newEntry)
+	for _, u := range batch {
+		if old, hadOld := existing.Fields[u.Field]; hadOld {
+			n.ibltState.RemoveEntry(key, u.Field, old)
 		}
+		n.ibltState.InsertEntry(key, u.Field, u.Entry)
 	}
 
 	return ts, batch, nil

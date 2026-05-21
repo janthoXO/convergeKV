@@ -31,23 +31,14 @@ func (n *Node) Delete(key string) (hlc.Timestamp, []storage.FieldUpdate, error) 
 		return ts, nil, nil // nothing to delete
 	}
 
-	type ibltDelta struct {
-		field     string
-		tombstone crdt.FieldEntry
-		old       crdt.FieldEntry
-	}
-	var deltas []ibltDelta
 	var batch []storage.FieldUpdate
-
-	for field, old := range m.Fields {
-		tombstone := crdt.FieldEntry{
+	for field := range m.Fields {
+		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: crdt.FieldEntry{
 			Value:     nil,
 			Timestamp: ts,
 			ReplicaID: n.replicaID,
 			Deleted:   true,
-		}
-		deltas = append(deltas, ibltDelta{field, tombstone, old})
-		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: tombstone})
+		}})
 	}
 
 	// Persist first, then update IBLT.
@@ -55,11 +46,9 @@ func (n *Node) Delete(key string) (hlc.Timestamp, []storage.FieldUpdate, error) 
 		return hlc.Timestamp{}, nil, fmt.Errorf("delete: storage error: %w", err)
 	}
 
-	if n.ibltState != nil {
-		for _, d := range deltas {
-			n.ibltState.RemoveEntry(key, d.field, d.old)
-			n.ibltState.InsertEntry(key, d.field, d.tombstone)
-		}
+	for _, u := range batch {
+		n.ibltState.RemoveEntry(key, u.Field, m.Fields[u.Field])
+		n.ibltState.InsertEntry(key, u.Field, u.Entry)
 	}
 
 	return ts, batch, nil
