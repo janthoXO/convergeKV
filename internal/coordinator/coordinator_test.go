@@ -13,6 +13,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/gossip"
 	"github.com/janthoXO/convergeKV/internal/iblt"
 	"github.com/janthoXO/convergeKV/internal/node"
+	"github.com/janthoXO/convergeKV/internal/partition"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
@@ -27,12 +28,13 @@ func (s *noOpSyncer) PushToPeers(
 	_ context.Context,
 	_ []*repb.DeltaEntry,
 	_ []gossip.MemberInfo,
-	_ string,
 ) {
 	s.calls.Add(1)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+const testNumPartitions = 512
 
 func tempNode(t *testing.T, id string) *node.Node {
 	t.Helper()
@@ -67,7 +69,7 @@ func newCoord(t *testing.T, n *node.Node, g *gossip.Gossip, syncer *noOpSyncer) 
 	t.Helper()
 	connPool := connpool.New()
 	fwd := coordinator.NewForwarder(connPool)
-	coord := coordinator.New(n, g, fwd, syncer, 1)
+	coord := coordinator.New(n, g, fwd, syncer, 1, testNumPartitions)
 	t.Cleanup(connPool.Close)
 	return coord
 }
@@ -82,8 +84,11 @@ func TestPutLocalAndPushTriggered(t *testing.T) {
 	syncer := &noOpSyncer{}
 	coord := newCoord(t, n, g, syncer)
 
+	key := "user:1"
+	partitionId := partition.Of(key, testNumPartitions)
+
 	resp, err := coord.Put(context.Background(), &kvpb.PutRequest{
-		Key:       "user:1",
+		Key:       key,
 		ValueJson: `{"name":"Alice"}`,
 	})
 	if err != nil {
@@ -94,7 +99,7 @@ func TestPutLocalAndPushTriggered(t *testing.T) {
 	}
 
 	// The write must be readable locally.
-	v, found, err := n.Get("user:1")
+	v, found, err := n.Get(partitionId, key)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -120,14 +125,17 @@ func TestDeleteLocalAndPushTriggered(t *testing.T) {
 	syncer := &noOpSyncer{}
 	coord := newCoord(t, n, g, syncer)
 
+	key := "doc:1"
+	partitionId := partition.Of(key, testNumPartitions)
+
 	// Write then delete.
 	if _, err := coord.Put(context.Background(), &kvpb.PutRequest{
-		Key: "doc:1", ValueJson: `{"x":1}`,
+		Key: key, ValueJson: `{"x":1}`,
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	resp, err := coord.Delete(context.Background(), &kvpb.DeleteRequest{Key: "doc:1"})
+	resp, err := coord.Delete(context.Background(), &kvpb.DeleteRequest{Key: key})
 	if err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -135,7 +143,7 @@ func TestDeleteLocalAndPushTriggered(t *testing.T) {
 		t.Error("expected non-nil timestamp in Delete response")
 	}
 
-	_, found, err := n.Get("doc:1")
+	_, found, err := n.Get(partitionId, key)
 	if err != nil {
 		t.Fatalf("Get after delete: %v", err)
 	}
@@ -151,13 +159,16 @@ func TestGetLocalReplica(t *testing.T) {
 	syncer := &noOpSyncer{}
 	coord := newCoord(t, n, g, syncer)
 
+	key := "item:42"
+	partitionId := partition.Of(key, testNumPartitions)
+
 	// Write directly into the node (bypassing coordinator) so the coordinator
 	// is not involved in the write — we only test the read path here.
-	if _, _, err := n.Put("item:42", `{"v":42}`); err != nil {
+	if _, _, err := n.Put(partitionId, key, `{"v":42}`); err != nil {
 		t.Fatalf("direct node.Put: %v", err)
 	}
 
-	resp, err := coord.Get(context.Background(), &kvpb.GetRequest{Key: "item:42"})
+	resp, err := coord.Get(context.Background(), &kvpb.GetRequest{Key: key})
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}

@@ -28,7 +28,8 @@ message ItemIdentifier {
 // ─── GetIBLT ─────────────────────────────────────────────────────────────────
 
 message GetIBLTRequest {
-  string replica_id = 1; // initiator id, for logging
+  string replica_id = 1;    // initiator id, for logging
+  uint32 partition_id = 2;  // which partition's IBLT to fetch
 }
 
 message GetIBLTResponse {
@@ -36,6 +37,23 @@ message GetIBLTResponse {
 }
 
 // ─── PushEntries (client-streaming) ──────────────────────────────────────────
+
+// PushHeader is the first message sent on a PushEntries stream.
+// It declares which partition all subsequent DeltaEntry messages belong to.
+// All entries in a single stream must be for the same partition.
+message PushHeader {
+  uint32 partition_id = 1;
+}
+
+// PushChunk is the stream element type for PushEntries.
+// The initiator sends exactly one PushHeader as the first chunk, followed
+// by zero or more DeltaEntry chunks.
+message PushChunk {
+  oneof payload {
+    PushHeader header = 1;
+    DeltaEntry entry  = 2;
+  }
+}
 
 message PushAck {
   int32 applied = 1; // number of entries that actually updated local state
@@ -45,13 +63,14 @@ message PushAck {
 
 message PullRequest {
   string replica_id = 1;                   // initiator id, for logging
-  repeated ItemIdentifier identifiers = 2; // empty = send full local state
+  uint32 partition_id = 2;                 // which partition to pull from
+  repeated ItemIdentifier identifiers = 3; // empty = send full partition state
 }
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 service SyncService {
   rpc GetIBLT     (GetIBLTRequest)    returns (GetIBLTResponse);
-  rpc PushEntries (stream DeltaEntry) returns (PushAck);
+  rpc PushEntries (stream PushChunk)  returns (PushAck);
   rpc PullEntries (PullRequest)       returns (stream DeltaEntry);
 }

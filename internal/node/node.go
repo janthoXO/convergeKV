@@ -88,19 +88,25 @@ func (n *Node) ReceiveHLC(remote hlc.Timestamp) (hlc.Timestamp, error) {
 	return n.hlc.Receive(remote)
 }
 
-// IBLTSnapshot returns a consistent point-in-time copy of the IBLT for sync.
-func (n *Node) IBLTSnapshot() *iblt.IBLT {
-	return n.ibltState.Snapshot()
+// IBLTSnapshot returns a consistent point-in-time copy of the IBLT for the
+// given partition. Returns an empty IBLT if the partition has no entries yet.
+func (n *Node) IBLTSnapshot(partitionId uint32) *iblt.IBLT {
+	return n.ibltState.Snapshot(partitionId)
 }
 
 // GetField reads a single field entry directly from storage.
-func (n *Node) GetField(key, field string) (crdt.FieldEntry, bool, error) {
-	return n.store.GetField(key, field)
+func (n *Node) GetField(partitionId uint32, key string, field string) (crdt.FieldEntry, bool, error) {
+	return n.store.GetField(partitionId, key, field)
 }
 
 // IterateAll streams all persisted entries to fn. Paginates internally.
 func (n *Node) IterateAll(fn func(key, field string, entry crdt.FieldEntry) error) error {
 	return n.store.IterateAll(fn)
+}
+
+// IteratePartition streams all entries for the given partition to fn.
+func (n *Node) IteratePartition(partitionId uint32, fn func(key, field string, entry crdt.FieldEntry) error) error {
+	return n.store.IteratePartition(partitionId, fn)
 }
 
 // acquireKey locks the per-key mutex and returns a release function.

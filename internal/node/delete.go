@@ -14,7 +14,7 @@ import (
 // can push them to peers without a second Badger read.
 //
 // Concurrent Deletes to different keys proceed without blocking each other.
-func (n *Node) Delete(key string) (hlc.Timestamp, []storage.FieldUpdate, error) {
+func (n *Node) Delete(partitionId uint32, key string) (hlc.Timestamp, []storage.FieldUpdate, error) {
 	release := n.acquireKey(key)
 	defer release()
 
@@ -23,7 +23,7 @@ func (n *Node) Delete(key string) (hlc.Timestamp, []storage.FieldUpdate, error) 
 		return hlc.Timestamp{}, nil, fmt.Errorf("delete: %w", err)
 	}
 
-	m, err := n.store.GetKey(key)
+	m, err := n.store.GetKey(partitionId, key)
 	if err != nil {
 		return hlc.Timestamp{}, nil, fmt.Errorf("delete: read error: %w", err)
 	}
@@ -33,7 +33,7 @@ func (n *Node) Delete(key string) (hlc.Timestamp, []storage.FieldUpdate, error) 
 
 	var batch []storage.FieldUpdate
 	for field := range m.Fields {
-		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: crdt.FieldEntry{
+		batch = append(batch, storage.FieldUpdate{PartitionID: partitionId, Key: key, Field: field, Entry: crdt.FieldEntry{
 			Value:     nil,
 			Timestamp: ts,
 			ReplicaID: n.replicaID,
@@ -47,8 +47,8 @@ func (n *Node) Delete(key string) (hlc.Timestamp, []storage.FieldUpdate, error) 
 	}
 
 	for _, u := range batch {
-		n.ibltState.RemoveEntry(key, u.Field, m.Fields[u.Field])
-		n.ibltState.InsertEntry(key, u.Field, u.Entry)
+		n.ibltState.RemoveEntry(partitionId, key, u.Field, m.Fields[u.Field])
+		n.ibltState.InsertEntry(partitionId, key, u.Field, u.Entry)
 	}
 
 	return ts, batch, nil

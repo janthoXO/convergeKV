@@ -13,6 +13,8 @@ import (
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
+const testNumPartitions = 512
+
 // openNode creates a temporary Node backed by a temp-dir BadgerDB store.
 func openNode(t *testing.T, replicaID string) *Node {
 	t.Helper()
@@ -39,12 +41,13 @@ func countEntries(t *testing.T, n *Node) int {
 
 // TestPutThenGet verifies a Put followed by a Get on a single node.
 func TestPutThenGet(t *testing.T) {
+	partitionId := uint32(1)
 	n := openNode(t, "r1")
-	_, _, err := n.Put("user:1", `{"name":"Alice","age":30}`)
+	_, _, err := n.Put(partitionId, "user:1", `{"name":"Alice","age":30}`)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	v, found, err := n.Get("user:1")
+	v, found, err := n.Get(partitionId, "user:1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -66,18 +69,20 @@ func TestPutThenGet(t *testing.T) {
 
 // TestPutOverlappingFields verifies that two Puts with overlapping fields merge correctly.
 func TestPutOverlappingFields(t *testing.T) {
+	partitionId := uint32(1)
+	key := "user:1"
 	n := openNode(t, "r1")
 
-	_, _, err := n.Put("user:1", `{"name":"Alice"}`)
+	_, _, err := n.Put(partitionId, key, `{"name":"Alice"}`)
 	if err != nil {
 		t.Fatalf("Put 1: %v", err)
 	}
-	_, _, err = n.Put("user:1", `{"age":30}`)
+	_, _, err = n.Put(partitionId, key, `{"age":30}`)
 	if err != nil {
 		t.Fatalf("Put 2: %v", err)
 	}
 
-	v, found, err := n.Get("user:1")
+	v, found, err := n.Get(partitionId, key)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -100,15 +105,18 @@ func TestPutOverlappingFields(t *testing.T) {
 func TestDeleteThenGet(t *testing.T) {
 	n := openNode(t, "r1")
 
-	_, _, err := n.Put("user:1", `{"name":"Alice"}`)
+	partitionId := uint32(1)
+	key := "user:1"
+
+	_, _, err := n.Put(partitionId, key, `{"name":"Alice"}`)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	_, _, err = n.Delete("user:1")
+	_, _, err = n.Delete(partitionId, key)
 	if err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	_, found, err := n.Get("user:1")
+	_, found, err := n.Get(partitionId, key)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -121,7 +129,10 @@ func TestDeleteThenGet(t *testing.T) {
 func TestApplyDeltaHigherTimestampWins(t *testing.T) {
 	n := openNode(t, "r1")
 
-	_, _, err := n.Put("user:1", `{"name":"Alice"}`)
+	partitionId := uint32(1)
+	key := "user:1"
+
+	_, _, err := n.Put(partitionId, key, `{"name":"Alice"}`)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -134,7 +145,7 @@ func TestApplyDeltaHigherTimestampWins(t *testing.T) {
 		ReplicaID: "r2",
 		Deleted:   false,
 	}
-	changed, err := n.ApplyDelta("user:1", "name", incoming)
+	changed, err := n.ApplyDelta(partitionId, key, "name", incoming)
 	if err != nil {
 		t.Fatalf("ApplyDelta: %v", err)
 	}
@@ -142,7 +153,7 @@ func TestApplyDeltaHigherTimestampWins(t *testing.T) {
 		t.Error("expected changed=true")
 	}
 
-	v, found, err := n.Get("user:1")
+	v, found, err := n.Get(partitionId, key)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -162,7 +173,10 @@ func TestApplyDeltaHigherTimestampWins(t *testing.T) {
 func TestApplyDeltaLowerTimestampIsNoop(t *testing.T) {
 	n := openNode(t, "r1")
 
-	_, _, err := n.Put("user:1", `{"name":"Alice"}`)
+	partitionId := uint32(1)
+	key := "user:1"
+
+	_, _, err := n.Put(partitionId, key, `{"name":"Alice"}`)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -174,7 +188,7 @@ func TestApplyDeltaLowerTimestampIsNoop(t *testing.T) {
 		ReplicaID: "r2",
 		Deleted:   false,
 	}
-	changed, err := n.ApplyDelta("user:1", "name", incoming)
+	changed, err := n.ApplyDelta(partitionId, key, "name", incoming)
 	if err != nil {
 		t.Fatalf("ApplyDelta: %v", err)
 	}
@@ -182,7 +196,7 @@ func TestApplyDeltaLowerTimestampIsNoop(t *testing.T) {
 		t.Error("expected changed=false for lower-timestamp delta")
 	}
 
-	v, found, err := n.Get("user:1")
+	v, found, err := n.Get(partitionId, key)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -206,6 +220,8 @@ func TestConcurrentWritesDifferentKeys(t *testing.T) {
 	n := openNode(t, "r1")
 	const numKeys = 50
 
+	partitionId := uint32(1)
+
 	var wg sync.WaitGroup
 	wg.Add(numKeys)
 	for i := 0; i < numKeys; i++ {
@@ -214,7 +230,7 @@ func TestConcurrentWritesDifferentKeys(t *testing.T) {
 			defer wg.Done()
 			key := fmt.Sprintf("key:%d", i)
 			val := fmt.Sprintf(`{"n":%d}`, i)
-			if _, _, err := n.Put(key, val); err != nil {
+			if _, _, err := n.Put(partitionId, key, val); err != nil {
 				t.Errorf("Put %s: %v", key, err)
 			}
 		}()
@@ -223,7 +239,7 @@ func TestConcurrentWritesDifferentKeys(t *testing.T) {
 
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key:%d", i)
-		v, found, err := n.Get(key)
+		v, found, err := n.Get(partitionId, key)
 		if err != nil {
 			t.Errorf("key %s: Get error: %v", key, err)
 			continue
@@ -246,10 +262,14 @@ func TestConcurrentWritesDifferentKeys(t *testing.T) {
 // (key, field) entries after a series of Put calls with different fields.
 func TestSnapshotAfterPuts(t *testing.T) {
 	n := openNode(t, "r1")
-	if _, _, err := n.Put("user:1", `{"name":"Alice"}`); err != nil {
+
+	partitionId := uint32(1)
+	key := "user:1"
+
+	if _, _, err := n.Put(partitionId, key, `{"name":"Alice"}`); err != nil {
 		t.Fatalf("Put name: %v", err)
 	}
-	if _, _, err := n.Put("user:1", `{"city":"Geneva"}`); err != nil {
+	if _, _, err := n.Put(partitionId, key, `{"city":"Geneva"}`); err != nil {
 		t.Fatalf("Put city: %v", err)
 	}
 
@@ -265,10 +285,13 @@ func TestSnapshotDifferentKeys(t *testing.T) {
 	nA := openNode(t, "r1")
 	nB := openNode(t, "r2")
 
-	if _, _, err := nA.Put("user:1", `{"name":"Alice"}`); err != nil {
+	partitionId := uint32(1)
+	key := "user:1"
+
+	if _, _, err := nA.Put(partitionId, key, `{"name":"Alice"}`); err != nil {
 		t.Fatalf("nodeA Put: %v", err)
 	}
-	if _, _, err := nB.Put("user:1", `{"name":"Bob"}`); err != nil {
+	if _, _, err := nB.Put(partitionId, key, `{"name":"Bob"}`); err != nil {
 		t.Fatalf("nodeB Put: %v", err)
 	}
 
@@ -279,8 +302,8 @@ func TestSnapshotDifferentKeys(t *testing.T) {
 	}
 
 	// The stored values should differ.
-	eA, foundA, _ := nA.store.GetField("user:1", "name")
-	eB, foundB, _ := nB.store.GetField("user:1", "name")
+	eA, foundA, _ := nA.GetField(partitionId, key, "name")
+	eB, foundB, _ := nB.GetField(partitionId, key, "name")
 	if !foundA || !foundB {
 		t.Fatal("expected entries in both stores")
 	}

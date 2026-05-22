@@ -13,7 +13,13 @@ import (
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
-const ibltDefaultCells = 512
+// Use numPartitions=1 in syncer tests so that all keys land in partition 0.
+// This lets us call IBLTSnapshot(0) / Snapshot(0) to get the whole-node state
+// without iterating over 512 partition slots.
+const (
+	ibltDefaultCells = 512
+	testPartitions   = 1
+)
 
 func tempNode(t *testing.T, id string) *node.Node {
 	t.Helper()
@@ -52,22 +58,25 @@ func TestIBLTStateRoundTrip(t *testing.T) {
 	is := iblt.NewIBLTState(ibltDefaultCells)
 	n := node.New("test-node", store, is)
 
+	partitionId := uint32(1)
+
 	// Write some data.
 	for i := 0; i < 20; i++ {
 		v := fmt.Sprintf(`{"x":%d}`, i)
-		if _, _, err := n.Put(fmt.Sprintf("key-%d", i), v); err != nil {
+		if _, _, err := n.Put(partitionId, fmt.Sprintf("key-%d", i), v); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	// Build a second IBLTState directly from the store and compare.
-	is2, err := iblt.BuildFromStore(store, ibltDefaultCells)
+	// With testPartitions=1, all entries are in partition 0.
+	is2, err := iblt.BuildFromStore(store, []uint32{0}, ibltDefaultCells)
 	if err != nil {
 		t.Fatalf("BuildFromStore: %v", err)
 	}
 
 	// The two IBLTs should have identical symmetric difference = empty.
-	diff := is.Snapshot().SubtractUnsafe(is2.Snapshot())
+	diff := is.Snapshot(0).SubtractUnsafe(is2.Snapshot(0))
 	onlyA, onlyB, ok := diff.Decode()
 	if !ok {
 		t.Fatal("diff decode failed — IBLTs diverged")
@@ -89,10 +98,10 @@ func TestDeserialiseItemRoundTrip(t *testing.T) {
 	key, field := "my-key", "my-field"
 
 	is := iblt.NewIBLTState(ibltDefaultCells)
-	is.InsertEntry(key, field, entry)
+	is.InsertEntry(0, key, field, entry)
 
 	// Extract the item bytes by subtracting an empty IBLT.
-	snap := is.Snapshot()
+	snap := is.Snapshot(0) // testPartitions=1, so partition 0 holds everything
 	diff := snap.SubtractUnsafe(iblt.New(ibltDefaultCells))
 	onlyA, _, ok := diff.Decode()
 	if !ok {
@@ -120,22 +129,25 @@ func TestIBLTConvergence(t *testing.T) {
 	n1 := tempNode(t, "n1")
 	n2 := tempNode(t, "n2")
 
+	partitionId := uint32(0)
+
 	// Write 5 keys to n1 only.
 	for i := 0; i < 5; i++ {
-		if _, _, err := n1.Put(fmt.Sprintf("key-n1-%d", i), `{"v":1}`); err != nil {
+		if _, _, err := n1.Put(partitionId, fmt.Sprintf("key-n1-%d", i), `{"v":1}`); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// Write 5 different keys to n2 only.
 	for i := 0; i < 5; i++ {
-		if _, _, err := n2.Put(fmt.Sprintf("key-n2-%d", i), `{"v":2}`); err != nil {
+		if _, _, err := n2.Put(partitionId, fmt.Sprintf("key-n2-%d", i), `{"v":2}`); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	// Simulate IBLT exchange: compute diff from n2's perspective.
-	snap1 := n1.IBLTSnapshot()
-	snap2 := n2.IBLTSnapshot()
+	// With testPartitions=1, all entries are in partition 0.
+	snap1 := n1.IBLTSnapshot(0)
+	snap2 := n2.IBLTSnapshot(0)
 
 	diff := snap2.SubtractUnsafe(snap1)
 	onlyInN2, onlyInN1, ok := diff.Decode()
@@ -158,7 +170,7 @@ func TestIBLTConvergence(t *testing.T) {
 		if !valid {
 			t.Fatal("invalid item bytes")
 		}
-		entry, found, err := n2.GetField(k, f)
+		entry, found, err := n2.GetField(partitionId, k, f)
 		if err != nil {
 			t.Fatalf("GetField n2 %s/%s: %v", k, f, err)
 		}
@@ -167,7 +179,7 @@ func TestIBLTConvergence(t *testing.T) {
 			entry.Timestamp.Logical == logical &&
 			entry.ReplicaID == rID &&
 			entry.Deleted == deleted {
-			if _, err := n1.ApplyDelta(k, f, entry); err != nil {
+			if _, err := n1.ApplyDelta(partitionId, k, f, entry); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -177,7 +189,7 @@ func TestIBLTConvergence(t *testing.T) {
 		if !valid {
 			t.Fatal("invalid item bytes")
 		}
-		entry, found, err := n1.GetField(k, f)
+		entry, found, err := n1.GetField(partitionId, k, f)
 		if err != nil {
 			t.Fatalf("GetField n1 %s/%s: %v", k, f, err)
 		}
@@ -186,7 +198,7 @@ func TestIBLTConvergence(t *testing.T) {
 			entry.Timestamp.Logical == logical &&
 			entry.ReplicaID == rID &&
 			entry.Deleted == deleted {
-			if _, err := n2.ApplyDelta(k, f, entry); err != nil {
+			if _, err := n2.ApplyDelta(partitionId, k, f, entry); err != nil {
 				t.Fatal(err)
 			}
 		}

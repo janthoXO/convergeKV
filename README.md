@@ -41,8 +41,9 @@ For local builds, tests, and the full developer workflow see [README_DEV.md](REA
 
 A value is a JSON object stored at a string key. Internally, each `(key, field)` pair is an independent **Add-Wins Last-Write-Wins Map (AWLWWMap)** entry: a `FieldEntry` carrying the value, an HLC timestamp, the originating replica ID, and a `Deleted` tombstone flag. Two replicas that disagree on a `(key, field)` resolve the conflict by picking the higher HLC (with replica-ID as the deterministic tiebreaker) — so partial updates and deletes commute and converge.
 
-- **Storage key encoding:** `key + "\x00" + field`. Client-supplied keys containing `\x00` are rejected at the API boundary.
-- **Replication factor `RF`:** each key is placed on the top `RF` replicas by HRW score over the live gossip membership. No central placement table.
+- **Virtual partitions:** keys are mapped to partitions by `partition.Of(key, P) = xxhash64(key) % P`. All `(key, field)` pairs for one key always land in the same partition. `NUM_PARTITIONS` (`P`) must be identical on every node — disagreement silently splits the cluster.
+- **Storage key encoding:** `partitionID(4B big-endian) + key + "\x00" + field`. Each partition is a contiguous Badger range. Client-supplied keys containing `\x00` are rejected at the API boundary.
+- **Replication factor `RF`:** each partition is placed on the top `RF` replicas by HRW score over `(partitionID, replicaID)`. No central placement table. With `RF < node count`, each node owns and stores only a fraction of the keyspace.
 - **Quorum:** writes ack after one local persist; the other replicas receive the entry via fire-and-forget push and, on failure, reconcile in the next anti-entropy round.
 
 ## Component overview
@@ -53,14 +54,15 @@ A value is a JSON object stored at a string key. Internally, each `(key, field)`
 | `internal/api` | gRPC handler for the client-facing `KVService` (and the internal `ForwardService`). |
 | `internal/coordinator` | Routes PUT/GET/DELETE via HRW; forwards or serves locally; launches push goroutines. |
 | `internal/node` | Central state holder. Owns the HLC, the per-key lock table, and the storage handle. |
-| `internal/storage` | BadgerDB wrapper. Atomic `SaveBatch`, paginated `IterateAll`, encoded key layout. |
+| `internal/partition` | `Partition(key, P)` — maps keys to virtual partition IDs via xxhash. |
+| `internal/storage` | BadgerDB wrapper. Partition-prefixed key encoding, `IteratePartition`, atomic `SaveBatch`. |
 | `internal/crdt` | `FieldEntry`, AWLWW merge rules, `WinsOver` predicate. |
 | `internal/hlc` | Hybrid Logical Clock with `Send`/`Receive`/`Seed` and bounded skew detection. |
-| `internal/hrw` | Stateless rendezvous hashing (xxhash) over the gossip membership. |
+| `internal/hrw` | Stateless rendezvous hashing `Owners(pid, members, rf)` (xxhash over partition+replicaID). |
 | `internal/gossip` | HashiCorp memberlist wrapper with a buffered change channel + worker. |
 | `internal/connpool` | Shared, evict-on-leave gRPC connection pool used by both syncer and forwarder. |
 | `internal/iblt` | General-purpose IBLT (3-hash, length-prefixed, XOR-folded cells) with `Decode` and `Subtract`. |
-| `internal/syncer` | IBLT-based anti-entropy loop, the `SyncService` server handler, and IBLT state. |
+| `internal/syncer` | IBLT-based anti-entropy loop (per-partition), `SyncService` handler, `Ownership` cache, per-partition `IBLTState`. |
 
 ## Write path (PUT / DELETE)
 
@@ -76,13 +78,13 @@ Key invariants:
 
 ## Anti-entropy sync
 
-Every `SYNC_MS` milliseconds, each node walks its gossip membership and runs an initiator-driven three-step reconciliation with every other peer. Per peer the whole protocol is bounded by a 30 s timeout.
+Every `SYNC_MS` milliseconds, each node iterates its owned partitions (derived from live gossip membership via HRW) and for each `(partition, co-owner)` pair runs an initiator-driven three-step reconciliation. The protocol is bounded by a 30 s per-pair timeout.
 
 1. **`GetIBLT`** (unary) — fetch the peer's IBLT snapshot.
 2. **Diff locally** — subtract the two IBLTs and decode the result into `onlyLocal` / `onlyRemote` item sets.
 3. **`PushEntries` + `PullEntries`** (concurrent streams) — push what the peer is missing while pulling what we are missing.
 
-If `Decode` fails (typically when the symmetric difference exceeds ~250 items for the default 512-cell IBLT, or any cell remains impure) the protocol falls back to a full-state exchange: stream the entire local store via `PushEntries` while concurrently pulling the peer's full store via `PullEntries` with an empty identifier list. Both sides iterate Badger lazily in 1000-record pages so neither buffers the dataset.
+If `Decode` fails (typically when the symmetric difference exceeds ~250 items for the default 512-cell IBLT, or any cell remains impure) the protocol falls back to a **full-partition exchange**: stream the entire partition via `IteratePartition` while concurrently pulling the peer's full partition via `PullEntries` with an empty identifier list. Both sides paginate in 1000-record pages so neither buffers the dataset.
 
 ![Sync workflow](docs/sync.svg)
 
@@ -118,9 +120,10 @@ All configuration is via environment variables, parsed at startup:
 | `GOSSIP_BIND` | `0.0.0.0` | memberlist bind address. |
 | `SEEDS` | `""` | Comma-separated `host:port` peers to join. |
 | `DATA_DIR` | `/data` | BadgerDB data directory. |
-| `RF` | `3` | Replication factor (keys placed on `RF` nodes via HRW). |
+| `RF` | `3` | Replication factor — each partition placed on `RF` nodes via HRW. |
+| `NUM_PARTITIONS` | `512` | **Cluster-wide constant.** Virtual partition count. Must be identical on every node; changing it requires a fresh `DATA_DIR`. |
 | `SYNC_MS` | `2000` | Anti-entropy sync interval in milliseconds. |
-| `IBLT_CELLS` | `512` | IBLT cell count (tune for expected divergence size). |
+| `IBLT_CELLS` | `512` | IBLT cell count **per partition** (tune for expected per-partition divergence). |
 
 ## Developer guide
 

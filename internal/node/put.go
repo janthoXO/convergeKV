@@ -16,7 +16,7 @@ import (
 //
 // Concurrent Puts to different keys proceed without blocking each other.
 // Concurrent Puts to the same key are serialised by the per-key lock.
-func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, []storage.FieldUpdate, error) {
+func (n *Node) Put(partitionId uint32, key string, valueJSON string) (hlc.Timestamp, []storage.FieldUpdate, error) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(valueJSON), &obj); err != nil {
 		return hlc.Timestamp{}, nil, fmt.Errorf("put: value must be a JSON object: %w", err)
@@ -32,14 +32,14 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, []storage.FieldUpdate,
 	}
 
 	// Read current field values from Badger so we can compute IBLT removals.
-	existing, err := n.store.GetKey(key)
+	existing, err := n.store.GetKey(partitionId, key)
 	if err != nil {
 		return hlc.Timestamp{}, nil, fmt.Errorf("put: read error: %w", err)
 	}
 
 	var batch []storage.FieldUpdate
 	for field, raw := range obj {
-		batch = append(batch, storage.FieldUpdate{Key: key, Field: field, Entry: crdt.FieldEntry{
+		batch = append(batch, storage.FieldUpdate{PartitionID: partitionId, Key: key, Field: field, Entry: crdt.FieldEntry{
 			Value:     raw,
 			Timestamp: ts,
 			ReplicaID: n.replicaID,
@@ -54,9 +54,9 @@ func (n *Node) Put(key, valueJSON string) (hlc.Timestamp, []storage.FieldUpdate,
 
 	for _, u := range batch {
 		if old, hadOld := existing.Fields[u.Field]; hadOld {
-			n.ibltState.RemoveEntry(key, u.Field, old)
+			n.ibltState.RemoveEntry(partitionId, key, u.Field, old)
 		}
-		n.ibltState.InsertEntry(key, u.Field, u.Entry)
+		n.ibltState.InsertEntry(partitionId, key, u.Field, u.Entry)
 	}
 
 	return ts, batch, nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/gossip"
 	"github.com/janthoXO/convergeKV/internal/iblt"
 	"github.com/janthoXO/convergeKV/internal/node"
+	"github.com/janthoXO/convergeKV/internal/partition"
 )
 
 const (
@@ -25,9 +27,12 @@ const (
 // Syncer runs the IBLT-based anti-entropy loop and handles push-on-write.
 // It owns all goroutines it spawns; call Close to drain them.
 type Syncer struct {
-	node   *node.Node
-	gossip *gossip.Gossip
-	pool   *connpool.Pool
+	node      *node.Node
+	gossip    *gossip.Gossip
+	pool      *connpool.Pool
+	ownership *Ownership
+
+	numPartitions int
 
 	interval         time.Duration
 	roundTimeout     time.Duration
@@ -69,17 +74,18 @@ func WithPushTimeout(d time.Duration) Option {
 }
 
 // New constructs a Syncer. Apply WithContext to bind it to a server lifetime.
-func New(n *node.Node, g *gossip.Gossip, pool *connpool.Pool, opts ...Option) *Syncer {
+func New(n *node.Node, g *gossip.Gossip, pool *connpool.Pool, ownership *Ownership, numPartitions int, opts ...Option) *Syncer {
 	s := &Syncer{
 		node:             n,
 		gossip:           g,
 		pool:             pool,
+		ownership:        ownership,
+		numPartitions:    numPartitions,
 		interval:         defaultSyncInterval,
 		roundTimeout:     defaultRoundTimeout,
 		fullStateTimeout: defaultFullStateTimeout,
 		pushTimeout:      defaultPushTimeout,
 	}
-	// Default context — callers should override with WithContext(serverCtx).
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
 	for _, opt := range opts {
@@ -88,18 +94,22 @@ func New(n *node.Node, g *gossip.Gossip, pool *connpool.Pool, opts ...Option) *S
 	return s
 }
 
+// peerPartition is a (partition, peer) pair to sync.
+type peerPartition struct {
+	partitionId uint32
+	peer        gossip.MemberInfo
+}
+
 // Run starts the anti-entropy loop. Call in a goroutine.
 // Stops when the context passed via WithContext is cancelled, or Close is called.
 func (s *Syncer) Run() {
 	s.wg.Go(func() {
-		localID := s.node.ReplicaID()
 		syncAll := func() {
-			for _, peer := range s.gossip.Members() {
-				if peer.ReplicaID == localID {
-					continue
-				}
-
-				s.SyncWithPeer(peer)
+			pairs := s.buildSyncPairs()
+			// Shuffle to distribute load across peers evenly across rounds.
+			rand.Shuffle(len(pairs), func(i, j int) { pairs[i], pairs[j] = pairs[j], pairs[i] })
+			for _, pp := range pairs {
+				s.SyncPartitionWithPeer(pp.partitionId, pp.peer)
 			}
 		}
 
@@ -118,20 +128,33 @@ func (s *Syncer) Run() {
 	})
 }
 
+// buildSyncPairs returns all (partitionId, peer) combinations for owned partitions.
+func (s *Syncer) buildSyncPairs() []peerPartition {
+	owned := s.ownership.Owned()
+	var pairs []peerPartition
+	for _, partitionId := range owned {
+		for _, peer := range s.ownership.CoOwners(partitionId) {
+			pairs = append(pairs, peerPartition{partitionId: partitionId, peer: peer})
+		}
+	}
+	return pairs
+}
+
 // Close cancels the syncer's context and waits for all goroutines to finish.
 func (s *Syncer) Close() {
 	s.cancel()
 	s.wg.Wait()
 }
 
-// SyncWithPeer runs the three-step IBLT reconciliation protocol as the initiator.
+// SyncPartitionWithPeer runs the three-step IBLT reconciliation protocol for
+// a single partition as the initiator.
 //
-//  1. Fetch peer's IBLT via GetIBLT.
+//  1. Fetch peer's IBLT for the partition via GetIBLT.
 //  2. Compute the symmetric difference locally.
 //  3. Concurrently push what the peer is missing and pull what we are missing.
 //
-// If the diff is undecodable (too large), falls back to a full-state exchange.
-func (s *Syncer) SyncWithPeer(peer gossip.MemberInfo) {
+// If the diff is undecodable (too large), falls back to a full-partition exchange.
+func (s *Syncer) SyncPartitionWithPeer(partitionId uint32, peer gossip.MemberInfo) {
 	ctx, cancel := context.WithTimeout(s.ctx, s.roundTimeout)
 	defer cancel()
 
@@ -143,18 +166,20 @@ func (s *Syncer) SyncWithPeer(peer gossip.MemberInfo) {
 	client := repb.NewSyncServiceClient(conn)
 
 	// ── Step 1: snapshot local IBLT before fetching remote ──────────────────
-	// Must be taken first so the diff reflects a consistent reference point.
-	localSnap := s.node.IBLTSnapshot()
+	localSnap := s.node.IBLTSnapshot(partitionId)
 
-	ibltResp, err := client.GetIBLT(ctx, &repb.GetIBLTRequest{ReplicaId: s.node.ReplicaID()})
+	ibltResp, err := client.GetIBLT(ctx, &repb.GetIBLTRequest{
+		ReplicaId:   s.node.ReplicaID(),
+		PartitionId: partitionId,
+	})
 	if err != nil {
-		log.Printf("[syncer] GetIBLT %s: %v", peer.GRPCAddr, err)
+		log.Printf("[syncer] GetIBLT partitionId=%d %s: %v", partitionId, peer.GRPCAddr, err)
 		return
 	}
 
 	remoteIBLT, err := iblt.DecodeIBLT(ibltResp.GetIbltData())
 	if err != nil {
-		log.Printf("[syncer] decode remote IBLT from %s: %v", peer.GRPCAddr, err)
+		log.Printf("[syncer] decode remote IBLT partitionId=%d from %s: %v", partitionId, peer.GRPCAddr, err)
 		return
 	}
 
@@ -163,8 +188,8 @@ func (s *Syncer) SyncWithPeer(peer gossip.MemberInfo) {
 	onlyLocal, onlyRemote, ok := diff.Decode()
 
 	if !ok {
-		log.Printf("[syncer] IBLT diff too large with %s — falling back to full state exchange", peer.ReplicaID)
-		s.fullStateFallback(client, peer)
+		log.Printf("[syncer] IBLT diff too large partitionId=%d with %s — falling back to full partition exchange", partitionId, peer.ReplicaID)
+		s.fullPartitionFallback(client, partitionId, peer)
 		return
 	}
 
@@ -175,12 +200,11 @@ func (s *Syncer) SyncWithPeer(peer gossip.MemberInfo) {
 		if !valid {
 			continue
 		}
-		entry, found, err := s.node.GetField(key, field)
+		entry, found, err := s.node.GetField(partitionId, key, field)
 		if err != nil || !found {
 			continue
 		}
-		// Only forward the exact version the IBLT encodes; if it's been superseded
-		// since the snapshot was taken, the next sync round will reconcile it.
+		// Only forward the exact version the IBLT encodes.
 		if entry.Timestamp.PhysicalMs != physMs ||
 			entry.Timestamp.Logical != logical ||
 			entry.ReplicaID != replicaID ||
@@ -207,54 +231,70 @@ func (s *Syncer) SyncWithPeer(peer gossip.MemberInfo) {
 	}
 
 	// ── Step 3c: push and pull concurrently ─────────────────────────────────
-	// Run push in a goroutine so it overlaps with pull.
-	// pushEntries is a no-op for an empty batch so this is always safe to spawn.
 	pushErr := make(chan error, 1)
 	go func() {
-		pushErr <- s.pushEntries(ctx, client, pushBatch)
+		pushErr <- s.pushEntries(ctx, client, partitionId, pushBatch)
 	}()
 
-	// Only call PullEntries when there are specific items to fetch.
-	// An empty identifiers list is the wire signal for "send your whole state"
-	// (full-state fallback). Never send that on the normal diff path.
+	// An empty identifiers list is the wire signal for "send your whole partition"
+	// (full-partition fallback). Never send that on the normal diff path.
 	if len(pullIDs) > 0 {
-		s.pullAndApply(ctx, client, peer, pullIDs)
+		s.pullAndApply(ctx, client, partitionId, peer, pullIDs)
 	}
 
 	if err := <-pushErr; err != nil {
-		log.Printf("[syncer] PushEntries to %s: %v", peer.GRPCAddr, err)
+		log.Printf("[syncer] PushEntries partitionId=%d to %s: %v", partitionId, peer.GRPCAddr, err)
 	}
 }
 
-// pushEntries opens a client-streaming PushEntries call and sends each entry.
-func (s *Syncer) pushEntries(ctx context.Context, client repb.SyncServiceClient, entries []*repb.DeltaEntry) error {
-	if len(entries) == 0 {
-		return nil
-	}
+// openAndPush opens a PushEntries stream, sends the partition header, calls send
+// to deliver entries, then closes the stream.
+func (s *Syncer) openAndPush(ctx context.Context, client repb.SyncServiceClient, partitionId uint32, send func(func(*repb.DeltaEntry) error) error) error {
 	stream, err := client.PushEntries(ctx)
 	if err != nil {
 		return err
 	}
-	for _, e := range entries {
-		if err := stream.Send(e); err != nil {
-			return err
-		}
-	}
-	if _, err := stream.CloseAndRecv(); err != nil {
+	if err := stream.Send(&repb.PushChunk{
+		Payload: &repb.PushChunk_Header{
+			Header: &repb.PushHeader{PartitionId: partitionId},
+		},
+	}); err != nil {
 		return err
 	}
-	return nil
+	sendErr := send(func(e *repb.DeltaEntry) error {
+		return stream.Send(&repb.PushChunk{Payload: &repb.PushChunk_Entry{Entry: e}})
+	})
+	if _, closeErr := stream.CloseAndRecv(); closeErr != nil && sendErr == nil {
+		sendErr = closeErr
+	}
+	return sendErr
+}
+
+// pushEntries sends a pre-built slice of entries to a peer for the given partition.
+func (s *Syncer) pushEntries(ctx context.Context, client repb.SyncServiceClient, partitionId uint32, entries []*repb.DeltaEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return s.openAndPush(ctx, client, partitionId, func(send func(*repb.DeltaEntry) error) error {
+		for _, e := range entries {
+			if err := send(e); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // pullAndApply calls PullEntries and applies every streamed entry.
-// ids may be empty to request the peer's full state (fallback).
-func (s *Syncer) pullAndApply(ctx context.Context, client repb.SyncServiceClient, peer gossip.MemberInfo, ids []*repb.ItemIdentifier) {
+// ids may be nil/empty to request the peer's full partition state (fallback).
+func (s *Syncer) pullAndApply(ctx context.Context, client repb.SyncServiceClient, partitionId uint32, peer gossip.MemberInfo, ids []*repb.ItemIdentifier) {
 	pullStream, err := client.PullEntries(ctx, &repb.PullRequest{
 		ReplicaId:   s.node.ReplicaID(),
+		PartitionId: partitionId,
 		Identifiers: ids,
 	})
 	if err != nil {
-		log.Printf("[syncer] PullEntries %s: %v", peer.GRPCAddr, err)
+		log.Printf("[syncer] PullEntries partitionId=%d %s: %v", partitionId, peer.GRPCAddr, err)
 		return
 	}
 	received := 0
@@ -262,78 +302,79 @@ func (s *Syncer) pullAndApply(ctx context.Context, client repb.SyncServiceClient
 		d, err := pullStream.Recv()
 		if err != nil {
 			if err != io.EOF {
-				log.Printf("[syncer] PullEntries recv %s: %v", peer.GRPCAddr, err)
+				log.Printf("[syncer] PullEntries recv partitionId=%d %s: %v", partitionId, peer.GRPCAddr, err)
 			}
 			break
 		}
-		s.applyDeltaEntry(d)
+		s.applyDeltaEntry(partitionId, d)
 		received++
 	}
 	if ids == nil {
-		log.Printf("[syncer] full-state pull from %s complete: received %d entries", peer.ReplicaID, received)
+		log.Printf("[syncer] full-partition pull partitionId=%d from %s: received %d entries", partitionId, peer.ReplicaID, received)
 	}
 }
 
-// fullStateFallback exchanges complete snapshots when the IBLT diff is undecodable.
-// Uses a longer dedicated timeout since a full store iteration can exceed the round budget.
-// client is already dialed by the caller; we reuse it to avoid a redundant dial.
-func (s *Syncer) fullStateFallback(client repb.SyncServiceClient, peer gossip.MemberInfo) {
+// fullPartitionFallback exchanges complete partition snapshots when the IBLT
+// diff is undecodable. Uses a longer dedicated timeout.
+func (s *Syncer) fullPartitionFallback(client repb.SyncServiceClient, partitionId uint32, peer gossip.MemberInfo) {
 	ctx, cancel := context.WithTimeout(s.ctx, s.fullStateTimeout)
 	defer cancel()
 
 	pushErr := make(chan error, 1)
 	go func() {
-		stream, err := client.PushEntries(ctx)
-		if err != nil {
-			pushErr <- err
-			return
-		}
-		iterErr := s.node.IterateAll(func(key, field string, entry crdt.FieldEntry) error {
-			return stream.Send(entryToProto(key, field, entry))
+		pushErr <- s.openAndPush(ctx, client, partitionId, func(send func(*repb.DeltaEntry) error) error {
+			return s.node.IteratePartition(partitionId, func(key, field string, entry crdt.FieldEntry) error {
+				return send(entryToProto(key, field, entry))
+			})
 		})
-		if _, closeErr := stream.CloseAndRecv(); closeErr != nil && iterErr == nil {
-			iterErr = closeErr
-		}
-		pushErr <- iterErr
 	}()
 
-	s.pullAndApply(ctx, client, peer, nil)
+	s.pullAndApply(ctx, client, partitionId, peer, nil)
 
 	if err := <-pushErr; err != nil {
-		log.Printf("[syncer] full-state push to %s: %v", peer.GRPCAddr, err)
+		log.Printf("[syncer] full-partition push partitionId=%d to %s: %v", partitionId, peer.GRPCAddr, err)
 	}
 }
 
 // PushToPeers sends entries directly to a set of replica peers (write-path fanout).
-// Each peer runs in its own tracked goroutine with a per-peer pushTimeout.
-// The caller's context is intentionally not forwarded — pushes must outlive the
-// inbound RPC, and the syncer's own context (cancelled by Close) is the root.
-func (s *Syncer) PushToPeers(_ context.Context, entries []*repb.DeltaEntry, replicas []gossip.MemberInfo, localID string) {
+// Entries are grouped by partition before sending so each stream carries a
+// consistent partition header.
+func (s *Syncer) PushToPeers(_ context.Context, entries []*repb.DeltaEntry, replicas []gossip.MemberInfo) {
+	byPartitionId := make(map[uint32][]*repb.DeltaEntry)
+	for _, e := range entries {
+		partitionId := partition.Of(e.GetKey(), s.numPartitions)
+		byPartitionId[partitionId] = append(byPartitionId[partitionId], e)
+	}
+
+	localID := s.node.ReplicaID()
 	for _, peer := range replicas {
 		if peer.ReplicaID == localID {
 			continue
 		}
 		peer := peer
-		s.wg.Go(func() {
-			ctx, cancel := context.WithTimeout(s.ctx, s.pushTimeout)
-			defer cancel()
-			conn, err := s.pool.Get(peer.GRPCAddr)
-			if err != nil {
-				log.Printf("[syncer] push dial %s: %v", peer.GRPCAddr, err)
-				return
-			}
-			client := repb.NewSyncServiceClient(conn)
-			if err := s.pushEntries(ctx, client, entries); err != nil {
-				log.Printf("[syncer] push to %s: %v (IBLT sync will reconcile)", peer.ReplicaID, err)
-			}
-		})
+		for partitionId, batch := range byPartitionId {
+			partitionId, batch := partitionId, batch
+			s.wg.Go(func() {
+				ctx, cancel := context.WithTimeout(s.ctx, s.pushTimeout)
+				defer cancel()
+				conn, err := s.pool.Get(peer.GRPCAddr)
+				if err != nil {
+					log.Printf("[syncer] push dial %s: %v", peer.GRPCAddr, err)
+					return
+				}
+				client := repb.NewSyncServiceClient(conn)
+				if err := s.pushEntries(ctx, client, partitionId, batch); err != nil {
+					log.Printf("[syncer] push partitionId=%d to %s: %v (IBLT sync will reconcile)", partitionId, peer.ReplicaID, err)
+				}
+			})
+		}
 	}
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-func (s *Syncer) applyDeltaEntry(d *repb.DeltaEntry) {
-	if _, err := s.node.ApplyDelta(d.GetKey(), d.GetField(), protoToEntry(d)); err != nil {
+func (s *Syncer) applyDeltaEntry(partitionId uint32, d *repb.DeltaEntry) {
+	if _, err := s.node.ApplyDelta(partitionId, d.GetKey(), d.GetField(), protoToEntry(d)); err != nil {
 		log.Printf("[syncer] apply delta key=%s field=%s: %v", d.GetKey(), d.GetField(), err)
 	}
 }

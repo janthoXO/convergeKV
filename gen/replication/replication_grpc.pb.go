@@ -29,7 +29,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type SyncServiceClient interface {
 	GetIBLT(ctx context.Context, in *GetIBLTRequest, opts ...grpc.CallOption) (*GetIBLTResponse, error)
-	PushEntries(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[DeltaEntry, PushAck], error)
+	PushEntries(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[PushChunk, PushAck], error)
 	PullEntries(ctx context.Context, in *PullRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DeltaEntry], error)
 }
 
@@ -51,18 +51,18 @@ func (c *syncServiceClient) GetIBLT(ctx context.Context, in *GetIBLTRequest, opt
 	return out, nil
 }
 
-func (c *syncServiceClient) PushEntries(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[DeltaEntry, PushAck], error) {
+func (c *syncServiceClient) PushEntries(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[PushChunk, PushAck], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &SyncService_ServiceDesc.Streams[0], SyncService_PushEntries_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[DeltaEntry, PushAck]{ClientStream: stream}
+	x := &grpc.GenericClientStream[PushChunk, PushAck]{ClientStream: stream}
 	return x, nil
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type SyncService_PushEntriesClient = grpc.ClientStreamingClient[DeltaEntry, PushAck]
+type SyncService_PushEntriesClient = grpc.ClientStreamingClient[PushChunk, PushAck]
 
 func (c *syncServiceClient) PullEntries(ctx context.Context, in *PullRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DeltaEntry], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -88,7 +88,7 @@ type SyncService_PullEntriesClient = grpc.ServerStreamingClient[DeltaEntry]
 // for forward compatibility.
 type SyncServiceServer interface {
 	GetIBLT(context.Context, *GetIBLTRequest) (*GetIBLTResponse, error)
-	PushEntries(grpc.ClientStreamingServer[DeltaEntry, PushAck]) error
+	PushEntries(grpc.ClientStreamingServer[PushChunk, PushAck]) error
 	PullEntries(*PullRequest, grpc.ServerStreamingServer[DeltaEntry]) error
 	mustEmbedUnimplementedSyncServiceServer()
 }
@@ -103,7 +103,7 @@ type UnimplementedSyncServiceServer struct{}
 func (UnimplementedSyncServiceServer) GetIBLT(context.Context, *GetIBLTRequest) (*GetIBLTResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetIBLT not implemented")
 }
-func (UnimplementedSyncServiceServer) PushEntries(grpc.ClientStreamingServer[DeltaEntry, PushAck]) error {
+func (UnimplementedSyncServiceServer) PushEntries(grpc.ClientStreamingServer[PushChunk, PushAck]) error {
 	return status.Error(codes.Unimplemented, "method PushEntries not implemented")
 }
 func (UnimplementedSyncServiceServer) PullEntries(*PullRequest, grpc.ServerStreamingServer[DeltaEntry]) error {
@@ -149,11 +149,11 @@ func _SyncService_GetIBLT_Handler(srv interface{}, ctx context.Context, dec func
 }
 
 func _SyncService_PushEntries_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(SyncServiceServer).PushEntries(&grpc.GenericServerStream[DeltaEntry, PushAck]{ServerStream: stream})
+	return srv.(SyncServiceServer).PushEntries(&grpc.GenericServerStream[PushChunk, PushAck]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type SyncService_PushEntriesServer = grpc.ClientStreamingServer[DeltaEntry, PushAck]
+type SyncService_PushEntriesServer = grpc.ClientStreamingServer[PushChunk, PushAck]
 
 func _SyncService_PullEntries_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(PullRequest)

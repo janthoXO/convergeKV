@@ -17,7 +17,7 @@ import (
 // membership views converge.
 //
 // Concurrent ApplyDelta calls for different keys proceed without blocking each other.
-func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, error) {
+func (n *Node) ApplyDelta(partitionId uint32, key string, field string, incoming crdt.FieldEntry) (bool, error) {
 	if _, err := n.hlc.Receive(incoming.Timestamp); err != nil {
 		return false, err
 	}
@@ -25,7 +25,7 @@ func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, er
 	release := n.acquireKey(key)
 	defer release()
 
-	existingEntry, exists, err := n.store.GetField(key, field)
+	existingEntry, exists, err := n.store.GetField(partitionId, key, field)
 	if err != nil {
 		return false, err
 	}
@@ -36,15 +36,15 @@ func (n *Node) ApplyDelta(key, field string, incoming crdt.FieldEntry) (bool, er
 
 	// incoming wins — persist first, then update IBLT.
 	if err := n.store.SaveBatch([]storage.FieldUpdate{
-		{Key: key, Field: field, Entry: incoming},
+		{PartitionID: partitionId, Key: key, Field: field, Entry: incoming},
 	}); err != nil {
 		return false, err
 	}
 
 	if exists {
-		n.ibltState.RemoveEntry(key, field, existingEntry)
+		n.ibltState.RemoveEntry(partitionId, key, field, existingEntry)
 	}
-	n.ibltState.InsertEntry(key, field, incoming)
+	n.ibltState.InsertEntry(partitionId, key, field, incoming)
 
 	return true, nil
 }

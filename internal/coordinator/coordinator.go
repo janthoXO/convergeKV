@@ -7,94 +7,87 @@ import (
 
 	kvpb "github.com/janthoXO/convergeKV/gen/kv"
 	repb "github.com/janthoXO/convergeKV/gen/replication"
+	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/gossip"
 	"github.com/janthoXO/convergeKV/internal/hrw"
 	"github.com/janthoXO/convergeKV/internal/node"
+	"github.com/janthoXO/convergeKV/internal/partition"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
 // PushSyncer is the minimal interface the coordinator needs from the syncer
 // for write-path push. Avoids a direct import of the syncer package.
 type PushSyncer interface {
-	PushToPeers(ctx context.Context, entries []*repb.DeltaEntry, replicas []gossip.MemberInfo, localID string)
+	PushToPeers(ctx context.Context, entries []*repb.DeltaEntry, replicas []gossip.MemberInfo)
 }
 
-// Coordinator routes client requests using Rendezvous Hashing (HRW).
-// Any replica in the HRW set for a key serves reads and writes (quorum=1).
-// If the local node is not a replica, the request is forwarded to the
-// highest-scoring HRW member for deterministic routing.
+// Coordinator routes client requests using Rendezvous Hashing (HRW) over
+// virtual partitions. Any replica in the HRW set for a key's partition serves
+// reads and writes (quorum=1). If the local node is not a replica, the request
+// is forwarded to the highest-scoring HRW member for deterministic routing.
 type Coordinator struct {
-	node      *node.Node
-	gossip    *gossip.Gossip
-	forwarder *Forwarder
-	syncer    PushSyncer
-	rf        int
+	node          *node.Node
+	gossip        *gossip.Gossip
+	forwarder     *Forwarder
+	syncer        PushSyncer
+	rf            int
+	numPartitions int
 }
 
 // New returns a Coordinator.
-func New(n *node.Node, g *gossip.Gossip, f *Forwarder, syncer PushSyncer, rf int) *Coordinator {
-	c := &Coordinator{node: n, gossip: g, forwarder: f, syncer: syncer, rf: rf}
-	return c
+func New(n *node.Node, g *gossip.Gossip, f *Forwarder, syncer PushSyncer, rf, numPartitions int) *Coordinator {
+	return &Coordinator{node: n, gossip: g, forwarder: f, syncer: syncer, rf: rf, numPartitions: numPartitions}
 }
 
 // Put handles a put request.
-// If the local node is an HRW replica for the key, it writes locally and
-// asynchronously pushes to the other HRW replicas.
-// Otherwise it forwards to the highest-scoring HRW member.
+// Routes by partition: computes the partition for the key, then finds the HRW
+// owners of that partition. If the local node is an owner it writes locally and
+// asynchronously pushes to the other owners; otherwise it forwards.
 func (c *Coordinator) Put(ctx context.Context, req *kvpb.PutRequest) (*kvpb.PutResponse, error) {
-	members := c.gossip.Members()
-	replicas := hrw.Replicas(req.GetKey(), members, c.rf)
-	localID := c.node.ReplicaID()
-
-	if containsID(replicas, localID) {
-		resp, updates, err := c.handleLocalPut(ctx, req)
+	partitionId := partition.Of(req.Key, c.numPartitions)
+	replicas := hrw.Owners(partitionId, c.gossip.Members(), c.rf)
+	if containsID(replicas, c.node.ReplicaID()) {
+		resp, updates, err := c.handleLocalPut(ctx, partitionId, req)
 		if err != nil {
 			return nil, err
 		}
-		c.pushWriteToPeers(ctx, updates, replicas, localID)
+		c.pushWriteToPeers(ctx, updates, replicas)
 		return resp, nil
 	}
-
 	return forwardWithRetry(ctx, replicas, func(addr string) (*kvpb.PutResponse, error) {
 		return c.forwarder.ForwardPut(ctx, addr, req)
 	})
 }
 
 // Get handles a get request.
-// Serves locally if the local node is an HRW replica; otherwise forwards.
+// Serves locally if the local node owns the key's partition; otherwise forwards.
 func (c *Coordinator) Get(ctx context.Context, req *kvpb.GetRequest) (*kvpb.GetResponse, error) {
-	members := c.gossip.Members()
-	replicas := hrw.Replicas(req.GetKey(), members, c.rf)
-	localID := c.node.ReplicaID()
-
-	if containsID(replicas, localID) {
-		v, found, err := c.node.Get(req.GetKey())
+	partitionId := partition.Of(req.Key, c.numPartitions)
+	replicas := hrw.Owners(partitionId, c.gossip.Members(), c.rf)
+	if containsID(replicas, c.node.ReplicaID()) {
+		v, found, err := c.node.Get(partitionId, req.GetKey())
 		if err != nil {
 			return nil, fmt.Errorf("coordinator: local get: %w", err)
 		}
 		return &kvpb.GetResponse{ValueJson: v, Found: found}, nil
 	}
-
 	return forwardWithRetry(ctx, replicas, func(addr string) (*kvpb.GetResponse, error) {
 		return c.forwarder.ForwardGet(ctx, addr, req)
 	})
 }
 
-// Delete handles a delete request. Same routing logic as Put.
+// Delete handles a delete request.
 func (c *Coordinator) Delete(ctx context.Context, req *kvpb.DeleteRequest) (*kvpb.DeleteResponse, error) {
-	members := c.gossip.Members()
-	replicas := hrw.Replicas(req.GetKey(), members, c.rf)
-	localID := c.node.ReplicaID()
-
-	if containsID(replicas, localID) {
-		resp, updates, err := c.handleLocalDelete(ctx, req)
+	partitionId := partition.Of(req.Key, c.numPartitions)
+	replicas := hrw.Owners(partitionId, c.gossip.Members(), c.rf)
+	if containsID(replicas, c.node.ReplicaID()) {
+		resp, updates, err := c.handleLocalDelete(ctx, partitionId, req)
 		if err != nil {
 			return nil, err
 		}
-		c.pushWriteToPeers(ctx, updates, replicas, localID)
+		c.pushWriteToPeers(ctx, updates, replicas)
 		return resp, nil
 	}
-
 	return forwardWithRetry(ctx, replicas, func(addr string) (*kvpb.DeleteResponse, error) {
 		return c.forwarder.ForwardDelete(ctx, addr, req)
 	})
@@ -102,8 +95,8 @@ func (c *Coordinator) Delete(ctx context.Context, req *kvpb.DeleteRequest) (*kvp
 
 // ── local write helpers ───────────────────────────────────────────────────────
 
-func (c *Coordinator) handleLocalPut(_ context.Context, req *kvpb.PutRequest) (*kvpb.PutResponse, []storage.FieldUpdate, error) {
-	ts, updates, err := c.node.Put(req.GetKey(), req.GetValueJson())
+func (c *Coordinator) handleLocalPut(_ context.Context, partitionId uint32, req *kvpb.PutRequest) (*kvpb.PutResponse, []storage.FieldUpdate, error) {
+	ts, updates, err := c.node.Put(partitionId, req.GetKey(), req.GetValueJson())
 	if err != nil {
 		return nil, nil, fmt.Errorf("coordinator: local put: %w", err)
 	}
@@ -112,8 +105,8 @@ func (c *Coordinator) handleLocalPut(_ context.Context, req *kvpb.PutRequest) (*
 	}, updates, nil
 }
 
-func (c *Coordinator) handleLocalDelete(_ context.Context, req *kvpb.DeleteRequest) (*kvpb.DeleteResponse, []storage.FieldUpdate, error) {
-	ts, updates, err := c.node.Delete(req.GetKey())
+func (c *Coordinator) handleLocalDelete(_ context.Context, partitionId uint32, req *kvpb.DeleteRequest) (*kvpb.DeleteResponse, []storage.FieldUpdate, error) {
+	ts, updates, err := c.node.Delete(partitionId, req.GetKey())
 	if err != nil {
 		return nil, nil, fmt.Errorf("coordinator: local delete: %w", err)
 	}
@@ -122,27 +115,29 @@ func (c *Coordinator) handleLocalDelete(_ context.Context, req *kvpb.DeleteReque
 	}, updates, nil
 }
 
-// pushWriteToPeers converts the written FieldUpdates to DeltaEntries and fans
-// them out to the other HRW replicas. The syncer owns goroutine tracking and timeouts.
-func (c *Coordinator) pushWriteToPeers(ctx context.Context, updates []storage.FieldUpdate, replicas []gossip.MemberInfo, localID string) {
+func (c *Coordinator) pushWriteToPeers(ctx context.Context, updates []storage.FieldUpdate, replicas []gossip.MemberInfo) {
 	if len(updates) == 0 {
 		return
 	}
 	entries := make([]*repb.DeltaEntry, 0, len(updates))
 	for _, u := range updates {
-		entries = append(entries, &repb.DeltaEntry{
-			Key:       u.Key,
-			Field:     u.Field,
-			ValueJson: u.Entry.Value,
-			Timestamp: &kvpb.HLCTimestamp{
-				PhysicalMs: u.Entry.Timestamp.PhysicalMs,
-				Logical:    u.Entry.Timestamp.Logical,
-			},
-			ReplicaId: u.Entry.ReplicaID,
-			Deleted:   u.Entry.Deleted,
-		})
+		entries = append(entries, entryToProto(u.Key, u.Field, u.Entry))
 	}
-	c.syncer.PushToPeers(ctx, entries, replicas, localID)
+	c.syncer.PushToPeers(ctx, entries, replicas)
+}
+
+func entryToProto(key, field string, e crdt.FieldEntry) *repb.DeltaEntry {
+	return &repb.DeltaEntry{
+		Key:       key,
+		Field:     field,
+		ValueJson: e.Value,
+		Timestamp: &kvpb.HLCTimestamp{
+			PhysicalMs: e.Timestamp.PhysicalMs,
+			Logical:    e.Timestamp.Logical,
+		},
+		ReplicaId: e.ReplicaID,
+		Deleted:   e.Deleted,
+	}
 }
 
 // containsID reports whether any member in the slice has ReplicaID == id.
