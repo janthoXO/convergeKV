@@ -1,6 +1,7 @@
 PROTO_KV        = proto/kv/kv.proto
 PROTO_REP       = proto/replication/replication.proto
 PROTO_FWD       = proto/forward/forward.proto
+PROTO_DBG       = proto/debug/debug.proto
 
 .PHONY: proto build test docker-up docker-down
 
@@ -9,7 +10,7 @@ proto:
 	       --go_opt=paths=source_relative \
 	       --go-grpc_opt=paths=source_relative \
 	       -I proto \
-	       $(PROTO_KV) $(PROTO_REP) $(PROTO_FWD)
+	       $(PROTO_KV) $(PROTO_REP) $(PROTO_FWD) $(PROTO_DBG)
 
 
 build:

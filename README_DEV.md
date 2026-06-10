@@ -15,10 +15,10 @@ This document is the working companion to [README.md](README.md). It collects th
 - [How the components fit together](#how-the-components-fit-together)
   - [Process bootstrap (`cmd/server`)](#process-bootstrap-cmdserver)
   - [API surface (`internal/api`)](#api-surface-internalapi)
-  - [Routing (`internal/coordinator`, `internal/hrw`)](#routing-internalcoordinator-internalhrw)
-  - [Node and storage (`internal/node`, `internal/storage`)](#node-and-storage-internalnode-internalstorage)
-  - [CRDT and HLC (`internal/crdt`, `internal/hlc`)](#crdt-and-hlc-internalcrdt-internalhlc)
-  - [Anti-entropy (`internal/iblt`, `internal/syncer`)](#anti-entropy-internaliblt-internalsyncer)
+  - [Routing (`internal/coordinator`, `internal/cluster/placement`)](#routing-internalcoordinator-internalclusterplacement)
+  - [Replica and storage (`internal/replica`, `internal/storage`)](#replica-and-storage-internalreplica-internalstorage)
+  - [CRDT and HLC (`internal/domain/crdt`, `internal/domain/hlc`)](#crdt-and-hlc-internaldomaincrdt-internaldomainhlc)
+  - [Anti-entropy (`internal/iblt`, `internal/replication/...`)](#anti-entropy-internaliblt-internalreplication)
   - [Gossip and connection pool (`internal/gossip`, `internal/connpool`)](#gossip-and-connection-pool-internalgossip-internalconnpool)
 - [Diagrams](#diagrams)
 - [Wire-protocol conventions](#wire-protocol-conventions)
@@ -61,12 +61,12 @@ The Makefile invokes `protoc` with `paths=source_relative` so the generated pack
 ### Running tests
 
 ```bash
-make test                                  # full suite, race detector, no cache
-go test ./internal/syncer -race -v         # single package
-go test -run TestIBLTDecode ./internal/iblt  # single test
+make test                                               # full suite, race detector, no cache
+go test ./internal/replication/antientropy -race -v    # single package
+go test -run TestIBLTDecode ./internal/iblt             # single test
 ```
 
-Many tests spin up real BadgerDB instances in a `t.TempDir()`, and the syncer tests bring up small in-process clusters — they run quickly but expect a few hundred milliseconds of headroom.
+Many tests spin up real BadgerDB instances in a `t.TempDir()`, and the anti-entropy tests bring up small in-process clusters — they run quickly but expect a few hundred milliseconds of headroom.
 
 ### Running a local cluster
 
@@ -109,30 +109,39 @@ There is also a [cmd/partitiontest](cmd/partitiontest/main.go) binary used by ha
 
 ```
 cmd/
-  server/                 main.go — process entry; wires everything together
-  partitiontest/          ad-hoc tool for partition experiments
-proto/                    gRPC service definitions (source of truth)
-  kv/kv.proto             client-facing KVService (Put/Get/Delete/Status)
-  forward/forward.proto   internal ForwardService (peer-to-peer client forwarding)
+  server/                    main.go — process entry; wires everything together
+  partitiontest/             ad-hoc tool for partition experiments
+proto/                       gRPC service definitions (source of truth)
+  kv/kv.proto                client-facing KVService (Put/Get/Delete/Status)
+  forward/forward.proto      internal ForwardService (peer-to-peer client forwarding)
   replication/replication.proto  SyncService (GetIBLT, PushEntries, PullEntries)
-gen/                      generated Go (DO NOT edit; run `make proto`)
+  debug/debug.proto          DebugService (ScanAll — streams all entries on this node)
+gen/                         generated Go (DO NOT edit; run `make proto`)
 internal/
-  api/                    KVService + ForwardService handlers; key validation
-  coordinator/            HRW routing, forwarding, async push fan-out
-  node/                   per-key locks, HLC, Put/Get/Delete/ApplyDelta
-  storage/                BadgerDB wrapper, SaveBatch, paginated IterateAll
-  crdt/                   FieldEntry, AWLWW merge, WinsOver predicate
-  hlc/                    Hybrid Logical Clock (Send/Receive/Seed)
-  hrw/                    rendezvous hashing over gossip membership
-  iblt/                   general-purpose IBLT (Insert/Delete/Subtract/Decode)
-  syncer/                 SyncService server + initiator loop + IBLTState
-  gossip/                 memberlist wrapper + changeCh worker
-  connpool/               shared gRPC connection pool (evict-on-leave)
-  utils/                  small slice helpers
-docs/                     mermaid sources + auto-generated SVGs (see workflow)
-docker-compose.yml        3-node local cluster
-Dockerfile                multi-stage build → /convergekv
-Makefile                  proto / build / test / format / docker targets
+  api/                       KVService + ForwardService + DebugService handlers; consumer interfaces
+  coordinator/               partition routing, forwarding, async push fan-out
+  replica/                   per-key locks, HLC, Put/Get/Delete/ApplyDelta; RecoverHLCFloor
+  storage/                   BadgerDB wrapper, SaveBatch, paginated IterateAll (no HLC dependency)
+  domain/
+    crdt/                    FieldEntry, AWLWW merge, WinsOver predicate
+    hlc/                     Hybrid Logical Clock (Send/Receive/Seed)
+    keyspace/                partition mapping (xxhash), storage key encoding, null-byte validation
+  cluster/
+    placement/               generic stateless rendezvous hashing Owners[M Member](pid, members, rf)
+    ownership/               owned-partition cache; drives IBLT lifecycle on membership changes
+  replication/
+    antientropy/             IBLT-based initiator loop (three-step protocol + full-state fallback)
+    grpcsrv/                 SyncService gRPC server (GetIBLT, PushEntries, PullEntries)
+    pushfanout/              write-path push fanout (PushToPeers)
+    protoconv/               proto↔domain entry conversion (EntryToProto / ProtoToEntry)
+  iblt/                      general-purpose IBLT (Insert/Delete/Subtract/Decode) + IBLTState
+  gossip/                    memberlist wrapper + Subscribe fan-out channels
+  connpool/                  shared gRPC connection pool (evict-on-leave)
+  utils/                     small slice helpers
+docs/                        mermaid sources + auto-generated SVGs (see workflow)
+docker-compose.yml           3-node local cluster
+Dockerfile                   multi-stage build → /convergekv
+Makefile                     proto / build / test / format / docker targets
 ```
 
 ## How the components fit together
@@ -143,39 +152,44 @@ Makefile                  proto / build / test / format / docker targets
 
 1. Parse env config.
 2. Open BadgerDB (`storage.Open`).
-3. Scan `store.MaxTimestamp()` and pass it as `node.WithHLCFloor(...)` so the HLC can never go backwards across a restart.
-4. Build the IBLT from the persisted store (`syncer.BuildFromStore`) and inject it into the node (`node.SetIBLTState`).
-5. Construct the shared `connpool.Pool`.
-6. Start gossip — `joinWithRetry` blocks here until at least one seed is reachable, so by the time we register handlers we already have a cluster view.
-7. Construct syncer, forwarder, coordinator.
-8. Register the three gRPC services and start listening.
-9. Kick off `sync.Run(ctx)` in a goroutine.
-10. Serve until SIGINT/SIGTERM; then shutdown in reverse order.
+3. Call `replica.RecoverHLCFloor(store)` — scans all persisted entries and returns the highest HLC timestamp — and pass it as `replica.WithHLCFloor(...)` so the HLC can never go backwards across a restart.
+4. Start gossip — `joinWithRetry` blocks here until at least one seed is reachable, so by the time we register handlers we already have a cluster view.
+5. Construct `IBLTState` (initially empty); create an `ibltLifecycle` adapter that wires it to the `ownership.IndexLifecycle` interface.
+6. Construct `ownership` and call `own.Update(g.Members())` synchronously so IBLTs are seeded for the initial partition set.
+7. Start two gossip subscribers: one for `pool.EvictAbsent` (departed peers), one for `own.Run` (ownership + IBLT lifecycle on membership changes).
+8. Construct `replica`, `pushfanout.Fanout`, `antientropy.Syncer`, forwarder, and coordinator.
+9. Register the four gRPC services (`KVService`, `ForwardService`, `SyncService`, `DebugService`) and start listening.
+10. Kick off `ae.Run()` in a goroutine.
+11. Serve until SIGINT/SIGTERM; then shutdown in reverse order: GracefulStop → ae.Close → fanout.Close → pool.Close → gossip.Leave → store.Close.
 
 ### API surface (`internal/api`)
 
-[handler.go](internal/api/handler.go) implements `KVService` (`Put`/`Get`/`Delete`/`Status`). The handler is intentionally thin — it validates the key (`validateKey` rejects `\x00` because the storage layer uses it as the `(key, field)` delimiter) and hands off to the coordinator. `Status` builds the peer list from live gossip membership.
+[handler.go](internal/api/handler.go) implements `KVService` (`Put`/`Get`/`Delete`/`Status`). The handler is intentionally thin — it validates the key (`validateKey` rejects `\x00` because the storage layer uses it as the `(key, field)` delimiter) and hands off to the coordinator via the `KV` interface. `Status` is served through a `StatusProvider` interface; a `statusFacade` in `main.go` wires it to the replica + gossip instances. The `api` package has no imports of `coordinator`, `replica`, or `gossip` — it only depends on its own consumer-defined interfaces.
 
-[forward_handler.go](internal/api/forward_handler.go) implements `ForwardService`, the internal RPC the coordinator uses when this node isn't in the HRW set for a key.
+[forward_handler.go](internal/api/forward_handler.go) implements `ForwardService`, the internal RPC the coordinator uses when this node isn't in the HRW set for a key. It also uses the `KV` interface.
 
-### Routing (`internal/coordinator`, `internal/hrw`)
+[debug_handler.go](internal/api/debug_handler.go) implements `DebugService` (`ScanAll`), which streams every persisted `(key, field)` entry on this node. Useful for inspection and testing without needing to know which partitions a node owns.
+
+### Routing (`internal/coordinator`, `internal/cluster/placement`)
 
 [coordinator.go](internal/coordinator/coordinator.go) decides, per request, whether this node is one of the `RF` HRW replicas:
 
-- If yes, it calls into `node.Put`/`Get`/`Delete`, returns the response synchronously, and then `launchPush` fans the same entries out to the other replicas via `syncer.PushToPeers` (tracked goroutine, 2 s timeout from the coordinator context).
+- If yes, it calls into the `LocalReplica` interface (`Put`/`Get`/`Delete`), returns the response synchronously, and then fans the same entries out to the other replicas via the `PushSyncer` interface (satisfied by `pushfanout.Fanout`, 2 s timeout).
 - If no, `forwardWithRetry` tries each replica in HRW-score order and aborts when the request context is cancelled.
 
-[hrw.go](internal/hrw/hrw.go) is stateless: `Replicas(key, members, rf)` is a pure function of the live gossip view, scored by `xxhash(key ∥ replicaID)` with deterministic tie-break on `ReplicaID`.
+The coordinator depends only on the `LocalReplica` and `PushSyncer` consumer interfaces — it has no import of the concrete `replica` or `pushfanout` packages.
 
-### Node and storage (`internal/node`, `internal/storage`)
+[placement.go](internal/cluster/placement/placement.go) is stateless: `Owners[M Member](pid, members, rf)` is a pure generic function over any type with `ID() string` and `Addr() string`. It has no dependency on the `gossip` package — `gossip.MemberInfo` satisfies the `Member` constraint by implementing those methods.
 
-[node.go](internal/node/node.go) owns three things:
+### Replica and storage (`internal/replica`, `internal/storage`)
+
+[replica.go](internal/replica/replica.go) owns three things:
 
 - The `HLC` (its own mutex; safe to call without any other lock held).
 - The per-key reference-counted `keyLocks` table, used only on the write path. Reads (`GetKey`/`GetField`) hit Badger directly and rely on its MVCC.
-- A reference to the `IBLTUpdater` (set once at startup via `SetIBLTState`).
+- References to the `Store` and `Index` (IBLT state), injected at construction via concrete `*storage.Store` and `*iblt.IBLTState`.
 
-`Put` / `Delete` ([put.go](internal/node/put.go), [delete.go](internal/node/delete.go)) follow the same pattern:
+`Put` / `Delete` ([write.go](internal/replica/write.go)) follow the same pattern:
 
 ```
 acquireKey(key)               // per-key mutex; ref-counted
@@ -186,18 +200,20 @@ ibltState.Remove(old) / Insert(new)
 return ts, updates
 ```
 
-`ApplyDelta` ([merge_incoming.go](internal/node/merge_incoming.go)) is the inverse — used by the syncer and push handler. It uses `hlc.Receive` to advance the local clock from a remote timestamp and `crdt.WinsOver` to skip stale entries.
+`ApplyDelta` ([merge.go](internal/replica/merge.go)) is the inverse — used by the push handler and anti-entropy. It uses `hlc.Receive` to advance the local clock from a remote timestamp and `crdt.WinsOver` to skip stale entries.
+
+`RecoverHLCFloor` ([recover.go](internal/replica/recover.go)) scans all persisted entries via the `Store` interface to find the highest HLC timestamp; called once at startup to seed the clock.
 
 [storage/badger.go](internal/storage/badger.go) is the only file that touches Badger:
 
-- **Key encoding** — `badgerKey` is `key + "\x00" + field`; `decodeKey` splits on the first `\x00` so fields containing `\x00` round-trip correctly.
+- **Key encoding** — delegates to `keyspace.EncodeKey`/`DecodeKey`; the 4-byte partition prefix makes each partition a contiguous Badger range.
 - **`SaveBatch`** wraps the whole batch in a single `db.Update`; either the whole multi-field write commits or nothing does.
 - **`IterateAll`** pages the scan into 1000-record blocks, each in its own short-lived read transaction, so a slow network consumer (full-state pull) doesn't pin Badger's MVCC GC.
-- **`MaxTimestamp`** does a one-shot scan at startup to find the highest persisted HLC; the result feeds `node.WithHLCFloor`.
+- Storage imports only `domain/crdt` and `domain/keyspace` — no HLC dependency.
 
-### CRDT and HLC (`internal/crdt`, `internal/hlc`)
+### CRDT and HLC (`internal/domain/crdt`, `internal/domain/hlc`)
 
-`crdt.FieldEntry` is the unit of state: `{Value, Timestamp, ReplicaID, Deleted}`. `crdt.WinsOver(a, b)` compares HLC first and falls back to `ReplicaID` for ties; `merge.go` implements the AWLWW map merge used by `ApplyDelta` and the tests.
+`crdt.FieldEntry` is the unit of state: `{Value, Timestamp, ReplicaID, Deleted}`. `crdt.WinsOver(a, b)` compares HLC first and falls back to `ReplicaID` for ties; `merge.go` implements the AWLWW map merge used by `ApplyDelta` and the tests. `crdt.NewFieldEntry(value, physMs, logical, replicaID, deleted)` constructs a `FieldEntry` from flat components, letting storage avoid a direct `hlc` import.
 
 `hlc.HLC` is the standard CLOCK-SI Hybrid Logical Clock with three entry points:
 
@@ -205,23 +221,29 @@ return ts, updates
 - **`Receive(remote)`** when applying a remote event. Rejects with the same error if the *remote* timestamp is that far ahead.
 - **`Seed(floor)`** at startup, called by `WithHLCFloor`, to raise the clock above whatever's already on disk.
 
-### Anti-entropy (`internal/iblt`, `internal/syncer`)
+Both packages are pure domain packages with no internal imports — they sit at the bottom of the dependency graph.
+
+### Anti-entropy (`internal/iblt`, `internal/replication/...`)
 
 [iblt.go](internal/iblt/iblt.go) is a general-purpose IBLT. Items are opaque `[]byte`; the IBLT stores three values per cell (`Count`, `KeySum`, `HashSum`) and uses 3 deduplicated hash positions per item (`h1 + i·h2 mod n`, with `h2 |= 1` so the sequence visits `n` distinct slots before repeating). `Decode` peels pure cells iteratively and returns `(onlyInA, onlyInB, ok)`; `ok == false` means the symmetric difference was too large.
 
-[syncer/iblt_state.go](internal/syncer/iblt_state.go) is the IBLT *as seen by the rest of the system*. Each item is the canonical fixed-width serialisation of `(key, field, HLC, replicaID, deleted)`. The node's write path calls `InsertEntry`/`RemoveEntry` on this state object on every `Put`/`Delete`; `BuildFromStore` rebuilds it from Badger at startup so any pre-crash divergence between IBLT and disk heals on restart.
+[iblt/iblt_state.go](internal/iblt/iblt_state.go) is the IBLT *as seen by the rest of the system*. Each item is the canonical fixed-width serialisation of `(key, field, HLC, replicaID, deleted)`. The replica's write path calls `InsertEntry`/`RemoveEntry` on this state object on every `Put`/`Delete`; `BuildFromStore` rebuilds it from Badger at startup. `EnsurePartition` seeds an IBLT for a newly-owned partition by scanning storage — this is called by `ownership.Run` whenever the local node gains a partition, fixing the latent bug where IBLTs were only built once at startup.
 
-[syncer/syncer.go](internal/syncer/syncer.go) is the initiator of the three-step protocol described in the [sync diagram](#diagrams). Read it together with [syncer/handler.go](internal/syncer/handler.go) (the server side) — both halves are short and the symmetry is the easiest way to reason about the protocol. `SyncWithPeer` also implements the full-state fallback by concurrently `PushEntries`-streaming the entire local store and `PullEntries`-receiving the peer's entire store; both sides iterate Badger lazily via the paginated `IterateAll`.
+[replication/antientropy/antientropy.go](internal/replication/antientropy/antientropy.go) is the initiator of the three-step protocol described in the [sync diagram](#diagrams). Read it together with [replication/grpcsrv/handler.go](internal/replication/grpcsrv/handler.go) (the server side) — both halves are short and the symmetry is the easiest way to reason about the protocol. `SyncPartitionWithPeer` also implements the full-state fallback by concurrently `PushEntries`-streaming the entire local partition and `PullEntries`-receiving the peer's entire partition; both sides iterate Badger lazily via the paginated `IteratePartition`.
 
-[`SyncService.PushEntries`](proto/replication/replication.proto) is reused on the write path (`syncer.PushToPeers`, invoked from `coordinator.launchPush`) so there is exactly one wire shape for "apply these entries to that peer".
+[replication/pushfanout/fanout.go](internal/replication/pushfanout/fanout.go) (`PushToPeers`) is invoked by the coordinator after a local write. It reuses the same `SyncService.PushEntries` wire format — one wire shape for "apply these entries to that peer", shared between the write path and anti-entropy.
+
+[replication/protoconv/conv.go](internal/replication/protoconv/conv.go) is the single home for proto↔domain conversions (`EntryToProto`/`ProtoToEntry`), used by both the push fanout and the anti-entropy initiator.
 
 ### Gossip and connection pool (`internal/gossip`, `internal/connpool`)
 
-[gossip.go](internal/gossip/gossip.go) wraps HashiCorp memberlist. The non-obvious bit is the `changeCh` + `changeWorker` pattern: memberlist invokes event callbacks while holding its own lock, so the eventDelegate just signals a buffered channel and a dedicated goroutine rebuilds `g.members` and fires `onChange` *outside* the memberlist lock. This is what makes it safe for any consumer (HRW, syncer, the `Status` handler) to call back into `gossip.Members()` from arbitrary goroutines.
+[gossip.go](internal/gossip/gossip.go) wraps HashiCorp memberlist. The non-obvious bit is the `changeCh` + `changeWorker` pattern: memberlist invokes event callbacks while holding its own lock, so the eventDelegate just signals a buffered channel and a dedicated goroutine rebuilds `g.members` *outside* the memberlist lock. This is what makes it safe for any consumer (`placement`, `ownership`, the `Status` handler) to call back into `gossip.Members()` from arbitrary goroutines.
+
+`Subscribe()` returns a buffered channel (cap 1, coalescing) that receives the full membership list on every change. Multiple callers each get their own channel — `main.go` takes two: one for `pool.EvictAbsent` and one for `ownership.Run`. Non-blocking sends ensure a slow consumer doesn't stall others.
 
 `joinWithRetry` blocks `Start` until the first successful join with exponential backoff capped at 30 s — so a node never starts serving requests without a cluster view.
 
-[connpool/pool.go](internal/connpool/pool.go) is a tiny `map[string]*grpc.ClientConn` keyed by `host:port`. `EvictAbsent(keep)` snapshots the to-close connections under the mutex, releases it, *then* calls `Close()` — so a slow `Close()` cannot stall concurrent `Get` callers. `main.go` wraps the per-`OnChange` eviction in `go pool.EvictAbsent(keep)` so the notification path itself can't block either.
+[connpool/pool.go](internal/connpool/pool.go) is a tiny `map[string]*grpc.ClientConn` keyed by `host:port`. `EvictAbsent(keep)` snapshots the to-close connections under the mutex, releases it, *then* calls `Close()` — so a slow `Close()` cannot stall concurrent `Get` callers.
 
 ## Diagrams
 
@@ -240,9 +262,9 @@ Source files:
 
 ## Wire-protocol conventions
 
-- The storage key encoding uses `\x00` as the `(key, field)` delimiter. **Client-supplied** keys are rejected by `api.validateKey`. Peer-supplied keys arriving on `SyncService` (`PushEntries`, `PullEntries`) are not currently validated — see `N1` in [docs/REVIEW.md](docs/REVIEW.md).
-- Every `DeltaEntry` carries the full `(key, field, value, HLC, replicaID, deleted)` tuple. Tombstones are normal entries with `Deleted=true` and are persisted, IBLT-tracked, and replicated identically to live values.
-- IBLT items use a fixed-width binary encoding ([iblt_state.go](internal/syncer/iblt_state.go) `serialiseItem`); changing it requires bumping every node simultaneously (no version negotiation exists yet).
+- The storage key encoding uses `\x00` as the `(key, field)` delimiter. **Client-supplied** keys are rejected by `api.validateKey` (delegates to `keyspace.RejectNullBytes`). Peer-supplied keys arriving on `SyncService` (`PushEntries`, `PullEntries`) are not currently validated — see `N1` in [docs/REVIEW.md](docs/REVIEW.md).
+- Every `DeltaEntry` carries the full `(key, field, value, HLC, replicaID, deleted)` tuple. Tombstones are normal entries with `Deleted=true` and are persisted, IBLT-tracked, and replicated identically to live values. `protoconv.EntryToProto`/`ProtoToEntry` are the single home for this conversion.
+- IBLT items use a fixed-width binary encoding ([iblt/item.go](internal/iblt/item.go) `serialiseItem`/`DeserialiseItem`); changing it requires bumping every node simultaneously (no version negotiation exists yet).
 
 ## Adding or changing an RPC
 
@@ -251,14 +273,17 @@ Source files:
 3. Update the server-side handler:
    - Client API → `internal/api/handler.go`
    - Internal forwarding → `internal/api/forward_handler.go`
-   - Anti-entropy / replication → `internal/syncer/handler.go`
-4. Update the client-side caller (the coordinator's forwarder for `ForwardService`; the syncer's loop for `SyncService`).
-5. Add a focused test in the package that owns the handler. The syncer tests are a good template for end-to-end coverage; the storage tests are a good template for round-trip encoding coverage.
+   - Anti-entropy / replication → `internal/replication/grpcsrv/handler.go`
+   - Debug → `internal/api/debug_handler.go`
+4. Update the client-side caller (the coordinator's forwarder for `ForwardService`; the anti-entropy initiator in `internal/replication/antientropy/` for `SyncService`).
+5. Add a focused test in the package that owns the handler. The anti-entropy tests (`internal/replication/antientropy/`) are a good template for end-to-end coverage; the storage tests are a good template for round-trip encoding coverage.
 
 ## Debugging tips
 
-- All log lines are prefixed with the originating subsystem in square brackets (`[gossip]`, `[syncer]`, `[coordinator]`, `[hlc]`, etc.). Filter with `grep` rather than reading the full stream.
+- All log lines are prefixed with the originating subsystem in square brackets (`[gossip]`, `[antientropy]`, `[grpcsrv]`, `[pushfanout]`, `[coordinator]`, `[hlc]`, etc.). Filter with `grep` rather than reading the full stream.
 - `Status` RPC returns the live gossip view as seen by the node you query — useful to confirm membership before suspecting replication.
-- An `ErrClockDrift` log line from `[syncer]` means a peer is more than 10 minutes off wall time. Fix the clock; do not raise `MAX_CLOCK_DRIFT_MS` ([hlc.go](internal/hlc/hlc.go)).
+- `DebugService.ScanAll` streams every `(key, field)` entry persisted on a given node — useful for checking what a node actually holds without needing to know partition assignments.
+- An `ErrClockDrift` log line from `[antientropy]` means a peer is more than 10 minutes off wall time. Fix the clock; do not raise `MAX_CLOCK_DRIFT_MS` ([domain/hlc/hlc.go](internal/domain/hlc/hlc.go)).
 - If anti-entropy looks stuck, check whether `Decode` is failing (look for `IBLT diff too large` in the logs). Either raise `IBLT_CELLS` or accept that the cluster will fall back to full-state exchange for that round.
+- If a node that just (re)joined has an empty IBLT for a partition it owns, check the `[ownership]` logs — `EnsurePartition` should have been called and will log if it fails.
 - [docs/REVIEW.md](docs/REVIEW.md) is the running design-review log; open items there are the canonical "known limitations" list.

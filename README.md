@@ -41,7 +41,7 @@ For local builds, tests, and the full developer workflow see [README_DEV.md](REA
 
 A value is a JSON object stored at a string key. Internally, each `(key, field)` pair is an independent **Add-Wins Last-Write-Wins Map (AWLWWMap)** entry: a `FieldEntry` carrying the value, an HLC timestamp, the originating replica ID, and a `Deleted` tombstone flag. Two replicas that disagree on a `(key, field)` resolve the conflict by picking the higher HLC (with replica-ID as the deterministic tiebreaker) — so partial updates and deletes commute and converge.
 
-- **Virtual partitions:** keys are mapped to partitions by `partition.Of(key, P) = xxhash64(key) % P`. All `(key, field)` pairs for one key always land in the same partition. `NUM_PARTITIONS` (`P`) must be identical on every node — disagreement silently splits the cluster.
+- **Virtual partitions:** keys are mapped to partitions by `keyspace.Of(key, P) = xxhash64(key) % P`. All `(key, field)` pairs for one key always land in the same partition. `NUM_PARTITIONS` (`P`) must be identical on every node — disagreement silently splits the cluster.
 - **Storage key encoding:** `partitionID(4B big-endian) + key + "\x00" + field`. Each partition is a contiguous Badger range. Client-supplied keys containing `\x00` are rejected at the API boundary.
 - **Replication factor `RF`:** each partition is placed on the top `RF` replicas by HRW score over `(partitionID, replicaID)`. No central placement table. With `RF < node count`, each node owns and stores only a fraction of the keyspace.
 - **Quorum:** writes ack after one local persist; the other replicas receive the entry via fire-and-forget push and, on failure, reconcile in the next anti-entropy round.
@@ -51,18 +51,22 @@ A value is a JSON object stored at a string key. Internally, each `(key, field)`
 | Package | Responsibility |
 |---|---|
 | `cmd/server` | Process entry point; wires every subsystem together. |
-| `internal/api` | gRPC handler for the client-facing `KVService` (and the internal `ForwardService`). |
-| `internal/coordinator` | Routes PUT/GET/DELETE via HRW; forwards or serves locally; launches push goroutines. |
-| `internal/node` | Central state holder. Owns the HLC, the per-key lock table, and the storage handle. |
-| `internal/partition` | `Partition(key, P)` — maps keys to virtual partition IDs via xxhash. |
-| `internal/storage` | BadgerDB wrapper. Partition-prefixed key encoding, `IteratePartition`, atomic `SaveBatch`. |
-| `internal/crdt` | `FieldEntry`, AWLWW merge rules, `WinsOver` predicate. |
-| `internal/hlc` | Hybrid Logical Clock with `Send`/`Receive`/`Seed` and bounded skew detection. |
-| `internal/hrw` | Stateless rendezvous hashing `Owners(pid, members, rf)` (xxhash over partition+replicaID). |
-| `internal/gossip` | HashiCorp memberlist wrapper with a buffered change channel + worker. |
-| `internal/connpool` | Shared, evict-on-leave gRPC connection pool used by both syncer and forwarder. |
+| `internal/api` | gRPC handlers for `KVService`, `ForwardService`, and `DebugService`. Defines consumer interfaces; no concrete subsystem imports. |
+| `internal/coordinator` | Routes PUT/GET/DELETE by partition; forwards or serves locally; triggers write-path push. |
+| `internal/replica` | Central state holder. Owns the HLC, the per-key lock table, storage, and IBLT references. `RecoverHLCFloor` seeds the HLC at startup. |
+| `internal/storage` | BadgerDB wrapper. Partition-prefixed key encoding (`keyspace`), `IteratePartition`, atomic `SaveBatch`. No HLC dependency. |
+| `internal/domain/crdt` | `FieldEntry`, AWLWW merge rules, `WinsOver` predicate. |
+| `internal/domain/hlc` | Hybrid Logical Clock with `Send`/`Receive`/`Seed` and bounded skew detection. |
+| `internal/domain/keyspace` | Maps keys to partition IDs (`xxhash64 % P`), encodes/decodes storage keys, validates null bytes. |
+| `internal/cluster/placement` | Generic stateless rendezvous hashing `Owners[M Member](pid, members, rf)`. No gossip dependency. |
+| `internal/cluster/ownership` | Tracks which partitions the local node owns and who the co-owners are. Drives IBLT lifecycle (`EnsurePartition`/`DropPartition`) on membership changes via the gossip `Subscribe` channel. |
+| `internal/gossip` | HashiCorp memberlist wrapper. Fan-out `Subscribe()` channels replace a single `OnChange` callback — each subscriber gets its own buffered channel. |
+| `internal/connpool` | Shared, evict-on-leave gRPC connection pool used by forwarder and replication. |
 | `internal/iblt` | General-purpose IBLT (3-hash, length-prefixed, XOR-folded cells) with `Decode` and `Subtract`. |
-| `internal/syncer` | IBLT-based anti-entropy loop (per-partition), `SyncService` handler, `Ownership` cache, per-partition `IBLTState`. |
+| `internal/replication/antientropy` | IBLT-based initiator loop: per-partition three-step reconciliation with full-state fallback. |
+| `internal/replication/grpcsrv` | `SyncService` gRPC server (inbound `GetIBLT`, `PushEntries`, `PullEntries`). |
+| `internal/replication/pushfanout` | Write-path push fanout (`PushToPeers`): fans entries to co-replicas after a local write. |
+| `internal/replication/protoconv` | Single home for proto↔domain entry conversion (`EntryToProto`/`ProtoToEntry`). |
 
 ## Write path (PUT / DELETE)
 
@@ -94,7 +98,7 @@ Each IBLT item is a fixed binary encoding of `(key, field, HLC, replicaID, delet
 
 Cluster membership is handled by HashiCorp memberlist over UDP. Nodes join via the `SEEDS` env var with exponential-backoff retries; `gossip.Start` blocks until the first successful join, so a node never starts serving without a cluster view.
 
-Memberlist's event callbacks fire while it holds its own lock, so the gossip layer signals through a buffered channel and a dedicated `changeWorker` rebuilds the membership view *outside* that lock. This is what avoids AB-BA deadlocks with any consumer that calls back into `gossip.Members()`. The `OnChange` callback in turn fires `pool.EvictAbsent(keep)` in a fresh goroutine so the eviction's `Close()` calls can't stall the notification path either.
+Memberlist's event callbacks fire while it holds its own lock, so the gossip layer signals through a buffered channel and a dedicated `changeWorker` rebuilds the membership view *outside* that lock. This is what avoids AB-BA deadlocks with any consumer that calls back into `gossip.Members()`. Each `g.Subscribe()` call returns an independent buffered channel (cap 1, coalescing); consumers process membership changes serially in their own goroutines. `main.go` takes two subscriptions: one drives `pool.EvictAbsent` and one drives `ownership.Run`, which also kicks the IBLT lifecycle when the owned partition set changes.
 
 ![Gossip workflow](docs/gossip.svg)
 
@@ -102,7 +106,7 @@ The shared `connpool.Pool` is the single source of gRPC connections used by both
 
 ## Bootstrap and lifecycle
 
-The server entry point ([cmd/server/main.go](cmd/server/main.go)) wires the subsystems in dependency order, blocks on a successful gossip join, then starts the gRPC server and the anti-entropy loop. The HLC is seeded from the highest persisted timestamp in BadgerDB so a backwards NTP correction or a fresh-process restart can never issue a timestamp that loses to data already on disk.
+The server entry point ([cmd/server/main.go](cmd/server/main.go)) wires the subsystems in dependency order, blocks on a successful gossip join, then starts the gRPC server and the anti-entropy loop. The HLC is seeded via `replica.RecoverHLCFloor(store)` — a scan of all persisted entries — so a backwards NTP correction or a fresh-process restart can never issue a timestamp that loses to data already on disk.
 
 ![Bootstrap workflow](docs/bootstrap.svg)
 
@@ -120,10 +124,10 @@ All configuration is via environment variables, parsed at startup:
 | `GOSSIP_BIND` | `0.0.0.0` | memberlist bind address. |
 | `SEEDS` | `""` | Comma-separated `host:port` peers to join. |
 | `DATA_DIR` | `/data` | BadgerDB data directory. |
-| `RF` | `3` | Replication factor — each partition placed on `RF` nodes via HRW. |
+| `RF` | `3` | **Cluster-wide constant.** Replication factor — each partition placed on `RF` nodes via HRW. Must be identical on every node. |
 | `NUM_PARTITIONS` | `512` | **Cluster-wide constant.** Virtual partition count. Must be identical on every node; changing it requires a fresh `DATA_DIR`. |
 | `SYNC_MS` | `2000` | Anti-entropy sync interval in milliseconds. |
-| `IBLT_CELLS` | `512` | IBLT cell count **per partition** (tune for expected per-partition divergence). |
+| `IBLT_CELLS` | `512` | **Cluster-wide constant.** IBLT cell count per partition. Must be identical on every node — a mismatch is reported via a gossip config-fingerprint warning at join time. |
 
 ## Developer guide
 

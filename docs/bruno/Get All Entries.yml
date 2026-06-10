@@ -5,11 +5,7 @@ info:
 
 grpc:
   url: "{{seed}}"
-  method: /replication.SyncService/PullEntries
+  method: /debug.DebugService/ScanAll
   methodType: server-streaming
-  protoFilePath: ../../proto/replication/replication.proto
-  message: |-
-    {
-      "replicaId": 1
-    }
+  protoFilePath: ../../proto/debug/debug.proto
   auth: inherit

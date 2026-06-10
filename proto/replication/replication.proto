@@ -25,15 +25,20 @@ message ItemIdentifier {
   string replica_id = 5;
 }
 
-// ─── GetIBLT ─────────────────────────────────────────────────────────────────
+// ─── GetStateOverview ────────────────────────────────────────────────────────
 
-message GetIBLTRequest {
+// State overview is an opaque, mechanism-defined snapshot of one partition's
+// contents — currently an encoded IBLT, but the wire contract is agnostic so
+// alternative set-difference structures (Merkle trees, accumulators) can be
+// swapped in without renaming RPCs.
+
+message StateOverviewRequest {
   string replica_id = 1;    // initiator id, for logging
-  uint32 partition_id = 2;  // which partition's IBLT to fetch
+  uint32 partition_id = 2;  // which partition's overview to fetch
 }
 
-message GetIBLTResponse {
-  bytes iblt_data = 1; // output of iblt.Encode()
+message StateOverviewResponse {
+  bytes overview_data = 1; // opaque overview bytes (currently iblt.Encode())
 }
 
 // ─── PushEntries (client-streaming) ──────────────────────────────────────────
@@ -70,7 +75,7 @@ message PullRequest {
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 service SyncService {
-  rpc GetIBLT     (GetIBLTRequest)    returns (GetIBLTResponse);
-  rpc PushEntries (stream PushChunk)  returns (PushAck);
-  rpc PullEntries (PullRequest)       returns (stream DeltaEntry);
+  rpc GetStateOverview (StateOverviewRequest) returns (StateOverviewResponse);
+  rpc PushEntries      (stream PushChunk)     returns (PushAck);
+  rpc PullEntries      (PullRequest)          returns (stream DeltaEntry);
 }
