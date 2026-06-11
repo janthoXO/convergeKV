@@ -15,6 +15,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/janthoXO/convergeKV/internal/crdt"
@@ -39,11 +41,27 @@ type Store struct {
 }
 
 func Open(dir string) (*Store, error) {
-	db, err := pebble.Open(dir, &pebble.Options{})
+	db, err := pebble.Open(dir, &pebble.Options{Logger: slogAdapter{}})
 	if err != nil {
 		return nil, fmt.Errorf("storage: open %s: %w", dir, err)
 	}
 	return &Store{db: db}, nil
+}
+
+// slogAdapter routes pebble's internal logging to slog at debug level.
+type slogAdapter struct{}
+
+func (slogAdapter) Infof(format string, args ...any) {
+	slog.Debug("pebble: " + fmt.Sprintf(format, args...))
+}
+
+func (slogAdapter) Errorf(format string, args ...any) {
+	slog.Error("pebble: " + fmt.Sprintf(format, args...))
+}
+
+func (slogAdapter) Fatalf(format string, args ...any) {
+	slog.Error("pebble fatal: " + fmt.Sprintf(format, args...))
+	os.Exit(1)
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -182,6 +200,16 @@ func (s *Store) Commit(b *Batch) error {
 
 // DotSeq returns the persisted dot sequence checkpoint (0 if never written).
 func (s *Store) DotSeq() (uint64, error) { return s.metaUint64(metaDotSeq) }
+
+// PersistDotSeq durably checkpoints the dot sequence reservation.
+func (s *Store) PersistDotSeq(seq uint64) error {
+	return s.db.Set(metaKey(metaDotSeq), binary.BigEndian.AppendUint64(nil, seq), pebble.Sync)
+}
+
+// PersistHLC durably checkpoints the hybrid logical clock.
+func (s *Store) PersistHLC(ts uint64) error {
+	return s.db.Set(metaKey(metaHLC), binary.BigEndian.AppendUint64(nil, ts), pebble.Sync)
+}
 
 // HLC returns the persisted HLC checkpoint (0 if never written).
 func (s *Store) HLC() (uint64, error) { return s.metaUint64(metaHLC) }

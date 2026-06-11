@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/memberlist"
 	"gopkg.in/yaml.v3"
 )
 
@@ -42,6 +43,10 @@ type Config struct {
 	AntiEntropyInterval time.Duration `yaml:"anti_entropy_interval"`
 
 	LogLevel string `yaml:"log_level"`
+
+	// MemberlistConfig optionally overrides gossip tuning (tests use the
+	// fast local profile). Not loadable from YAML.
+	MemberlistConfig *memberlist.Config `yaml:"-"`
 }
 
 func Default() Config {

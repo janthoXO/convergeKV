@@ -67,7 +67,7 @@ func Compute(p uint16, members []cluster.Member) *View {
 			m := rank[i].member
 			owners[i] = Owner{
 				ID:     m.Meta.ID,
-				Addr:   m.Addr,
+				Addr:   m.Meta.RPCAddr, // the node-service address peers dial
 				Status: m.Meta.Flags.Get(pid),
 			}
 		}

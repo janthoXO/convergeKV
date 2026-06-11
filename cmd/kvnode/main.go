@@ -12,7 +12,7 @@ import (
 	"syscall"
 
 	"github.com/janthoXO/convergeKV/internal/config"
-	"github.com/janthoXO/convergeKV/internal/identity"
+	"github.com/janthoXO/convergeKV/internal/node"
 )
 
 func main() {
@@ -33,27 +33,17 @@ func run() error {
 
 	setupLogging(cfg.LogLevel)
 
-	nodeID, err := identity.LoadOrCreate(cfg.DataDir)
+	n, err := node.Start(cfg, slog.Default())
 	if err != nil {
-		return fmt.Errorf("node identity: %w", err)
+		return fmt.Errorf("start node: %w", err)
 	}
-	slog.Info("node starting",
-		"node_id", nodeID,
-		"data_dir", cfg.DataDir,
-		"partitions", cfg.Partitions,
-		"client_addr", cfg.ClientAddr,
-		"node_addr", cfg.NodeAddr,
-		"gossip_addr", cfg.GossipAddr,
-	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	// Subsystem wiring (storage, cluster, placement, coordinator, ...) is
-	// added milestone by milestone; until then the node just idles.
 	<-ctx.Done()
 
 	slog.Info("shutdown signal received, stopping")
+	n.Stop(true)
 	return nil
 }
 

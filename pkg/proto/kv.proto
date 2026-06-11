@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package convergekv;
+
+option go_package = "github.com/janthoXO/convergeKV/pkg/proto;proto";
+
+// KV is the client-facing service. Any node accepts any request and
+// forwards internally when it is not an owner of the key's partition.
+service KV {
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Put(PutRequest) returns (PutResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+message GetRequest {
+  string key = 1;
+}
+
+message GetResponse {
+  bool found = 1;
+  // The merged document rendered as a JSON object.
+  bytes document = 2;
+  // Hash of the document's causal context (diagnostics only).
+  bytes context_hash = 3;
+}
+
+message PutRequest {
+  string key = 1;
+  // A JSON object; each top-level field becomes an independent register.
+  bytes document = 2;
+}
+
+message PutResponse {}
+
+message DeleteRequest {
+  string key = 1;
+}
+
+message DeleteResponse {}

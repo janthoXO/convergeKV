@@ -19,6 +19,7 @@ import (
 type Config struct {
 	NodeID     [16]byte
 	Partitions uint16
+	RPCAddr    string // node-service gRPC address gossiped to peers
 	BindAddr   string // host:port for gossip; port 0 picks a free port
 	Advertise  string // optional host:port others should use
 	Seeds      []string
@@ -64,6 +65,7 @@ func Join(cfg Config) (*Cluster, error) {
 			ID:         cfg.NodeID,
 			Partitions: cfg.Partitions,
 			Generation: uint64(time.Now().UnixMilli()),
+			RPCAddr:    cfg.RPCAddr,
 			Flags:      NewPartitionFlags(cfg.Partitions),
 		},
 	}
@@ -108,6 +110,10 @@ func Join(cfg Config) (*Cluster, error) {
 	return c, nil
 }
 
+// GossipAddr returns the address this node's gossip listener is reachable at
+// (the seed address for joining nodes).
+func (c *Cluster) GossipAddr() string { return c.ml.LocalNode().Address() }
+
 // Self returns our own current metadata.
 func (c *Cluster) Self() NodeMeta {
 	c.mu.RLock()
@@ -142,8 +148,14 @@ func (c *Cluster) Changed() <-chan struct{} { return c.change }
 
 // SetPartitionStatus updates our gossiped status flag for one partition.
 func (c *Cluster) SetPartitionStatus(pid uint16, s Status) error {
+	return c.UpdateFlags(func(f PartitionFlags) { f.Set(pid, s) })
+}
+
+// UpdateFlags applies a bulk mutation to our partition status flags and
+// pushes one gossip metadata update.
+func (c *Cluster) UpdateFlags(mutate func(PartitionFlags)) error {
 	c.mu.Lock()
-	c.meta.Flags.Set(pid, s)
+	mutate(c.meta.Flags)
 	if self, ok := c.alive[c.meta.ID]; ok { // our own view updates immediately
 		self.Meta = cloneMeta(c.meta)
 		c.alive[c.meta.ID] = self

@@ -59,29 +59,32 @@ func (f PartitionFlags) Clone() PartitionFlags {
 
 // NodeMeta is the gossip payload attached to every member.
 //
-// Wire size: 27 + P/4 bytes. memberlist caps metadata at 512 bytes, so P is
-// limited to 1024 with this encoding (config validation enforces it).
+// Wire size: 28 + len(RPCAddr) + P/4 bytes. memberlist caps metadata at 512
+// bytes, so P is limited to 1024 with this encoding (config enforces it).
 type NodeMeta struct {
 	ID         [16]byte
 	Partitions uint16 // cluster-wide P this node was bootstrapped with
 	Generation uint64 // node start time (ms); orders restarts of one node
+	RPCAddr    string // node-service gRPC address peers must dial
 	Flags      PartitionFlags
 }
 
 const metaVersion = 1
 
 func (m *NodeMeta) Encode() []byte {
-	b := make([]byte, 0, 27+len(m.Flags))
+	b := make([]byte, 0, 28+len(m.RPCAddr)+len(m.Flags))
 	b = append(b, metaVersion)
 	b = append(b, m.ID[:]...)
 	b = binary.BigEndian.AppendUint16(b, m.Partitions)
 	b = binary.BigEndian.AppendUint64(b, m.Generation)
+	b = append(b, byte(len(m.RPCAddr)))
+	b = append(b, m.RPCAddr...)
 	return append(b, m.Flags...)
 }
 
 func DecodeMeta(b []byte) (NodeMeta, error) {
 	var m NodeMeta
-	if len(b) < 27 {
+	if len(b) < 28 {
 		return m, fmt.Errorf("cluster: meta too short (%d bytes)", len(b))
 	}
 	if b[0] != metaVersion {
@@ -90,7 +93,12 @@ func DecodeMeta(b []byte) (NodeMeta, error) {
 	copy(m.ID[:], b[1:17])
 	m.Partitions = binary.BigEndian.Uint16(b[17:19])
 	m.Generation = binary.BigEndian.Uint64(b[19:27])
-	flags := b[27:]
+	addrLen := int(b[27])
+	if len(b) < 28+addrLen {
+		return m, fmt.Errorf("cluster: meta truncated in rpc addr")
+	}
+	m.RPCAddr = string(b[28 : 28+addrLen])
+	flags := b[28+addrLen:]
 	if want := (int(m.Partitions) + 3) / 4; len(flags) != want {
 		return m, fmt.Errorf("cluster: flags length %d, want %d for P=%d", len(flags), want, m.Partitions)
 	}
