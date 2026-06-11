@@ -10,9 +10,11 @@
 //     are fully parallel.
 //   - There are no per-partition goroutines. The Replica owns no goroutines at
 //     all; goleak surface on this package is empty.
-//   - DropPartition removes the pointer from r.partitions; an in-flight
-//     operation that already holds p.mu finishes against the orphan partition.
-//     The store accepts the write either way and anti-entropy reconciles.
+//   - DropPartition removes the pointer from r.partitions, then takes p.mu to
+//     mark the old epoch closed. This drains any operation already holding
+//     p.mu and fences later acquirers, which abort with ErrNotOwned. p.mu is
+//     taken after releasing r.mu — never the reverse — so there is no
+//     p.mu -> r.mu lock-order edge.
 //   - r.clock has its own internal mutex; safe from any goroutine.
 //
 // Partition lifecycle: partitions only come into existence via EnsurePartition,
@@ -38,10 +40,11 @@ import (
 // It owns the clock, the storage layer, and the per-partition aggregate map.
 // All exported methods are safe for concurrent use.
 type Replica struct {
-	replicaID string
-	clock     ports.Clock
-	store     ports.Store
-	ibltCells int
+	replicaID        string
+	clock            ports.Clock
+	store            ports.Store
+	ibltCells        int
+	tombstoneGraceMs uint64
 
 	mu         sync.RWMutex
 	partitions map[uint32]*partition
@@ -54,6 +57,18 @@ type ReplicaOption func(*Replica)
 func WithHLCFloor(floor hlc.Timestamp) ReplicaOption {
 	return func(r *Replica) {
 		r.clock.Seed(floor)
+	}
+}
+
+// WithTombstoneGrace sets the tombstone grace period (see TOMBSTONE_GRACE_MS
+// in CLAUDE.md). Incoming tombstones older than this are dropped at the
+// ApplyDelta boundary (see ApplyDelta), and GCTombstones uses it to compute
+// its cutoff. A zero value disables the apply-boundary filter.
+func WithTombstoneGrace(d time.Duration) ReplicaOption {
+	return func(r *Replica) {
+		if d > 0 {
+			r.tombstoneGraceMs = uint64(d.Milliseconds())
+		}
 	}
 }
 
@@ -147,14 +162,22 @@ func (r *Replica) EnsurePartition(ctx context.Context, partitionId uint32) error
 // DropPartition removes the Partition for partitionId from the owned set.
 // On-disk data in the store is unaffected. Idempotent.
 //
-// An in-flight operation holding p.mu finishes against the now-orphaned
-// partition pointer — the store gets the write (it doesn't care about
-// ownership) and the orphan IBLT update is unobservable. The orphan is GC'd
-// once the holder releases the lock.
+// p.mu is taken after releasing r.mu (never the reverse, to avoid a
+// p.mu -> r.mu lock-order edge against partitionFor). Acquiring p.mu drains
+// any operation already in flight against this epoch; marking it closed
+// fences any later acquirer, which aborts with ErrNotOwned instead of
+// mutating a dead epoch's store records or IBLT.
 func (r *Replica) DropPartition(partitionId uint32) {
 	r.mu.Lock()
+	p := r.partitions[partitionId]
 	delete(r.partitions, partitionId)
 	r.mu.Unlock()
+
+	if p != nil {
+		p.mu.Lock() // waits for in-flight ops on the old epoch to drain
+		p.closed = true
+		p.mu.Unlock()
+	}
 }
 
 // Close releases all partition references. Safe to call once.

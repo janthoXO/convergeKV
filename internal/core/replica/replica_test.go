@@ -106,6 +106,15 @@ func (s *fakeStore) SaveBatch(_ context.Context, batch []crdt.FieldUpdate) error
 	return nil
 }
 
+func (s *fakeStore) DeleteBatch(_ context.Context, ids []crdt.FieldUpdate) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, u := range ids {
+		delete(s.entries, storeKey{u.PartitionID, u.Key, u.Field})
+	}
+	return nil
+}
+
 func (s *fakeStore) IteratePartition(_ context.Context, pid uint32, fn func(string, string, crdt.FieldEntry) error) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -483,9 +492,10 @@ func TestWithHLCFloor(t *testing.T) {
 // ── partition-lifecycle race: writes vs DropPartition ──────────────────────────
 
 // TestDropPartitionRacesWithWrites exercises the partition lifecycle race
-// under the RWMutex model: a writer that successfully resolves *partition
-// before DropPartition runs completes its write against the (soon-orphaned)
-// partition; a writer whose partitionFor runs after DropPartition sees
+// under the RWMutex model: a writer that resolves *partition and acquires
+// p.mu before DropPartition's barrier completes its write normally; a writer
+// whose partitionFor runs after DropPartition removed the pointer, or whose
+// p.mu.Lock() is granted only after the barrier marks the epoch closed, sees
 // ErrNotOwned. No panic is possible.
 func TestDropPartitionRacesWithWrites(t *testing.T) {
 	r, _, _ := newTestReplica(t)

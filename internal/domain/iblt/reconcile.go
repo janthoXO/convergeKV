@@ -37,7 +37,16 @@ type GetField func(key, field string) (entry crdt.FieldEntry, found bool)
 //     deleted flag) are dropped rather than pushed under a stale identity.
 //  4. Only-remote items are returned as pull identifiers; the caller fetches
 //     the actual entries from the peer.
-func Reconcile(local, remote *IBLT, getField GetField) (toPush, toPull []ItemID, fallback bool, err error) {
+//
+// cutoffMs, if non-zero, drops tombstone items (deleted=true) older than
+// cutoffMs from both toPush and toPull. The IBLT item encoding carries the
+// timestamp and deleted flag, so this requires no RPC. It exists so that
+// tombstones one side has already GC'd (see internal/core/replica/gc.go and
+// TOMBSTONE_GRACE_MS) don't get pushed/pulled by a peer that hasn't GC'd them
+// yet — the receiver's apply-boundary filter would drop them anyway, but
+// excluding them here avoids repeated full-partition fallbacks until the
+// lagging peer's own GC pass catches up. Pass 0 to disable.
+func Reconcile(local, remote *IBLT, getField GetField, cutoffMs uint64) (toPush, toPull []ItemID, fallback bool, err error) {
 	diff, err := local.Subtract(remote)
 	if err != nil {
 		return nil, nil, false, err
@@ -48,9 +57,13 @@ func Reconcile(local, remote *IBLT, getField GetField) (toPush, toPull []ItemID,
 		return nil, nil, true, nil
 	}
 
+	expired := func(deleted bool, physMs uint64) bool {
+		return cutoffMs != 0 && deleted && physMs < cutoffMs
+	}
+
 	for _, itemBytes := range onlyLocal {
 		key, field, rID, physMs, logical, deleted, valid := DeserialiseItem(itemBytes)
-		if !valid {
+		if !valid || expired(deleted, physMs) {
 			continue
 		}
 		entry, found := getField(key, field)
@@ -65,8 +78,8 @@ func Reconcile(local, remote *IBLT, getField GetField) (toPush, toPull []ItemID,
 	}
 
 	for _, itemBytes := range onlyRemote {
-		key, field, rID, physMs, logical, _, valid := DeserialiseItem(itemBytes)
-		if !valid {
+		key, field, rID, physMs, logical, deleted, valid := DeserialiseItem(itemBytes)
+		if !valid || expired(deleted, physMs) {
 			continue
 		}
 		toPull = append(toPull, ItemID{Key: key, Field: field, ReplicaID: rID, PhysicalMs: physMs, Logical: logical})

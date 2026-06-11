@@ -32,6 +32,10 @@ func (r *Replica) Put(ctx context.Context, partitionId uint32, key, valueJSON st
 }
 
 func (r *Replica) doPut(ctx context.Context, p *partition, key string, obj map[string]json.RawMessage) (hlc.Timestamp, []crdt.FieldUpdate, error) {
+	if p.closed {
+		return hlc.Timestamp{}, nil, ErrNotOwned
+	}
+
 	ts, err := r.clock.Send()
 	if err != nil {
 		return hlc.Timestamp{}, nil, fmt.Errorf("put: hlc: %w", err)
@@ -85,6 +89,10 @@ func (r *Replica) Delete(ctx context.Context, partitionId uint32, key string) (h
 }
 
 func (r *Replica) doDelete(ctx context.Context, p *partition, key string) (hlc.Timestamp, []crdt.FieldUpdate, error) {
+	if p.closed {
+		return hlc.Timestamp{}, nil, ErrNotOwned
+	}
+
 	ts, err := r.clock.Send()
 	if err != nil {
 		return hlc.Timestamp{}, nil, fmt.Errorf("delete: hlc: %w", err)
@@ -134,6 +142,13 @@ func (r *Replica) ApplyDelta(ctx context.Context, partitionId uint32, key, field
 	if _, err := r.clock.Receive(incoming.Timestamp); err != nil {
 		return false, err
 	}
+	if r.isExpiredTombstone(incoming) {
+		// Drop ancient incoming tombstones rather than re-persisting them: a
+		// node that already GC'd this tombstone shouldn't re-import it from a
+		// peer that hasn't GC'd yet, and a full-partition fallback shouldn't
+		// re-seed a freshly cleaned partition with stale tombstones.
+		return false, nil
+	}
 	p, err := r.partitionFor(partitionId)
 	if err != nil {
 		return false, err
@@ -144,6 +159,10 @@ func (r *Replica) ApplyDelta(ctx context.Context, partitionId uint32, key, field
 }
 
 func (r *Replica) doApply(ctx context.Context, p *partition, key, field string, incoming crdt.FieldEntry) (bool, error) {
+	if p.closed {
+		return false, ErrNotOwned
+	}
+
 	existing, exists, err := r.store.GetField(ctx, p.id, key, field)
 	if err != nil {
 		return false, err

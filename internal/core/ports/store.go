@@ -15,6 +15,10 @@ type Store interface {
 	GetKey(ctx context.Context, partitionId uint32, key string) (crdt.AWLWWMap, error)
 	GetField(ctx context.Context, partitionId uint32, key, field string) (crdt.FieldEntry, bool, error)
 	SaveBatch(ctx context.Context, batch []crdt.FieldUpdate) error
+	// DeleteBatch physically removes the given (partition, key, field) records
+	// in a single atomic transaction. Only PartitionID, Key, and Field are
+	// read from each FieldUpdate; Entry is ignored. Used by tombstone GC.
+	DeleteBatch(ctx context.Context, ids []crdt.FieldUpdate) error
 	IteratePartition(ctx context.Context, partitionId uint32, fn func(key, field string, entry crdt.FieldEntry) error) error
 	IterateAll(ctx context.Context, fn func(key, field string, entry crdt.FieldEntry) error) error
 

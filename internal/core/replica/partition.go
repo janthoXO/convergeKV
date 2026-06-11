@@ -19,14 +19,15 @@ var ErrNotOwned = errors.New("replica: partition not owned")
 // and the IBLT projection of the partition's bytes.
 //
 // Lifecycle: created by Replica.EnsurePartition, removed by Replica.DropPartition.
-// An in-flight operation holding p.mu after DropPartition runs against the
-// orphan partition; the work is harmless (store gets the write either way; the
-// orphan IBLT update goes unobserved). The orphan is GC'd once the lock is
-// released.
+// DropPartition acquires p.mu to set closed=true, which drains any operation
+// already holding the lock and fences any later acquirer: every mutator
+// re-checks closed immediately after locking and aborts with ErrNotOwned if
+// it's set, rather than mutating a dead epoch's store records or IBLT.
 type partition struct {
-	id   uint32
-	mu   sync.RWMutex
-	iblt *domiblt.IBLT
+	id     uint32
+	mu     sync.RWMutex
+	closed bool // set by DropPartition under mu; mutators must re-check after locking
+	iblt   *domiblt.IBLT
 }
 
 func newPartition(id uint32, ibltCells int) *partition {

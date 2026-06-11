@@ -20,18 +20,20 @@ import (
 // If two nodes disagree on this value they disagree on partition ownership and
 // the cluster silently diverges. Treat it as fixed cluster configuration.
 type config struct {
-	ReplicaID     string   `env:"REPLICA_ID"`
-	GRPCPort      int      `env:"GRPC_PORT"          envDefault:"50051"`
-	GossipPort    int      `env:"GOSSIP_PORT"        envDefault:"7946"`
-	GossipBind    string   `env:"GOSSIP_BIND"        envDefault:"0.0.0.0"`
-	Seeds         []string `env:"SEEDS" envSeparator:","`
-	DataDir       string   `env:"DATA_DIR"           envDefault:"/data"`
-	RF            int      `env:"RF"                 envDefault:"3"`
-	NumPartitions int      `env:"NUM_PARTITIONS"     envDefault:"512"`
-	SyncMs        int      `env:"SYNC_MS"            envDefault:"2000"`
-	IBLTCells     int      `env:"IBLT_CELLS"         envDefault:"512"`
-	Debug         bool     `env:"DEBUG"      envDefault:"false"`
-	DebugToken    string   `env:"DEBUG_TOKEN"`
+	ReplicaID        string   `env:"REPLICA_ID"`
+	GRPCPort         int      `env:"GRPC_PORT"          envDefault:"50051"`
+	GossipPort       int      `env:"GOSSIP_PORT"        envDefault:"7946"`
+	GossipBind       string   `env:"GOSSIP_BIND"        envDefault:"0.0.0.0"`
+	Seeds            []string `env:"SEEDS" envSeparator:","`
+	DataDir          string   `env:"DATA_DIR"           envDefault:"/data"`
+	RF               int      `env:"RF"                 envDefault:"3"`
+	NumPartitions    int      `env:"NUM_PARTITIONS"     envDefault:"512"`
+	SyncMs           int      `env:"SYNC_MS"            envDefault:"2000"`
+	IBLTCells        int      `env:"IBLT_CELLS"         envDefault:"512"`
+	TombstoneGraceMs int      `env:"TOMBSTONE_GRACE_MS" envDefault:"86400000"`
+	GCIntervalMs     int      `env:"GC_INTERVAL_MS"     envDefault:"3600000"`
+	Debug            bool     `env:"DEBUG"      envDefault:"false"`
+	DebugToken       string   `env:"DEBUG_TOKEN"`
 }
 
 func main() {
@@ -62,12 +64,19 @@ func main() {
 	if cfg.SyncMs <= 0 {
 		log.Fatalf("config: SYNC_MS must be > 0, got %d", cfg.SyncMs)
 	}
+	if cfg.TombstoneGraceMs <= 0 {
+		log.Fatalf("config: TOMBSTONE_GRACE_MS must be > 0, got %d", cfg.TombstoneGraceMs)
+	}
+	if cfg.GCIntervalMs <= 0 {
+		log.Fatalf("config: GC_INTERVAL_MS must be > 0, got %d", cfg.GCIntervalMs)
+	}
 	if cfg.Debug && cfg.DebugToken == "" {
 		log.Fatalf("config: DEBUG=true requires DEBUG_TOKEN to be set")
 	}
 	slog.Info("config",
 		"replica", cfg.ReplicaID, "grpc", cfg.GRPCPort, "gossip", cfg.GossipPort, "seeds", cfg.Seeds, "dataDir", cfg.DataDir,
-		"rf", cfg.RF, "partitions", cfg.NumPartitions, "syncMs", cfg.SyncMs, "ibltCells", cfg.IBLTCells, "debug", cfg.Debug)
+		"rf", cfg.RF, "partitions", cfg.NumPartitions, "syncMs", cfg.SyncMs, "ibltCells", cfg.IBLTCells,
+		"tombstoneGraceMs", cfg.TombstoneGraceMs, "gcIntervalMs", cfg.GCIntervalMs, "debug", cfg.Debug)
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

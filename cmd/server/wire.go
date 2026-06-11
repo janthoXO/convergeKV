@@ -125,7 +125,8 @@ func buildApp(cfg config) (*lifecycle.Supervisor, error) {
 				}
 				slog.Info("hlc floor seeded", "physicalMs", hlcFloor.PhysicalMs, "logical", hlcFloor.Logical)
 				node = replica.New(cfg.ReplicaID, hlc.New(), store, cfg.IBLTCells,
-					replica.WithHLCFloor(hlcFloor))
+					replica.WithHLCFloor(hlcFloor),
+					replica.WithTombstoneGrace(time.Duration(cfg.TombstoneGraceMs)*time.Millisecond))
 				ready()
 				<-ctx.Done()
 				return nil
@@ -191,7 +192,8 @@ func buildApp(cfg config) (*lifecycle.Supervisor, error) {
 			Name: "antientropy",
 			Start: func(ctx context.Context, ready func()) error {
 				ae = antientropy.New(ctx, node, pool, own,
-					antientropy.WithSyncInterval(time.Duration(cfg.SyncMs)*time.Millisecond))
+					antientropy.WithSyncInterval(time.Duration(cfg.SyncMs)*time.Millisecond),
+					antientropy.WithTombstoneGrace(time.Duration(cfg.TombstoneGraceMs)*time.Millisecond))
 				ready()
 				ae.Run()
 				<-ctx.Done()
@@ -220,7 +222,45 @@ func buildApp(cfg config) (*lifecycle.Supervisor, error) {
 			Close: func() error { return nil }, // ctx cancellation closes sub
 		},
 
-		// ── 10. Membership watcher ────────────────────────────────────────────────
+		// ── 10. Tombstone GC ──────────────────────────────────────────────────────
+		// Periodically purges tombstones older than TOMBSTONE_GRACE_MS from each
+		// owned partition, keeping the store and per-partition IBLT in lockstep
+		// (see Replica.GCTombstones). See CLAUDE.md for the rejoin-fresh
+		// operational contract this depends on.
+		lifecycle.Service{
+			Name: "tombstonegc",
+			Start: func(ctx context.Context, ready func()) error {
+				ready()
+				ticker := time.NewTicker(time.Duration(cfg.GCIntervalMs) * time.Millisecond)
+				defer ticker.Stop()
+				grace := uint64(cfg.TombstoneGraceMs)
+				for {
+					select {
+					case <-ctx.Done():
+						return nil
+					case <-ticker.C:
+						now := uint64(time.Now().UnixMilli())
+						if now <= grace {
+							continue
+						}
+						cutoff := now - grace
+						for _, pid := range own.Owned() {
+							n, err := node.GCTombstones(ctx, pid, cutoff)
+							if err != nil {
+								slog.Warn("tombstone gc failed", "partition", pid, "err", err)
+								continue
+							}
+							if n > 0 {
+								slog.Info("tombstone gc", "partition", pid, "purged", n)
+							}
+						}
+					}
+				}
+			},
+			Close: func() error { return nil },
+		},
+
+		// ── 11. Membership watcher ────────────────────────────────────────────────
 		// Evicts absent peers from the pool and fanout, and updates ownership on
 		// every gossip membership change.
 		lifecycle.Service{
@@ -243,7 +283,7 @@ func buildApp(cfg config) (*lifecycle.Supervisor, error) {
 			Close: func() error { return nil }, // ctx cancellation closes sub
 		},
 
-		// ── 11. gRPC server ───────────────────────────────────────────────────────
+		// ── 12. gRPC server ───────────────────────────────────────────────────────
 		// Registers all handlers, flips health to SERVING, then calls srv.Serve.
 		// Close sets NOT_SERVING first so load balancers drain before GracefulStop.
 		lifecycle.Service{

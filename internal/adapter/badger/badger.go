@@ -226,6 +226,22 @@ func (s *Store) SaveBatch(ctx context.Context, entries []crdt.FieldUpdate) error
 	})
 }
 
+// DeleteBatch physically removes a batch of records in a single atomic
+// transaction. Only PartitionID, Key, and Field are used. Used by tombstone GC.
+func (s *Store) DeleteBatch(ctx context.Context, ids []crdt.FieldUpdate) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return s.db.Update(func(txn *badgerdb.Txn) error {
+		for _, u := range ids {
+			if err := txn.Delete(badgerKey(u.PartitionID, u.Key, u.Field)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // checkpointValue is the on-disk representation of an HLC checkpoint.
 type checkpointValue struct {
 	PhysicalMs uint64 `json:"phys_ms"`

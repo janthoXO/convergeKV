@@ -48,6 +48,7 @@ type Syncer struct {
 	interval         time.Duration
 	roundTimeout     time.Duration
 	fullStateTimeout time.Duration
+	tombstoneGraceMs uint64
 
 	inflight   map[peerPartition]struct{}
 	inflightMu sync.Mutex
@@ -74,6 +75,18 @@ func WithSyncInterval(d time.Duration) Option {
 // WithRoundTimeout sets the per-peer timeout for the normal IBLT-diff path.
 func WithRoundTimeout(d time.Duration) Option {
 	return func(s *Syncer) { s.roundTimeout = d }
+}
+
+// WithTombstoneGrace sets the tombstone grace period (see TOMBSTONE_GRACE_MS
+// in CLAUDE.md). Tombstones older than this are excluded from toPush/toPull
+// during reconciliation, since the GC pass on either side may have already
+// purged them. A zero value disables the filter.
+func WithTombstoneGrace(d time.Duration) Option {
+	return func(s *Syncer) {
+		if d > 0 {
+			s.tombstoneGraceMs = uint64(d.Milliseconds())
+		}
+	}
 }
 
 // New constructs a Syncer bound to ctx.
@@ -244,7 +257,15 @@ func (s *Syncer) syncPair(partitionId uint32, peer ports.MemberInfo) {
 		return entry, true
 	}
 
-	toPush, toPull, fallback, err := domiblt.Reconcile(localSnap, remoteIBLT, getField)
+	var cutoffMs uint64
+	if s.tombstoneGraceMs > 0 {
+		now := uint64(time.Now().UnixMilli())
+		if now > s.tombstoneGraceMs {
+			cutoffMs = now - s.tombstoneGraceMs
+		}
+	}
+
+	toPush, toPull, fallback, err := domiblt.Reconcile(localSnap, remoteIBLT, getField, cutoffMs)
 	if err != nil {
 		// Most likely a peer with a different IBLT_CELLS. Log loudly and skip
 		// this pair — falling back to a full exchange would mask the

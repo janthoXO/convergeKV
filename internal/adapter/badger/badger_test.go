@@ -162,6 +162,57 @@ func TestGetField(t *testing.T) {
 	}
 }
 
+func TestDeleteBatchRemovesOnlyTargeted(t *testing.T) {
+	ctx := t.Context()
+	store := openTestStore(t)
+	if err := store.SaveBatch(ctx, testEntries); err != nil {
+		t.Fatalf("SaveBatch: %v", err)
+	}
+
+	user1 := keyspace.Of("user:1", testNumPartitions)
+	order42 := keyspace.Of("order:42", testNumPartitions)
+
+	if err := store.DeleteBatch(ctx, []crdt.FieldUpdate{
+		{PartitionID: user1, Key: "user:1", Field: "name"},
+	}); err != nil {
+		t.Fatalf("DeleteBatch: %v", err)
+	}
+
+	if _, found, err := store.GetField(ctx, user1, "user:1", "name"); err != nil || found {
+		t.Fatalf("user:1/name should be deleted: found=%v err=%v", found, err)
+	}
+
+	// Other fields on the same key, and other keys (including a different
+	// partition), must be untouched — exercises that DeleteBatch's key
+	// encoding (badgerKey) doesn't over- or under-match.
+	if _, found, err := store.GetField(ctx, user1, "user:1", "age"); err != nil || !found {
+		t.Fatalf("user:1/age should remain: found=%v err=%v", found, err)
+	}
+	if _, found, err := store.GetField(ctx, user1, "user:1", "email"); err != nil || !found {
+		t.Fatalf("user:1/email should remain: found=%v err=%v", found, err)
+	}
+	if _, found, err := store.GetField(ctx, order42, "order:42", "status"); err != nil || !found {
+		t.Fatalf("order:42/status should remain: found=%v err=%v", found, err)
+	}
+	if _, found, err := store.GetField(ctx, order42, "order:42", "amount"); err != nil || !found {
+		t.Fatalf("order:42/amount should remain: found=%v err=%v", found, err)
+	}
+
+	seen := make(map[string]int)
+	if err := store.IterateAll(ctx, func(key, field string, _ crdt.FieldEntry) error {
+		seen[key+"/"+field]++
+		return nil
+	}); err != nil {
+		t.Fatalf("IterateAll: %v", err)
+	}
+	if len(seen) != 4 {
+		t.Fatalf("expected 4 remaining records, got %d: %v", len(seen), seen)
+	}
+	if _, ok := seen["user:1/name"]; ok {
+		t.Error("user:1/name should not appear in IterateAll")
+	}
+}
+
 func TestCheckpointRoundtrip(t *testing.T) {
 	ctx := t.Context()
 	store := openTestStore(t)
