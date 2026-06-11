@@ -11,7 +11,10 @@ import (
 
 	"github.com/janthoXO/convergeKV/internal/codec"
 	"github.com/janthoXO/convergeKV/internal/coordinator"
+	"github.com/janthoXO/convergeKV/internal/crdt"
+	"github.com/janthoXO/convergeKV/internal/merkle"
 	"github.com/janthoXO/convergeKV/internal/placement"
+	"github.com/janthoXO/convergeKV/internal/storage"
 	pb "github.com/janthoXO/convergeKV/pkg/proto"
 )
 
@@ -47,6 +50,7 @@ func (s *KVServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.Delet
 type NodeServer struct {
 	pb.UnimplementedNodeServer
 	Coord      *coordinator.Coordinator
+	Store      *storage.Store
 	Partitions uint16
 }
 
@@ -93,10 +97,41 @@ func (s *NodeServer) Forward(ctx context.Context, req *pb.ForwardRequest) (*pb.F
 }
 
 func (s *NodeServer) ApplyDelta(ctx context.Context, req *pb.ApplyDeltaRequest) (*pb.ApplyDeltaResponse, error) {
-	if err := s.Coord.MergeDelta(uint16(req.GetPartition()), req.GetKey(), req.GetDelta()); err != nil {
+	if _, err := s.Coord.MergeDelta(uint16(req.GetPartition()), req.GetKey(), req.GetDelta()); err != nil {
 		return nil, toStatus(err)
 	}
 	return &pb.ApplyDeltaResponse{}, nil
+}
+
+func (s *NodeServer) MerkleRoot(ctx context.Context, req *pb.MerkleRootRequest) (*pb.MerkleRootResponse, error) {
+	leaves, err := s.Store.MerkleLeaves(uint16(req.GetPartition()))
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	root := merkle.Root(leaves)
+	return &pb.MerkleRootResponse{Root: root[:]}, nil
+}
+
+func (s *NodeServer) MerkleLeaves(ctx context.Context, req *pb.MerkleLeavesRequest) (*pb.MerkleLeavesResponse, error) {
+	leaves, err := s.Store.MerkleLeaves(uint16(req.GetPartition()))
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	packed := make([]byte, 0, merkle.Buckets*merkle.HashSize)
+	for i := range leaves {
+		packed = append(packed, leaves[i][:]...)
+	}
+	return &pb.MerkleLeavesResponse{Leaves: packed}, nil
+}
+
+func (s *NodeServer) SyncBucket(req *pb.SyncBucketRequest, stream pb.Node_SyncBucketServer) error {
+	pid, bucket := uint16(req.GetPartition()), uint16(req.GetBucket())
+	return s.Store.ScanPartition(pid, func(key []byte, doc *crdt.Document) error {
+		if merkle.Bucket(key) != bucket {
+			return nil
+		}
+		return stream.Send(&pb.SyncDoc{Key: key, Document: doc.Canonical()})
+	})
 }
 
 func toStatus(err error) error {

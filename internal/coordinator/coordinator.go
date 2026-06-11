@@ -6,6 +6,7 @@
 package coordinator
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/codec"
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
+	"github.com/janthoXO/convergeKV/internal/merkle"
 	"github.com/janthoXO/convergeKV/internal/placement"
 	"github.com/janthoXO/convergeKV/internal/replication"
 	"github.com/janthoXO/convergeKV/internal/storage"
@@ -188,11 +190,12 @@ func (c *Coordinator) ApplyPut(pid uint16, key string, fields map[string][]byte)
 	if err != nil {
 		return err
 	}
+	oldHash := docHashOf(key, doc) // nil for an absent document
 	if doc == nil {
 		doc = crdt.NewDocument()
 	}
 	delta := doc.PutMulti(fields, mint, c.clock.Now())
-	if err := c.persist(pid, key, doc); err != nil {
+	if err := c.persist(pid, key, oldHash, doc); err != nil {
 		return err
 	}
 	c.replicate(pid, key, delta)
@@ -212,11 +215,12 @@ func (c *Coordinator) ApplyDelete(pid uint16, key string) error {
 	if err != nil {
 		return err
 	}
+	oldHash := docHashOf(key, doc) // nil for an absent document
 	if doc == nil {
 		doc = crdt.NewDocument()
 	}
 	delta := doc.Delete(mint())
-	if err := c.persist(pid, key, doc); err != nil {
+	if err := c.persist(pid, key, oldHash, doc); err != nil {
 		return err
 	}
 	c.replicate(pid, key, delta)
@@ -241,11 +245,12 @@ func (c *Coordinator) ReadLocal(pid uint16, key string) (GetResult, error) {
 
 // MergeDelta applies a replicated delta (accepted while active or
 // bootstrapping — eligibility is NOT checked here; deltas must never be
-// refused by an owner).
-func (c *Coordinator) MergeDelta(pid uint16, key, deltaBytes []byte) error {
+// refused by an owner). It reports whether local state changed, which the
+// anti-entropy engine uses to count repairs.
+func (c *Coordinator) MergeDelta(pid uint16, key, deltaBytes []byte) (bool, error) {
 	delta, err := crdt.DecodeDocument(deltaBytes)
 	if err != nil {
-		return fmt.Errorf("coordinator: bad delta: %w", err)
+		return false, fmt.Errorf("coordinator: bad delta: %w", err)
 	}
 	// HLC receive rule: fold the delta's largest timestamp into our clock.
 	var maxTS crdt.HLC
@@ -265,21 +270,74 @@ func (c *Coordinator) MergeDelta(pid uint16, key, deltaBytes []byte) error {
 
 	doc, err := c.store.GetDocument(pid, key)
 	if err != nil {
-		return err
+		return false, err
 	}
+	oldHash := docHashOf(string(key), doc)
+	var before []byte
 	if doc == nil {
 		doc = crdt.NewDocument()
+	} else {
+		before = doc.Canonical()
 	}
 	doc.Merge(delta)
-	return c.persist(pid, string(key), doc)
+	if before != nil && bytes.Equal(before, doc.Canonical()) {
+		return false, nil // idempotent redelivery: nothing to persist
+	}
+	if err := c.persist(pid, string(key), oldHash, doc); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// RecomputeMerkleLeaf rebuilds one leaf from the documents themselves
+// (anti-entropy self-healing after repairs: XOR leaves drift permanently if
+// docs and leaves ever disagree, e.g. after corruption).
+func (c *Coordinator) RecomputeMerkleLeaf(pid uint16, bucket uint16) error {
+	c.locks[pid].Lock()
+	defer c.locks[pid].Unlock()
+	var leaf merkle.Hash
+	err := c.store.ScanPartition(pid, func(key []byte, doc *crdt.Document) error {
+		if merkle.Bucket(key) == bucket {
+			merkle.XOR(&leaf, merkle.DocHash(key, doc.Context.Canonical()))
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	b := c.store.NewBatch()
+	b.SetMerkleNode(pid, merkle.BucketPath(bucket), leaf[:])
+	return c.store.Commit(b)
 }
 
 // --- internals -----------------------------------------------------------------
 
-func (c *Coordinator) persist(pid uint16, key string, doc *crdt.Document) error {
+// persist writes the document and its incremental merkle-leaf update in one
+// synced atomic batch. Callers hold the partition lock.
+func (c *Coordinator) persist(pid uint16, key string, oldHash *merkle.Hash, doc *crdt.Document) error {
+	keyB := []byte(key)
+	bucket := merkle.Bucket(keyB)
+	leaf, err := c.store.MerkleLeaf(pid, bucket)
+	if err != nil {
+		return err
+	}
+	if oldHash != nil {
+		merkle.XOR(&leaf, *oldHash)
+	}
+	merkle.XOR(&leaf, merkle.DocHash(keyB, doc.Context.Canonical()))
+
 	b := c.store.NewBatch()
-	b.SetDocument(pid, []byte(key), doc)
+	b.SetDocument(pid, keyB, doc)
+	b.SetMerkleNode(pid, merkle.BucketPath(bucket), leaf[:])
 	return c.store.Commit(b)
+}
+
+func docHashOf(key string, doc *crdt.Document) *merkle.Hash {
+	if doc == nil {
+		return nil
+	}
+	h := merkle.DocHash([]byte(key), doc.Context.Canonical())
+	return &h
 }
 
 // replicate enqueues the delta for every other write-set owner.

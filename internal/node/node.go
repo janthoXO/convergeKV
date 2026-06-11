@@ -13,6 +13,7 @@ import (
 
 	"google.golang.org/grpc"
 
+	"github.com/janthoXO/convergeKV/internal/antientropy"
 	"github.com/janthoXO/convergeKV/internal/api"
 	"github.com/janthoXO/convergeKV/internal/cluster"
 	"github.com/janthoXO/convergeKV/internal/config"
@@ -36,6 +37,7 @@ type Node struct {
 	Store *storage.Store
 	Clock *hlc.Clock
 	Coord *coordinator.Coordinator
+	AE    *antientropy.Engine
 
 	cluster    *cluster.Cluster
 	view       atomic.Pointer[placement.View]
@@ -134,10 +136,14 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 	go n.watch(ctx, cfg.Partitions)
 	go n.checkpointHLC(ctx)
 
+	n.AE = antientropy.New(id, cfg.Partitions, store, n.Coord, n.View, n.pool,
+		cfg.AntiEntropyInterval, log)
+	go n.AE.Run(ctx)
+
 	n.clientSrv = grpc.NewServer()
 	pb.RegisterKVServer(n.clientSrv, &api.KVServer{Coord: n.Coord})
 	n.nodeSrv = grpc.NewServer()
-	pb.RegisterNodeServer(n.nodeSrv, &api.NodeServer{Coord: n.Coord, Partitions: cfg.Partitions})
+	pb.RegisterNodeServer(n.nodeSrv, &api.NodeServer{Coord: n.Coord, Store: store, Partitions: cfg.Partitions})
 	go func() { _ = n.clientSrv.Serve(clientLn) }()
 	go func() { _ = n.nodeSrv.Serve(nodeLn) }()
 

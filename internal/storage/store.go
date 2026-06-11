@@ -20,6 +20,7 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/janthoXO/convergeKV/internal/crdt"
+	"github.com/janthoXO/convergeKV/internal/merkle"
 )
 
 const (
@@ -133,6 +134,48 @@ func partitionUpperBound(prefix byte, pid uint16) []byte {
 		return []byte{prefix + 1}
 	}
 	return partitionKey(prefix, pid+1, nil)
+}
+
+// --- merkle leaves ---------------------------------------------------------------
+
+// MerkleLeaf returns one leaf hash (zero hash if never written).
+func (s *Store) MerkleLeaf(pid uint16, bucket uint16) (merkle.Hash, error) {
+	var out merkle.Hash
+	v, closer, err := s.db.Get(partitionKey(prefixMerkle, pid, merkle.BucketPath(bucket)))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return out, nil
+	}
+	if err != nil {
+		return out, err
+	}
+	defer func() { _ = closer.Close() }()
+	if len(v) != merkle.HashSize {
+		return out, fmt.Errorf("storage: merkle leaf %d/%d has %d bytes", pid, bucket, len(v))
+	}
+	copy(out[:], v)
+	return out, nil
+}
+
+// MerkleLeaves loads the partition's whole leaf vector.
+func (s *Store) MerkleLeaves(pid uint16) (*[merkle.Buckets]merkle.Hash, error) {
+	leaves := new([merkle.Buckets]merkle.Hash)
+	iter, err := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: partitionKey(prefixMerkle, pid, nil),
+		UpperBound: partitionUpperBound(prefixMerkle, pid),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = iter.Close() }()
+	for iter.First(); iter.Valid(); iter.Next() {
+		k := iter.Key()
+		if len(k) != 5 || len(iter.Value()) != merkle.HashSize {
+			return nil, fmt.Errorf("storage: malformed merkle node %x", k)
+		}
+		bucket := binary.BigEndian.Uint16(k[3:])
+		copy(leaves[bucket][:], iter.Value())
+	}
+	return leaves, iter.Error()
 }
 
 // --- atomic batches -----------------------------------------------------------

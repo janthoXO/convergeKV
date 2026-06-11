@@ -19,8 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Node_Forward_FullMethodName    = "/convergekv.Node/Forward"
-	Node_ApplyDelta_FullMethodName = "/convergekv.Node/ApplyDelta"
+	Node_Forward_FullMethodName      = "/convergekv.Node/Forward"
+	Node_ApplyDelta_FullMethodName   = "/convergekv.Node/ApplyDelta"
+	Node_MerkleRoot_FullMethodName   = "/convergekv.Node/MerkleRoot"
+	Node_MerkleLeaves_FullMethodName = "/convergekv.Node/MerkleLeaves"
+	Node_SyncBucket_FullMethodName   = "/convergekv.Node/SyncBucket"
 )
 
 // NodeClient is the client API for Node service.
@@ -37,6 +40,13 @@ type NodeClient interface {
 	// ApplyDelta merges a replicated delta into local state. Accepted while
 	// active or bootstrapping.
 	ApplyDelta(ctx context.Context, in *ApplyDeltaRequest, opts ...grpc.CallOption) (*ApplyDeltaResponse, error)
+	// MerkleRoot returns the partition's anti-entropy tree root.
+	MerkleRoot(ctx context.Context, in *MerkleRootRequest, opts ...grpc.CallOption) (*MerkleRootResponse, error)
+	// MerkleLeaves returns the partition's full leaf vector (only fetched
+	// when roots differ).
+	MerkleLeaves(ctx context.Context, in *MerkleLeavesRequest, opts ...grpc.CallOption) (*MerkleLeavesResponse, error)
+	// SyncBucket streams the full documents of one merkle bucket.
+	SyncBucket(ctx context.Context, in *SyncBucketRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SyncDoc], error)
 }
 
 type nodeClient struct {
@@ -67,6 +77,45 @@ func (c *nodeClient) ApplyDelta(ctx context.Context, in *ApplyDeltaRequest, opts
 	return out, nil
 }
 
+func (c *nodeClient) MerkleRoot(ctx context.Context, in *MerkleRootRequest, opts ...grpc.CallOption) (*MerkleRootResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MerkleRootResponse)
+	err := c.cc.Invoke(ctx, Node_MerkleRoot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeClient) MerkleLeaves(ctx context.Context, in *MerkleLeavesRequest, opts ...grpc.CallOption) (*MerkleLeavesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MerkleLeavesResponse)
+	err := c.cc.Invoke(ctx, Node_MerkleLeaves_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeClient) SyncBucket(ctx context.Context, in *SyncBucketRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SyncDoc], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Node_ServiceDesc.Streams[0], Node_SyncBucket_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SyncBucketRequest, SyncDoc]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Node_SyncBucketClient = grpc.ServerStreamingClient[SyncDoc]
+
 // NodeServer is the server API for Node service.
 // All implementations must embed UnimplementedNodeServer
 // for forward compatibility.
@@ -81,6 +130,13 @@ type NodeServer interface {
 	// ApplyDelta merges a replicated delta into local state. Accepted while
 	// active or bootstrapping.
 	ApplyDelta(context.Context, *ApplyDeltaRequest) (*ApplyDeltaResponse, error)
+	// MerkleRoot returns the partition's anti-entropy tree root.
+	MerkleRoot(context.Context, *MerkleRootRequest) (*MerkleRootResponse, error)
+	// MerkleLeaves returns the partition's full leaf vector (only fetched
+	// when roots differ).
+	MerkleLeaves(context.Context, *MerkleLeavesRequest) (*MerkleLeavesResponse, error)
+	// SyncBucket streams the full documents of one merkle bucket.
+	SyncBucket(*SyncBucketRequest, grpc.ServerStreamingServer[SyncDoc]) error
 	mustEmbedUnimplementedNodeServer()
 }
 
@@ -96,6 +152,15 @@ func (UnimplementedNodeServer) Forward(context.Context, *ForwardRequest) (*Forwa
 }
 func (UnimplementedNodeServer) ApplyDelta(context.Context, *ApplyDeltaRequest) (*ApplyDeltaResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ApplyDelta not implemented")
+}
+func (UnimplementedNodeServer) MerkleRoot(context.Context, *MerkleRootRequest) (*MerkleRootResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MerkleRoot not implemented")
+}
+func (UnimplementedNodeServer) MerkleLeaves(context.Context, *MerkleLeavesRequest) (*MerkleLeavesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MerkleLeaves not implemented")
+}
+func (UnimplementedNodeServer) SyncBucket(*SyncBucketRequest, grpc.ServerStreamingServer[SyncDoc]) error {
+	return status.Error(codes.Unimplemented, "method SyncBucket not implemented")
 }
 func (UnimplementedNodeServer) mustEmbedUnimplementedNodeServer() {}
 func (UnimplementedNodeServer) testEmbeddedByValue()              {}
@@ -154,6 +219,53 @@ func _Node_ApplyDelta_Handler(srv interface{}, ctx context.Context, dec func(int
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Node_MerkleRoot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MerkleRootRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServer).MerkleRoot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Node_MerkleRoot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServer).MerkleRoot(ctx, req.(*MerkleRootRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Node_MerkleLeaves_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MerkleLeavesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServer).MerkleLeaves(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Node_MerkleLeaves_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServer).MerkleLeaves(ctx, req.(*MerkleLeavesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Node_SyncBucket_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SyncBucketRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(NodeServer).SyncBucket(m, &grpc.GenericServerStream[SyncBucketRequest, SyncDoc]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Node_SyncBucketServer = grpc.ServerStreamingServer[SyncDoc]
+
 // Node_ServiceDesc is the grpc.ServiceDesc for Node service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -169,7 +281,21 @@ var Node_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "ApplyDelta",
 			Handler:    _Node_ApplyDelta_Handler,
 		},
+		{
+			MethodName: "MerkleRoot",
+			Handler:    _Node_MerkleRoot_Handler,
+		},
+		{
+			MethodName: "MerkleLeaves",
+			Handler:    _Node_MerkleLeaves_Handler,
+		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "SyncBucket",
+			Handler:       _Node_SyncBucket_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "node.proto",
 }

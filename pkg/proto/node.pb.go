@@ -21,6 +21,288 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type MerkleRootRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Partition     uint32                 `protobuf:"varint,1,opt,name=partition,proto3" json:"partition,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MerkleRootRequest) Reset() {
+	*x = MerkleRootRequest{}
+	mi := &file_node_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MerkleRootRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MerkleRootRequest) ProtoMessage() {}
+
+func (x *MerkleRootRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_node_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MerkleRootRequest.ProtoReflect.Descriptor instead.
+func (*MerkleRootRequest) Descriptor() ([]byte, []int) {
+	return file_node_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *MerkleRootRequest) GetPartition() uint32 {
+	if x != nil {
+		return x.Partition
+	}
+	return 0
+}
+
+type MerkleRootResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Root          []byte                 `protobuf:"bytes,1,opt,name=root,proto3" json:"root,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MerkleRootResponse) Reset() {
+	*x = MerkleRootResponse{}
+	mi := &file_node_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MerkleRootResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MerkleRootResponse) ProtoMessage() {}
+
+func (x *MerkleRootResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_node_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MerkleRootResponse.ProtoReflect.Descriptor instead.
+func (*MerkleRootResponse) Descriptor() ([]byte, []int) {
+	return file_node_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *MerkleRootResponse) GetRoot() []byte {
+	if x != nil {
+		return x.Root
+	}
+	return nil
+}
+
+type MerkleLeavesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Partition     uint32                 `protobuf:"varint,1,opt,name=partition,proto3" json:"partition,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MerkleLeavesRequest) Reset() {
+	*x = MerkleLeavesRequest{}
+	mi := &file_node_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MerkleLeavesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MerkleLeavesRequest) ProtoMessage() {}
+
+func (x *MerkleLeavesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_node_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MerkleLeavesRequest.ProtoReflect.Descriptor instead.
+func (*MerkleLeavesRequest) Descriptor() ([]byte, []int) {
+	return file_node_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *MerkleLeavesRequest) GetPartition() uint32 {
+	if x != nil {
+		return x.Partition
+	}
+	return 0
+}
+
+type MerkleLeavesResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Buckets × 32 bytes, concatenated in bucket order.
+	Leaves        []byte `protobuf:"bytes,1,opt,name=leaves,proto3" json:"leaves,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MerkleLeavesResponse) Reset() {
+	*x = MerkleLeavesResponse{}
+	mi := &file_node_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MerkleLeavesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MerkleLeavesResponse) ProtoMessage() {}
+
+func (x *MerkleLeavesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_node_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MerkleLeavesResponse.ProtoReflect.Descriptor instead.
+func (*MerkleLeavesResponse) Descriptor() ([]byte, []int) {
+	return file_node_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *MerkleLeavesResponse) GetLeaves() []byte {
+	if x != nil {
+		return x.Leaves
+	}
+	return nil
+}
+
+type SyncBucketRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Partition     uint32                 `protobuf:"varint,1,opt,name=partition,proto3" json:"partition,omitempty"`
+	Bucket        uint32                 `protobuf:"varint,2,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SyncBucketRequest) Reset() {
+	*x = SyncBucketRequest{}
+	mi := &file_node_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SyncBucketRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SyncBucketRequest) ProtoMessage() {}
+
+func (x *SyncBucketRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_node_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SyncBucketRequest.ProtoReflect.Descriptor instead.
+func (*SyncBucketRequest) Descriptor() ([]byte, []int) {
+	return file_node_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *SyncBucketRequest) GetPartition() uint32 {
+	if x != nil {
+		return x.Partition
+	}
+	return 0
+}
+
+func (x *SyncBucketRequest) GetBucket() uint32 {
+	if x != nil {
+		return x.Bucket
+	}
+	return 0
+}
+
+type SyncDoc struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// Canonical encoding of the full document.
+	Document      []byte `protobuf:"bytes,2,opt,name=document,proto3" json:"document,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SyncDoc) Reset() {
+	*x = SyncDoc{}
+	mi := &file_node_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SyncDoc) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SyncDoc) ProtoMessage() {}
+
+func (x *SyncDoc) ProtoReflect() protoreflect.Message {
+	mi := &file_node_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SyncDoc.ProtoReflect.Descriptor instead.
+func (*SyncDoc) Descriptor() ([]byte, []int) {
+	return file_node_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SyncDoc) GetKey() []byte {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *SyncDoc) GetDocument() []byte {
+	if x != nil {
+		return x.Document
+	}
+	return nil
+}
+
 type ForwardRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -36,7 +318,7 @@ type ForwardRequest struct {
 
 func (x *ForwardRequest) Reset() {
 	*x = ForwardRequest{}
-	mi := &file_node_proto_msgTypes[0]
+	mi := &file_node_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -48,7 +330,7 @@ func (x *ForwardRequest) String() string {
 func (*ForwardRequest) ProtoMessage() {}
 
 func (x *ForwardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_node_proto_msgTypes[0]
+	mi := &file_node_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -61,7 +343,7 @@ func (x *ForwardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardRequest.ProtoReflect.Descriptor instead.
 func (*ForwardRequest) Descriptor() ([]byte, []int) {
-	return file_node_proto_rawDescGZIP(), []int{0}
+	return file_node_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ForwardRequest) GetKey() string {
@@ -136,7 +418,7 @@ type ForwardResponse struct {
 
 func (x *ForwardResponse) Reset() {
 	*x = ForwardResponse{}
-	mi := &file_node_proto_msgTypes[1]
+	mi := &file_node_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -148,7 +430,7 @@ func (x *ForwardResponse) String() string {
 func (*ForwardResponse) ProtoMessage() {}
 
 func (x *ForwardResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_node_proto_msgTypes[1]
+	mi := &file_node_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -161,7 +443,7 @@ func (x *ForwardResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardResponse.ProtoReflect.Descriptor instead.
 func (*ForwardResponse) Descriptor() ([]byte, []int) {
-	return file_node_proto_rawDescGZIP(), []int{1}
+	return file_node_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ForwardResponse) GetGet() *GetResponse {
@@ -183,7 +465,7 @@ type ApplyDeltaRequest struct {
 
 func (x *ApplyDeltaRequest) Reset() {
 	*x = ApplyDeltaRequest{}
-	mi := &file_node_proto_msgTypes[2]
+	mi := &file_node_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -195,7 +477,7 @@ func (x *ApplyDeltaRequest) String() string {
 func (*ApplyDeltaRequest) ProtoMessage() {}
 
 func (x *ApplyDeltaRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_node_proto_msgTypes[2]
+	mi := &file_node_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -208,7 +490,7 @@ func (x *ApplyDeltaRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyDeltaRequest.ProtoReflect.Descriptor instead.
 func (*ApplyDeltaRequest) Descriptor() ([]byte, []int) {
-	return file_node_proto_rawDescGZIP(), []int{2}
+	return file_node_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ApplyDeltaRequest) GetPartition() uint32 {
@@ -240,7 +522,7 @@ type ApplyDeltaResponse struct {
 
 func (x *ApplyDeltaResponse) Reset() {
 	*x = ApplyDeltaResponse{}
-	mi := &file_node_proto_msgTypes[3]
+	mi := &file_node_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -252,7 +534,7 @@ func (x *ApplyDeltaResponse) String() string {
 func (*ApplyDeltaResponse) ProtoMessage() {}
 
 func (x *ApplyDeltaResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_node_proto_msgTypes[3]
+	mi := &file_node_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -265,7 +547,7 @@ func (x *ApplyDeltaResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyDeltaResponse.ProtoReflect.Descriptor instead.
 func (*ApplyDeltaResponse) Descriptor() ([]byte, []int) {
-	return file_node_proto_rawDescGZIP(), []int{3}
+	return file_node_proto_rawDescGZIP(), []int{9}
 }
 
 var File_node_proto protoreflect.FileDescriptor
@@ -274,7 +556,21 @@ const file_node_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
 	"node.proto\x12\n" +
-	"convergekv\x1a\bkv.proto\"\xb5\x01\n" +
+	"convergekv\x1a\bkv.proto\"1\n" +
+	"\x11MerkleRootRequest\x12\x1c\n" +
+	"\tpartition\x18\x01 \x01(\rR\tpartition\"(\n" +
+	"\x12MerkleRootResponse\x12\x12\n" +
+	"\x04root\x18\x01 \x01(\fR\x04root\"3\n" +
+	"\x13MerkleLeavesRequest\x12\x1c\n" +
+	"\tpartition\x18\x01 \x01(\rR\tpartition\".\n" +
+	"\x14MerkleLeavesResponse\x12\x16\n" +
+	"\x06leaves\x18\x01 \x01(\fR\x06leaves\"I\n" +
+	"\x11SyncBucketRequest\x12\x1c\n" +
+	"\tpartition\x18\x01 \x01(\rR\tpartition\x12\x16\n" +
+	"\x06bucket\x18\x02 \x01(\rR\x06bucket\"7\n" +
+	"\aSyncDoc\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\fR\x03key\x12\x1a\n" +
+	"\bdocument\x18\x02 \x01(\fR\bdocument\"\xb5\x01\n" +
 	"\x0eForwardRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12*\n" +
 	"\x03put\x18\x02 \x01(\v2\x16.convergekv.PutRequestH\x00R\x03put\x123\n" +
@@ -287,11 +583,16 @@ const file_node_proto_rawDesc = "" +
 	"\tpartition\x18\x01 \x01(\rR\tpartition\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\fR\x03key\x12\x14\n" +
 	"\x05delta\x18\x03 \x01(\fR\x05delta\"\x14\n" +
-	"\x12ApplyDeltaResponse2\x97\x01\n" +
+	"\x12ApplyDeltaResponse2\xfb\x02\n" +
 	"\x04Node\x12B\n" +
 	"\aForward\x12\x1a.convergekv.ForwardRequest\x1a\x1b.convergekv.ForwardResponse\x12K\n" +
 	"\n" +
-	"ApplyDelta\x12\x1d.convergekv.ApplyDeltaRequest\x1a\x1e.convergekv.ApplyDeltaResponseB0Z.github.com/janthoXO/convergeKV/pkg/proto;protob\x06proto3"
+	"ApplyDelta\x12\x1d.convergekv.ApplyDeltaRequest\x1a\x1e.convergekv.ApplyDeltaResponse\x12K\n" +
+	"\n" +
+	"MerkleRoot\x12\x1d.convergekv.MerkleRootRequest\x1a\x1e.convergekv.MerkleRootResponse\x12Q\n" +
+	"\fMerkleLeaves\x12\x1f.convergekv.MerkleLeavesRequest\x1a .convergekv.MerkleLeavesResponse\x12B\n" +
+	"\n" +
+	"SyncBucket\x12\x1d.convergekv.SyncBucketRequest\x1a\x13.convergekv.SyncDoc0\x01B0Z.github.com/janthoXO/convergeKV/pkg/proto;protob\x06proto3"
 
 var (
 	file_node_proto_rawDescOnce sync.Once
@@ -305,31 +606,43 @@ func file_node_proto_rawDescGZIP() []byte {
 	return file_node_proto_rawDescData
 }
 
-var file_node_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_node_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_node_proto_goTypes = []any{
-	(*ForwardRequest)(nil),     // 0: convergekv.ForwardRequest
-	(*ForwardResponse)(nil),    // 1: convergekv.ForwardResponse
-	(*ApplyDeltaRequest)(nil),  // 2: convergekv.ApplyDeltaRequest
-	(*ApplyDeltaResponse)(nil), // 3: convergekv.ApplyDeltaResponse
-	(*PutRequest)(nil),         // 4: convergekv.PutRequest
-	(*DeleteRequest)(nil),      // 5: convergekv.DeleteRequest
-	(*GetRequest)(nil),         // 6: convergekv.GetRequest
-	(*GetResponse)(nil),        // 7: convergekv.GetResponse
+	(*MerkleRootRequest)(nil),    // 0: convergekv.MerkleRootRequest
+	(*MerkleRootResponse)(nil),   // 1: convergekv.MerkleRootResponse
+	(*MerkleLeavesRequest)(nil),  // 2: convergekv.MerkleLeavesRequest
+	(*MerkleLeavesResponse)(nil), // 3: convergekv.MerkleLeavesResponse
+	(*SyncBucketRequest)(nil),    // 4: convergekv.SyncBucketRequest
+	(*SyncDoc)(nil),              // 5: convergekv.SyncDoc
+	(*ForwardRequest)(nil),       // 6: convergekv.ForwardRequest
+	(*ForwardResponse)(nil),      // 7: convergekv.ForwardResponse
+	(*ApplyDeltaRequest)(nil),    // 8: convergekv.ApplyDeltaRequest
+	(*ApplyDeltaResponse)(nil),   // 9: convergekv.ApplyDeltaResponse
+	(*PutRequest)(nil),           // 10: convergekv.PutRequest
+	(*DeleteRequest)(nil),        // 11: convergekv.DeleteRequest
+	(*GetRequest)(nil),           // 12: convergekv.GetRequest
+	(*GetResponse)(nil),          // 13: convergekv.GetResponse
 }
 var file_node_proto_depIdxs = []int32{
-	4, // 0: convergekv.ForwardRequest.put:type_name -> convergekv.PutRequest
-	5, // 1: convergekv.ForwardRequest.delete:type_name -> convergekv.DeleteRequest
-	6, // 2: convergekv.ForwardRequest.get:type_name -> convergekv.GetRequest
-	7, // 3: convergekv.ForwardResponse.get:type_name -> convergekv.GetResponse
-	0, // 4: convergekv.Node.Forward:input_type -> convergekv.ForwardRequest
-	2, // 5: convergekv.Node.ApplyDelta:input_type -> convergekv.ApplyDeltaRequest
-	1, // 6: convergekv.Node.Forward:output_type -> convergekv.ForwardResponse
-	3, // 7: convergekv.Node.ApplyDelta:output_type -> convergekv.ApplyDeltaResponse
-	6, // [6:8] is the sub-list for method output_type
-	4, // [4:6] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	10, // 0: convergekv.ForwardRequest.put:type_name -> convergekv.PutRequest
+	11, // 1: convergekv.ForwardRequest.delete:type_name -> convergekv.DeleteRequest
+	12, // 2: convergekv.ForwardRequest.get:type_name -> convergekv.GetRequest
+	13, // 3: convergekv.ForwardResponse.get:type_name -> convergekv.GetResponse
+	6,  // 4: convergekv.Node.Forward:input_type -> convergekv.ForwardRequest
+	8,  // 5: convergekv.Node.ApplyDelta:input_type -> convergekv.ApplyDeltaRequest
+	0,  // 6: convergekv.Node.MerkleRoot:input_type -> convergekv.MerkleRootRequest
+	2,  // 7: convergekv.Node.MerkleLeaves:input_type -> convergekv.MerkleLeavesRequest
+	4,  // 8: convergekv.Node.SyncBucket:input_type -> convergekv.SyncBucketRequest
+	7,  // 9: convergekv.Node.Forward:output_type -> convergekv.ForwardResponse
+	9,  // 10: convergekv.Node.ApplyDelta:output_type -> convergekv.ApplyDeltaResponse
+	1,  // 11: convergekv.Node.MerkleRoot:output_type -> convergekv.MerkleRootResponse
+	3,  // 12: convergekv.Node.MerkleLeaves:output_type -> convergekv.MerkleLeavesResponse
+	5,  // 13: convergekv.Node.SyncBucket:output_type -> convergekv.SyncDoc
+	9,  // [9:14] is the sub-list for method output_type
+	4,  // [4:9] is the sub-list for method input_type
+	4,  // [4:4] is the sub-list for extension type_name
+	4,  // [4:4] is the sub-list for extension extendee
+	0,  // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_node_proto_init() }
@@ -338,7 +651,7 @@ func file_node_proto_init() {
 		return
 	}
 	file_kv_proto_init()
-	file_node_proto_msgTypes[0].OneofWrappers = []any{
+	file_node_proto_msgTypes[6].OneofWrappers = []any{
 		(*ForwardRequest_Put)(nil),
 		(*ForwardRequest_Delete)(nil),
 		(*ForwardRequest_Get)(nil),
@@ -349,7 +662,7 @@ func file_node_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_node_proto_rawDesc), len(file_node_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
