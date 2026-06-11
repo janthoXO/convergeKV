@@ -1,0 +1,22 @@
+services:
+  seed:
+    build: .
+    environment:
+      CONVERGEKV_DATA_DIR: /data
+      CONVERGEKV_GOSSIP_ADDR: ":7946"
+    volumes:
+      - seed-data:/data
+    ports:
+      - "7000:7000"
+
+  node:
+    build: .
+    environment:
+      CONVERGEKV_DATA_DIR: /data
+      CONVERGEKV_GOSSIP_ADDR: ":7946"
+      CONVERGEKV_SEEDS: "seed:7946"
+    depends_on:
+      - seed
+
+volumes:
+  seed-data:
