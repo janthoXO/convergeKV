@@ -54,8 +54,16 @@ func (e *eventDelegate) NotifyLeave(n *memberlist.Node) {
 	c := (*Cluster)(e)
 	if meta, err := DecodeMeta(n.Meta); err == nil {
 		c.mu.Lock()
+		// A graceful leave releases the placement slot immediately; only
+		// unannounced deaths hold it for the grace period.
+		if n.State != memberlist.StateLeft {
+			if m, ok := c.alive[meta.ID]; ok {
+				c.dead[meta.ID] = deadEntry{member: m, since: time.Now()}
+			} else {
+				c.dead[meta.ID] = deadEntry{member: Member{Meta: meta, Addr: n.Address()}, since: time.Now()}
+			}
+		}
 		delete(c.alive, meta.ID)
-		c.dead[meta.ID] = time.Now()
 		c.mu.Unlock()
 	}
 	c.log.Info("member left or died", "node", n.Name, "addr", n.Address())

@@ -143,7 +143,7 @@ func (c *Coordinator) Get(ctx context.Context, key string) (GetResult, error) {
 func (c *Coordinator) routeWrite(ctx context.Context, pid uint16, req *pb.ForwardRequest, local func() error) error {
 	v := c.view()
 	for _, o := range v.Owners(pid) {
-		if o.Status != cluster.StatusActive {
+		if o.Dead || (o.Status != cluster.StatusActive && o.Status != cluster.StatusDraining) {
 			continue
 		}
 		if o.ID == c.self {
@@ -164,7 +164,7 @@ func (c *Coordinator) routeWrite(ctx context.Context, pid uint16, req *pb.Forwar
 func (c *Coordinator) CheckWriteEligible(pid uint16) error {
 	v := c.view()
 	for _, o := range v.Owners(pid) {
-		if o.ID == c.self && o.Status == cluster.StatusActive {
+		if o.ID == c.self && (o.Status == cluster.StatusActive || o.Status == cluster.StatusDraining) {
 			return nil
 		}
 	}

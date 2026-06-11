@@ -26,32 +26,44 @@ type Owner struct {
 	ID     [16]byte
 	Addr   string
 	Status cluster.Status
+	// Dead marks a node within its post-crash grace period: it holds its
+	// placement slot (no transfer storm on a quick restart) but serves
+	// nothing and is skipped by every set below.
+	Dead bool
 }
 
 // View is an immutable owners table for one membership snapshot.
 type View struct {
 	p      uint16
-	owners [][]Owner // per partition, HRW rank order, length <= RF
+	owners [][]Owner // per partition, HRW rank order
 }
 
-// Compute builds the owners table for a membership snapshot. Members must be
-// the alive set (including self); their gossiped status flags are captured
-// into the table.
-func Compute(p uint16, members []cluster.Member) *View {
+// Compute builds the owners table for a membership snapshot: the alive set
+// (including self) plus the dead-within-grace set, whose members still rank
+// and hold their slots. When an owner is draining (planned leave), the
+// owners list extends past RF so its successor starts bootstrapping while
+// the leaver still serves.
+func Compute(p uint16, members []cluster.Member, dead []cluster.Member) *View {
 	v := &View{p: p, owners: make([][]Owner, p)}
 
 	type ranked struct {
 		hash   uint64
 		member cluster.Member
+		dead   bool
 	}
 	buf := make([]byte, 18)
-	rank := make([]ranked, len(members))
+	rank := make([]ranked, len(members)+len(dead))
 
 	for pid := uint16(0); pid < p && p > 0; pid++ {
 		for i, m := range members {
 			copy(buf, m.Meta.ID[:])
 			binary.BigEndian.PutUint16(buf[16:], pid)
 			rank[i] = ranked{hash: xxhash.Sum64(buf), member: m}
+		}
+		for i, m := range dead {
+			copy(buf, m.Meta.ID[:])
+			binary.BigEndian.PutUint16(buf[16:], pid)
+			rank[len(members)+i] = ranked{hash: xxhash.Sum64(buf), member: m, dead: true}
 		}
 		sort.Slice(rank, func(i, j int) bool {
 			if rank[i].hash != rank[j].hash {
@@ -61,14 +73,29 @@ func Compute(p uint16, members []cluster.Member) *View {
 			// on every node.
 			return string(rank[i].member.Meta.ID[:]) > string(rank[j].member.Meta.ID[:])
 		})
-		n := min(RF, len(rank))
-		owners := make([]Owner, n)
-		for i := 0; i < n; i++ {
+
+		var owners []Owner
+		held := 0 // slots held by non-leaving owners (dead phantoms count:
+		// they hold their slot for the whole grace period — no promotion)
+		for i := 0; i < len(rank) && len(owners) < 2*RF; i++ {
+			if len(owners) >= RF && held >= RF {
+				break
+			}
 			m := rank[i].member
-			owners[i] = Owner{
+			o := Owner{
 				ID:     m.Meta.ID,
 				Addr:   m.Meta.RPCAddr, // the node-service address peers dial
 				Status: m.Meta.Flags.Get(pid),
+				Dead:   rank[i].dead,
+			}
+			if len(owners) >= RF && o.Dead {
+				// Never extend INTO a dead node; only live successors step
+				// up for a draining leaver.
+				continue
+			}
+			owners = append(owners, o)
+			if o.Dead || o.Status != cluster.StatusDraining {
+				held++
 			}
 		}
 		v.owners[pid] = owners
@@ -79,27 +106,28 @@ func Compute(p uint16, members []cluster.Member) *View {
 // Owners returns the partition's owners in HRW rank order.
 func (v *View) Owners(pid uint16) []Owner { return v.owners[pid] }
 
-// WriteSet returns the owners that must receive writes and deltas:
-// active and bootstrapping.
+// WriteSet returns the owners that must receive writes and deltas: active,
+// bootstrapping, and draining (a leaver keeps serving until its successor is
+// active). Dead phantoms receive nothing.
 func (v *View) WriteSet(pid uint16) []Owner {
 	return v.filter(pid, func(s cluster.Status) bool {
-		return s == cluster.StatusActive || s == cluster.StatusBootstrapping
+		return s == cluster.StatusActive || s == cluster.StatusBootstrapping || s == cluster.StatusDraining
 	})
 }
 
-// ReadSet returns the owners allowed to serve reads: active only
-// (bootstrapping owners have incomplete data, draining ones are leaving).
+// ReadSet returns the owners allowed to serve reads: active and draining
+// (bootstrapping owners have incomplete data).
 func (v *View) ReadSet(pid uint16) []Owner {
 	return v.filter(pid, func(s cluster.Status) bool {
-		return s == cluster.StatusActive
+		return s == cluster.StatusActive || s == cluster.StatusDraining
 	})
 }
 
-// Applier returns the partition's dot-minting applier: the first active
-// owner in HRW rank order.
+// Applier returns the partition's dot-minting applier: the first fully
+// serving (active or draining) owner in HRW rank order.
 func (v *View) Applier(pid uint16) (Owner, bool) {
 	for _, o := range v.owners[pid] {
-		if o.Status == cluster.StatusActive {
+		if !o.Dead && (o.Status == cluster.StatusActive || o.Status == cluster.StatusDraining) {
 			return o, true
 		}
 	}
@@ -130,7 +158,7 @@ func (v *View) OwnedPartitions(id [16]byte) []uint16 {
 func (v *View) filter(pid uint16, keep func(cluster.Status) bool) []Owner {
 	var out []Owner
 	for _, o := range v.owners[pid] {
-		if keep(o.Status) {
+		if !o.Dead && keep(o.Status) {
 			out = append(out, o)
 		}
 	}

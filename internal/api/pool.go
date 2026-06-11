@@ -106,6 +106,31 @@ func (p *Pool) SyncBucket(ctx context.Context, addr string, pid, bucket uint16, 
 	}
 }
 
+// Snapshot implements transfer.Source.
+func (p *Pool) Snapshot(ctx context.Context, addr string, pid uint16, fn func(key, doc []byte) error) error {
+	c, err := p.conn(addr)
+	if err != nil {
+		return err
+	}
+	stream, err := pb.NewNodeClient(c).Snapshot(ctx,
+		&pb.SnapshotRequest{Partition: uint32(pid)}, grpc.UseCompressor(Zstd))
+	if err != nil {
+		return err
+	}
+	for {
+		doc, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := fn(doc.GetKey(), doc.GetDocument()); err != nil {
+			return err
+		}
+	}
+}
+
 func (p *Pool) ApplyDelta(ctx context.Context, addr string, pid uint16, key, delta []byte) error {
 	return p.SendDelta(ctx, addr, replication.Delta{Partition: pid, Key: key, Delta: delta})
 }

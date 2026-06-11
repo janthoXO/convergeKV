@@ -24,6 +24,7 @@ const (
 	Node_MerkleRoot_FullMethodName   = "/convergekv.Node/MerkleRoot"
 	Node_MerkleLeaves_FullMethodName = "/convergekv.Node/MerkleLeaves"
 	Node_SyncBucket_FullMethodName   = "/convergekv.Node/SyncBucket"
+	Node_Snapshot_FullMethodName     = "/convergekv.Node/Snapshot"
 )
 
 // NodeClient is the client API for Node service.
@@ -47,6 +48,10 @@ type NodeClient interface {
 	MerkleLeaves(ctx context.Context, in *MerkleLeavesRequest, opts ...grpc.CallOption) (*MerkleLeavesResponse, error)
 	// SyncBucket streams the full documents of one merkle bucket.
 	SyncBucket(ctx context.Context, in *SyncBucketRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SyncDoc], error)
+	// Snapshot streams every document of a partition from a consistent
+	// storage snapshot (bootstrap transfer; overlapping live deltas are
+	// handled by merge).
+	Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SyncDoc], error)
 }
 
 type nodeClient struct {
@@ -116,6 +121,25 @@ func (c *nodeClient) SyncBucket(ctx context.Context, in *SyncBucketRequest, opts
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Node_SyncBucketClient = grpc.ServerStreamingClient[SyncDoc]
 
+func (c *nodeClient) Snapshot(ctx context.Context, in *SnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SyncDoc], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Node_ServiceDesc.Streams[1], Node_Snapshot_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SnapshotRequest, SyncDoc]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Node_SnapshotClient = grpc.ServerStreamingClient[SyncDoc]
+
 // NodeServer is the server API for Node service.
 // All implementations must embed UnimplementedNodeServer
 // for forward compatibility.
@@ -137,6 +161,10 @@ type NodeServer interface {
 	MerkleLeaves(context.Context, *MerkleLeavesRequest) (*MerkleLeavesResponse, error)
 	// SyncBucket streams the full documents of one merkle bucket.
 	SyncBucket(*SyncBucketRequest, grpc.ServerStreamingServer[SyncDoc]) error
+	// Snapshot streams every document of a partition from a consistent
+	// storage snapshot (bootstrap transfer; overlapping live deltas are
+	// handled by merge).
+	Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SyncDoc]) error
 	mustEmbedUnimplementedNodeServer()
 }
 
@@ -161,6 +189,9 @@ func (UnimplementedNodeServer) MerkleLeaves(context.Context, *MerkleLeavesReques
 }
 func (UnimplementedNodeServer) SyncBucket(*SyncBucketRequest, grpc.ServerStreamingServer[SyncDoc]) error {
 	return status.Error(codes.Unimplemented, "method SyncBucket not implemented")
+}
+func (UnimplementedNodeServer) Snapshot(*SnapshotRequest, grpc.ServerStreamingServer[SyncDoc]) error {
+	return status.Error(codes.Unimplemented, "method Snapshot not implemented")
 }
 func (UnimplementedNodeServer) mustEmbedUnimplementedNodeServer() {}
 func (UnimplementedNodeServer) testEmbeddedByValue()              {}
@@ -266,6 +297,17 @@ func _Node_SyncBucket_Handler(srv interface{}, stream grpc.ServerStream) error {
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Node_SyncBucketServer = grpc.ServerStreamingServer[SyncDoc]
 
+func _Node_Snapshot_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SnapshotRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(NodeServer).Snapshot(m, &grpc.GenericServerStream[SnapshotRequest, SyncDoc]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Node_SnapshotServer = grpc.ServerStreamingServer[SyncDoc]
+
 // Node_ServiceDesc is the grpc.ServiceDesc for Node service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -294,6 +336,11 @@ var Node_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "SyncBucket",
 			Handler:       _Node_SyncBucket_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "Snapshot",
+			Handler:       _Node_Snapshot_Handler,
 			ServerStreams: true,
 		},
 	},

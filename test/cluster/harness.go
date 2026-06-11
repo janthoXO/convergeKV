@@ -22,6 +22,7 @@ const Partitions = 16
 type Harness struct {
 	t     *testing.T
 	Nodes []*node.Node
+	cfgs  []config.Config
 	conns []*grpc.ClientConn
 }
 
@@ -45,6 +46,10 @@ func nodeConfig(t *testing.T, seeds []string) config.Config {
 	cfg.GossipAddr = "127.0.0.1:0"
 	cfg.Partitions = Partitions
 	cfg.Seeds = seeds
+	cfg.CrashGracePeriod = time.Second
+	// AE is the only repair mechanism for deltas that went to a stale owner
+	// set during membership changes; run it hot in tests.
+	cfg.AntiEntropyInterval = 500 * time.Millisecond
 	cfg.MemberlistConfig = fastMemberlist()
 	return cfg
 }
@@ -56,11 +61,13 @@ func Start(t *testing.T, n int) *Harness {
 	h := &Harness{t: t}
 	var seeds []string
 	for i := 0; i < n; i++ {
-		nd, err := node.Start(nodeConfig(t, seeds), nil)
+		cfg := nodeConfig(t, seeds)
+		nd, err := node.Start(cfg, nil)
 		if err != nil {
 			t.Fatalf("start node %d: %v", i, err)
 		}
 		h.Nodes = append(h.Nodes, nd)
+		h.cfgs = append(h.cfgs, cfg)
 		if i == 0 {
 			seeds = []string{nd.Cluster().GossipAddr()}
 		}
@@ -167,6 +174,20 @@ func (h *Harness) NonOwner(key string) int {
 func (h *Harness) Kill(i int) {
 	h.Nodes[i].Stop(false)
 	h.Nodes[i] = nil
+}
+
+// Restart starts node i again on its original data dir, joining via any
+// running peer.
+func (h *Harness) Restart(i int) *node.Node {
+	h.t.Helper()
+	cfg := h.cfgs[i]
+	cfg.Seeds = []string{h.firstRunning().Cluster().GossipAddr()}
+	nd, err := node.Start(cfg, nil)
+	if err != nil {
+		h.t.Fatalf("restart node %d: %v", i, err)
+	}
+	h.Nodes[i] = nd
+	return nd
 }
 
 func (h *Harness) firstRunning() *node.Node {

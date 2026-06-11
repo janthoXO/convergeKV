@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/placement"
 	"github.com/janthoXO/convergeKV/internal/replication"
 	"github.com/janthoXO/convergeKV/internal/storage"
+	"github.com/janthoXO/convergeKV/internal/transfer"
 	pb "github.com/janthoXO/convergeKV/pkg/proto"
 )
 
@@ -43,6 +45,11 @@ type Node struct {
 	view       atomic.Pointer[placement.View]
 	pool       *api.Pool
 	fanout     *replication.Fanout
+	transfer   *transfer.Manager
+	partitions uint16
+	prevOwned  []byte // ownership bitmap persisted before the last shutdown
+	ctx        context.Context
+	wg         sync.WaitGroup
 	clientSrv  *grpc.Server
 	nodeSrv    *grpc.Server
 	clientAddr string
@@ -100,14 +107,15 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 	dots := coordinator.NewDotSource(crdt.ActorID(id), lastSeq, store.PersistDotSeq)
 
 	cl, err := cluster.Join(cluster.Config{
-		NodeID:     id,
-		Partitions: cfg.Partitions,
-		RPCAddr:    advertised(nodeLn.Addr().String(), cfg.NodeAddr),
-		BindAddr:   cfg.GossipAddr,
-		Advertise:  cfg.AdvertiseAddr,
-		Seeds:      cfg.Seeds,
-		Memberlist: cfg.MemberlistConfig,
-		Logger:     log,
+		NodeID:          id,
+		Partitions:      cfg.Partitions,
+		RPCAddr:         advertised(nodeLn.Addr().String(), cfg.NodeAddr),
+		BindAddr:        cfg.GossipAddr,
+		Advertise:       cfg.AdvertiseAddr,
+		Seeds:           cfg.Seeds,
+		DeadGracePeriod: cfg.CrashGracePeriod,
+		Memberlist:      cfg.MemberlistConfig,
+		Logger:          log,
 	})
 	if err != nil {
 		_ = store.Close()
@@ -129,16 +137,21 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 	n.Coord = coordinator.New(id, cfg.Partitions, store, clock, dots,
 		n.View, n.pool, n.fanout, log)
 
-	n.recomputeView(cfg.Partitions)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	n.cancel = cancel
-	go n.watch(ctx, cfg.Partitions)
-	go n.checkpointHLC(ctx)
-
+	n.ctx = ctx
+	n.partitions = cfg.Partitions
+	if n.prevOwned, err = store.Owned(); err != nil {
+		return nil, err
+	}
 	n.AE = antientropy.New(id, cfg.Partitions, store, n.Coord, n.View, n.pool,
 		cfg.AntiEntropyInterval, log)
-	go n.AE.Run(ctx)
+	n.transfer = transfer.New(id, n.Coord, n.View, n.pool, cl, log)
+
+	n.recomputeView(cfg.Partitions)
+	n.bg(func() { n.watch(ctx, cfg.Partitions) })
+	n.bg(func() { n.checkpointHLC(ctx) })
+	n.bg(func() { n.AE.Run(ctx) })
 
 	n.clientSrv = grpc.NewServer()
 	pb.RegisterKVServer(n.clientSrv, &api.KVServer{Coord: n.Coord})
@@ -161,9 +174,17 @@ func (n *Node) View() *placement.View { return n.view.Load() }
 // Cluster exposes the membership layer (harness and later milestones).
 func (n *Node) Cluster() *cluster.Cluster { return n.cluster }
 
-// Stop gracefully shuts the node down. With graceful=false the node drops
-// off the network without a leave broadcast (crash simulation in tests).
+// Transfer exposes the bootstrap manager (test assertions).
+func (n *Node) Transfer() *transfer.Manager { return n.transfer }
+
+// Stop shuts the node down. Graceful: drain (mark partitions draining, wait
+// for successors to go active), broadcast a leave, then exit. Otherwise the
+// node drops off the network without a word (crash simulation in tests).
 func (n *Node) Stop(graceful bool) {
+	if graceful {
+		owned := n.View().OwnedPartitions(n.ID)
+		transfer.Drain(n.ID, n.View, n.cluster, owned, 15*time.Second, n.Log)
+	}
 	n.cancel()
 	if graceful {
 		_ = n.cluster.Leave(2 * time.Second)
@@ -174,36 +195,69 @@ func (n *Node) Stop(graceful bool) {
 	n.nodeSrv.Stop()
 	n.fanout.Close()
 	n.pool.Close()
+	// Background goroutines (watch, HLC checkpoint, AE) touch the store;
+	// they must be fully out before it closes.
+	n.wg.Wait()
 	_ = n.Store.PersistHLC(n.Clock.Last())
 	_ = n.Store.Close()
 	close(n.stopped)
 }
 
+func (n *Node) bg(f func()) {
+	n.wg.Add(1)
+	go func() {
+		defer n.wg.Done()
+		f()
+	}()
+}
+
 // watch recomputes placement on membership changes and keeps our gossiped
-// partition status flags in line with ownership. Until M7 adds bootstrap
-// transfer, newly gained partitions are marked active immediately.
+// partition status flags in line with ownership.
 func (n *Node) watch(ctx context.Context, p uint16) {
+	// The slow tick retries work that has no membership trigger of its own
+	// (e.g. a failed bootstrap rolled back to StatusNone).
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-n.cluster.Changed():
 			n.recomputeView(p)
+		case <-tick.C:
+			n.recomputeView(p)
 		}
 	}
 }
 
 func (n *Node) recomputeView(p uint16) {
-	v := placement.Compute(p, n.cluster.Members())
+	v := placement.Compute(p, n.cluster.Members(), n.cluster.DeadMembers())
 	n.view.Store(v)
 
 	self := n.cluster.Self()
-	var toActivate, toClear []uint16
+	var toActivate, toClear, toBootstrap []uint16
 	for pid := uint16(0); pid < p; pid++ {
 		owned := v.IsOwner(pid, n.ID)
-		switch st := self.Flags.Get(pid); {
+		st := self.Flags.Get(pid)
+		switch {
 		case owned && st == cluster.StatusNone:
-			toActivate = append(toActivate, pid)
+			hasData, err := n.Store.HasPartitionData(pid)
+			if err != nil {
+				n.Log.Warn("partition data probe failed", "partition", pid, "err", err)
+				continue
+			}
+			_, hasSource := bootstrapSource(v, pid, n.ID)
+			switch {
+			case hasData || n.wasOwner(pid):
+				// Restart/rejoin of a previous owner: the data (if any) is
+				// here, AE closes any gap — no transfer storm.
+				toActivate = append(toActivate, pid)
+			case hasSource:
+				toBootstrap = append(toBootstrap, pid)
+			default:
+				// Fresh partition with no serving owner anywhere.
+				toActivate = append(toActivate, pid)
+			}
 		case !owned && st != cluster.StatusNone:
 			toClear = append(toClear, pid)
 		}
@@ -221,8 +275,43 @@ func (n *Node) recomputeView(p uint16) {
 			n.Log.Warn("flag update failed", "err", err)
 		}
 		// Flags changed our own meta: recompute so the local view sees them.
-		n.view.Store(placement.Compute(p, n.cluster.Members()))
+		n.view.Store(placement.Compute(p, n.cluster.Members(), n.cluster.DeadMembers()))
 	}
+	for _, pid := range toBootstrap {
+		n.transfer.Bootstrap(n.ctx, pid)
+	}
+	n.persistOwnership(v)
+}
+
+// wasOwner reports whether the persisted pre-restart ownership bitmap covers
+// the partition.
+func (n *Node) wasOwner(pid uint16) bool {
+	bm := n.prevOwned
+	return int(pid/8) < len(bm) && bm[pid/8]&(1<<(pid%8)) != 0
+}
+
+// persistOwnership checkpoints current ownership for restart-within-grace.
+func (n *Node) persistOwnership(v *placement.View) {
+	bm := make([]byte, (int(n.partitions)+7)/8)
+	for _, pid := range v.OwnedPartitions(n.ID) {
+		bm[pid/8] |= 1 << (pid % 8)
+	}
+	if err := n.Store.PersistOwned(bm); err != nil {
+		n.Log.Warn("ownership checkpoint failed", "err", err)
+	}
+}
+
+// bootstrapSource reports whether some other owner could serve a snapshot.
+func bootstrapSource(v *placement.View, pid uint16, self [16]byte) (placement.Owner, bool) {
+	for _, o := range v.Owners(pid) {
+		if o.ID == self || o.Dead {
+			continue
+		}
+		if o.Status == cluster.StatusActive || o.Status == cluster.StatusDraining {
+			return o, true
+		}
+	}
+	return placement.Owner{}, false
 }
 
 // checkpointHLC persists the clock periodically; the restart bump covers the

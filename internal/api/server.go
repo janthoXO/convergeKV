@@ -124,6 +124,12 @@ func (s *NodeServer) MerkleLeaves(ctx context.Context, req *pb.MerkleLeavesReque
 	return &pb.MerkleLeavesResponse{Leaves: packed}, nil
 }
 
+func (s *NodeServer) Snapshot(req *pb.SnapshotRequest, stream pb.Node_SnapshotServer) error {
+	return s.Store.ScanPartition(uint16(req.GetPartition()), func(key []byte, doc *crdt.Document) error {
+		return stream.Send(&pb.SyncDoc{Key: key, Document: doc.Canonical()})
+	})
+}
+
 func (s *NodeServer) SyncBucket(req *pb.SyncBucketRequest, stream pb.Node_SyncBucketServer) error {
 	pid, bucket := uint16(req.GetPartition()), uint16(req.GetBucket())
 	return s.Store.ScanPartition(pid, func(key []byte, doc *crdt.Document) error {

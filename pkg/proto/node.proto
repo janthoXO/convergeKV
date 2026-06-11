@@ -27,6 +27,15 @@ service Node {
 
   // SyncBucket streams the full documents of one merkle bucket.
   rpc SyncBucket(SyncBucketRequest) returns (stream SyncDoc);
+
+  // Snapshot streams every document of a partition from a consistent
+  // storage snapshot (bootstrap transfer; overlapping live deltas are
+  // handled by merge).
+  rpc Snapshot(SnapshotRequest) returns (stream SyncDoc);
+}
+
+message SnapshotRequest {
+  uint32 partition = 1;
 }
 
 message MerkleRootRequest {

@@ -35,6 +35,7 @@ const (
 	metaPartitions = "partitions"
 	metaDotSeq     = "dot_seq"
 	metaHLC        = "hlc"
+	metaOwned      = "owned"
 )
 
 type Store struct {
@@ -134,6 +135,19 @@ func partitionUpperBound(prefix byte, pid uint16) []byte {
 		return []byte{prefix + 1}
 	}
 	return partitionKey(prefix, pid+1, nil)
+}
+
+// HasPartitionData reports whether any document exists in the partition.
+func (s *Store) HasPartitionData(pid uint16) (bool, error) {
+	iter, err := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: partitionKey(prefixDoc, pid, nil),
+		UpperBound: partitionUpperBound(prefixDoc, pid),
+	})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = iter.Close() }()
+	return iter.First(), iter.Error()
 }
 
 // --- merkle leaves ---------------------------------------------------------------
@@ -252,6 +266,28 @@ func (s *Store) PersistDotSeq(seq uint64) error {
 // PersistHLC durably checkpoints the hybrid logical clock.
 func (s *Store) PersistHLC(ts uint64) error {
 	return s.db.Set(metaKey(metaHLC), binary.BigEndian.AppendUint64(nil, ts), pebble.Sync)
+}
+
+// PersistOwned durably records the set of owned partitions (a bitmap), so a
+// restart within the crash grace period can resume ownership without a
+// bootstrap transfer.
+func (s *Store) PersistOwned(bitmap []byte) error {
+	return s.db.Set(metaKey(metaOwned), bitmap, pebble.Sync)
+}
+
+// Owned returns the persisted ownership bitmap (nil if never written).
+func (s *Store) Owned() ([]byte, error) {
+	v, closer, err := s.db.Get(metaKey(metaOwned))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = closer.Close() }()
+	out := make([]byte, len(v))
+	copy(out, v)
+	return out, nil
 }
 
 // HLC returns the persisted HLC checkpoint (0 if never written).

@@ -23,6 +23,9 @@ type Config struct {
 	BindAddr   string // host:port for gossip; port 0 picks a free port
 	Advertise  string // optional host:port others should use
 	Seeds      []string
+	// DeadGracePeriod is how long a dead node keeps appearing in
+	// DeadMembers (holding its placement slot) before being forgotten.
+	DeadGracePeriod time.Duration
 	// Memberlist overrides the base memberlist config (tests use
 	// DefaultLocalConfig for fast convergence); nil means DefaultLANConfig.
 	Memberlist *memberlist.Config
@@ -40,11 +43,23 @@ type Cluster struct {
 	log   *slog.Logger
 	nodeP uint16
 
+	grace time.Duration
+
+	// updateMu serializes memberlist.UpdateNode, which is not safe to call
+	// concurrently (it reads and writes the local node without full locking).
+	updateMu sync.Mutex
+
 	mu     sync.RWMutex
 	meta   NodeMeta // our gossiped metadata
 	alive  map[[16]byte]Member
-	dead   map[[16]byte]time.Time
+	dead   map[[16]byte]deadEntry
 	change chan struct{}
+	done   chan struct{}
+}
+
+type deadEntry struct {
+	member Member // last known state
+	since  time.Time
 }
 
 // Join starts gossip, joins the seeds (if any), and verifies the cluster
@@ -55,12 +70,18 @@ func Join(cfg Config) (*Cluster, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	grace := cfg.DeadGracePeriod
+	if grace == 0 {
+		grace = 10 * time.Minute
+	}
 	c := &Cluster{
 		log:    log,
 		nodeP:  cfg.Partitions,
+		grace:  grace,
 		alive:  make(map[[16]byte]Member),
-		dead:   make(map[[16]byte]time.Time),
+		dead:   make(map[[16]byte]deadEntry),
 		change: make(chan struct{}, 1),
+		done:   make(chan struct{}),
 		meta: NodeMeta{
 			ID:         cfg.NodeID,
 			Partitions: cfg.Partitions,
@@ -70,9 +91,12 @@ func Join(cfg Config) (*Cluster, error) {
 		},
 	}
 
-	mlc := cfg.Memberlist
-	if mlc == nil {
-		mlc = memberlist.DefaultLANConfig()
+	mlc := memberlist.DefaultLANConfig()
+	if cfg.Memberlist != nil {
+		// Work on a copy: the caller's config may be shared (e.g. reused
+		// for a restart while the old instance's goroutines still read it).
+		cp := *cfg.Memberlist
+		mlc = &cp
 	}
 	mlc.Name = fmt.Sprintf("%x", cfg.NodeID)
 	if cfg.BindAddr != "" {
@@ -107,7 +131,34 @@ func Join(cfg Config) (*Cluster, error) {
 			return nil, fmt.Errorf("cluster: join seeds (partition count mismatch is fatal): %w", err)
 		}
 	}
+	go c.pruneDead()
 	return c, nil
+}
+
+// pruneDead drops dead nodes whose grace period expired, releasing their
+// placement slots so successors get promoted.
+func (c *Cluster) pruneDead() {
+	t := time.NewTicker(max(c.grace/10, 100*time.Millisecond))
+	defer t.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-t.C:
+		}
+		pruned := false
+		c.mu.Lock()
+		for id, e := range c.dead {
+			if time.Since(e.since) > c.grace {
+				delete(c.dead, id)
+				pruned = true
+			}
+		}
+		c.mu.Unlock()
+		if pruned {
+			c.notify()
+		}
+	}
 }
 
 // GossipAddr returns the address this node's gossip listener is reachable at
@@ -134,12 +185,25 @@ func (c *Cluster) Members() []Member {
 	return out
 }
 
-// DeadSince returns when a currently-dead node was declared dead, if it is.
+// DeadSince returns when a currently-dead node was declared dead, if it is
+// still within its grace period.
 func (c *Cluster) DeadSince(id [16]byte) (time.Time, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	t, ok := c.dead[id]
-	return t, ok
+	e, ok := c.dead[id]
+	return e.since, ok
+}
+
+// DeadMembers returns nodes that died within the grace period, with their
+// last known metadata. They keep holding their placement slots until pruned.
+func (c *Cluster) DeadMembers() []Member {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]Member, 0, len(c.dead))
+	for _, e := range c.dead {
+		out = append(out, cloneMember(e.member))
+	}
+	return out
 }
 
 // Changed returns a coalescing signal channel: it receives (at least) one
@@ -163,7 +227,9 @@ func (c *Cluster) UpdateFlags(mutate func(PartitionFlags)) error {
 	c.mu.Unlock()
 	c.notify()
 	// Push the new meta through gossip (bounded wait; propagation continues
-	// asynchronously regardless).
+	// asynchronously regardless). Serialized: UpdateNode races with itself.
+	c.updateMu.Lock()
+	defer c.updateMu.Unlock()
 	return c.ml.UpdateNode(2 * time.Second)
 }
 
@@ -176,7 +242,14 @@ func (c *Cluster) Leave(timeout time.Duration) error {
 }
 
 // Shutdown stops gossip without announcing (crash-like, for tests).
-func (c *Cluster) Shutdown() error { return c.ml.Shutdown() }
+func (c *Cluster) Shutdown() error {
+	select {
+	case <-c.done:
+	default:
+		close(c.done)
+	}
+	return c.ml.Shutdown()
+}
 
 func (c *Cluster) notify() {
 	select {
