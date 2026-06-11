@@ -127,6 +127,11 @@ func (c *Config) validate() error {
 	if c.Partitions == 0 || c.Partitions&(c.Partitions-1) != 0 {
 		return fmt.Errorf("partitions must be a power of two, got %d", c.Partitions)
 	}
+	if c.Partitions > 1024 {
+		// Per-partition status flags must fit memberlist's 512-byte
+		// metadata cap (see internal/cluster.NodeMeta).
+		return fmt.Errorf("partitions must be <= 1024, got %d", c.Partitions)
+	}
 	return nil
 }
 

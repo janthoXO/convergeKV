@@ -9,6 +9,7 @@ require (
 
 require (
 	github.com/cockroachdb/pebble/v2 v2.1.6
+	github.com/hashicorp/memberlist v0.5.4
 	pgregory.net/rapid v1.3.0
 )
 
@@ -16,6 +17,7 @@ require (
 	github.com/DataDog/zstd v1.5.7 // indirect
 	github.com/RaduBerinde/axisds v0.1.0 // indirect
 	github.com/RaduBerinde/btreemap v0.0.0-20250419174037-3d62b7205d54 // indirect
+	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/cockroachdb/crlib v0.0.0-20241112164430-1264a2edc35b // indirect
@@ -28,10 +30,19 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.5-0.20231225225746-43d5d4cd4e0e // indirect
+	github.com/google/btree v1.1.3 // indirect
+	github.com/hashicorp/errwrap v1.1.0 // indirect
+	github.com/hashicorp/go-immutable-radix v1.0.0 // indirect
+	github.com/hashicorp/go-metrics v0.5.4 // indirect
+	github.com/hashicorp/go-msgpack/v2 v2.1.5 // indirect
+	github.com/hashicorp/go-multierror v1.1.1 // indirect
+	github.com/hashicorp/go-sockaddr v1.0.7 // indirect
+	github.com/hashicorp/golang-lru v0.5.0 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
+	github.com/miekg/dns v1.1.68 // indirect
 	github.com/minio/minlz v1.0.1-0.20250507153514-87eb42fe8882 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/client_golang v1.16.0 // indirect
@@ -39,8 +50,13 @@ require (
 	github.com/prometheus/common v0.42.0 // indirect
 	github.com/prometheus/procfs v0.10.1 // indirect
 	github.com/rogpeppe/go-internal v1.9.0 // indirect
+	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
 	golang.org/x/exp v0.0.0-20230626212559-97b1e661b5df // indirect
-	golang.org/x/sys v0.18.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/mod v0.29.0 // indirect
+	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/sync v0.18.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/text v0.31.0 // indirect
+	golang.org/x/tools v0.38.0 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 )
