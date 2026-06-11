@@ -1,0 +1,214 @@
+# 2026/06/11 16:20:51.685011 [TestPropertyConvergence] [rapid] draw ops: 10
+# 2026/06/11 16:20:51.685023 [TestPropertyConvergence] [rapid] draw kind0: 0
+# 2026/06/11 16:20:51.685030 [TestPropertyConvergence] [rapid] draw replica0: 0
+# 2026/06/11 16:20:51.685038 [TestPropertyConvergence] [rapid] draw field0: 0
+# 2026/06/11 16:20:51.685044 [TestPropertyConvergence] [rapid] draw value0: 0
+# 2026/06/11 16:20:51.685051 [TestPropertyConvergence] [rapid] draw ts0: 0
+# 2026/06/11 16:20:51.685059 [TestPropertyConvergence] [rapid] draw kind1: 0
+# 2026/06/11 16:20:51.685064 [TestPropertyConvergence] [rapid] draw replica1: 0
+# 2026/06/11 16:20:51.685070 [TestPropertyConvergence] [rapid] draw field1: 0
+# 2026/06/11 16:20:51.685077 [TestPropertyConvergence] [rapid] draw value1: 0
+# 2026/06/11 16:20:51.685082 [TestPropertyConvergence] [rapid] draw ts1: 0
+# 2026/06/11 16:20:51.685090 [TestPropertyConvergence] [rapid] draw kind2: 0
+# 2026/06/11 16:20:51.685095 [TestPropertyConvergence] [rapid] draw replica2: 0
+# 2026/06/11 16:20:51.685101 [TestPropertyConvergence] [rapid] draw field2: 0
+# 2026/06/11 16:20:51.685106 [TestPropertyConvergence] [rapid] draw value2: 0
+# 2026/06/11 16:20:51.685111 [TestPropertyConvergence] [rapid] draw ts2: 0
+# 2026/06/11 16:20:51.685118 [TestPropertyConvergence] [rapid] draw kind3: 0
+# 2026/06/11 16:20:51.685125 [TestPropertyConvergence] [rapid] draw replica3: 0
+# 2026/06/11 16:20:51.685131 [TestPropertyConvergence] [rapid] draw field3: 0
+# 2026/06/11 16:20:51.685136 [TestPropertyConvergence] [rapid] draw value3: 0
+# 2026/06/11 16:20:51.685142 [TestPropertyConvergence] [rapid] draw ts3: 0
+# 2026/06/11 16:20:51.685149 [TestPropertyConvergence] [rapid] draw kind4: 0
+# 2026/06/11 16:20:51.685154 [TestPropertyConvergence] [rapid] draw replica4: 0
+# 2026/06/11 16:20:51.685159 [TestPropertyConvergence] [rapid] draw field4: 0
+# 2026/06/11 16:20:51.685164 [TestPropertyConvergence] [rapid] draw value4: 0
+# 2026/06/11 16:20:51.685169 [TestPropertyConvergence] [rapid] draw ts4: 0
+# 2026/06/11 16:20:51.685176 [TestPropertyConvergence] [rapid] draw kind5: 0
+# 2026/06/11 16:20:51.685181 [TestPropertyConvergence] [rapid] draw replica5: 0
+# 2026/06/11 16:20:51.685186 [TestPropertyConvergence] [rapid] draw field5: 0
+# 2026/06/11 16:20:51.685191 [TestPropertyConvergence] [rapid] draw value5: 0
+# 2026/06/11 16:20:51.685196 [TestPropertyConvergence] [rapid] draw ts5: 0
+# 2026/06/11 16:20:51.685202 [TestPropertyConvergence] [rapid] draw kind6: 0
+# 2026/06/11 16:20:51.685207 [TestPropertyConvergence] [rapid] draw replica6: 0
+# 2026/06/11 16:20:51.685212 [TestPropertyConvergence] [rapid] draw field6: 0
+# 2026/06/11 16:20:51.685218 [TestPropertyConvergence] [rapid] draw value6: 0
+# 2026/06/11 16:20:51.685223 [TestPropertyConvergence] [rapid] draw ts6: 0
+# 2026/06/11 16:20:51.685233 [TestPropertyConvergence] [rapid] draw kind7: 0
+# 2026/06/11 16:20:51.685238 [TestPropertyConvergence] [rapid] draw replica7: 0
+# 2026/06/11 16:20:51.685243 [TestPropertyConvergence] [rapid] draw field7: 0
+# 2026/06/11 16:20:51.685248 [TestPropertyConvergence] [rapid] draw value7: 0
+# 2026/06/11 16:20:51.685254 [TestPropertyConvergence] [rapid] draw ts7: 0
+# 2026/06/11 16:20:51.685261 [TestPropertyConvergence] [rapid] draw kind8: 0
+# 2026/06/11 16:20:51.685266 [TestPropertyConvergence] [rapid] draw replica8: 0
+# 2026/06/11 16:20:51.685272 [TestPropertyConvergence] [rapid] draw field8: 0
+# 2026/06/11 16:20:51.685277 [TestPropertyConvergence] [rapid] draw value8: 0
+# 2026/06/11 16:20:51.685282 [TestPropertyConvergence] [rapid] draw ts8: 0
+# 2026/06/11 16:20:51.685289 [TestPropertyConvergence] [rapid] draw kind9: 1
+# 2026/06/11 16:20:51.685293 [TestPropertyConvergence] [rapid] draw replica9: 0
+# 2026/06/11 16:20:51.685298 [TestPropertyConvergence] [rapid] draw field9: 0
+# 2026/06/11 16:20:51.685304 [TestPropertyConvergence] [rapid] draw value9: 0
+# 2026/06/11 16:20:51.685309 [TestPropertyConvergence] [rapid] draw ts9: 0
+# 2026/06/11 16:20:51.685316 [TestPropertyConvergence] [rapid] draw shuffle: 0
+# 2026/06/11 16:20:51.685400 [TestPropertyConvergence] replica 1 diverged:
+# &{map[] {map[[16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]:10] map[]}}
+# vs
+# &{map[a:{{[16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0] 8} 65536 [0]}] {map[[16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]:10] map[]}}
+# 
+v0.4.8#8613146533082194588
+0x0
+0x9867f1f40f739
+0x9
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

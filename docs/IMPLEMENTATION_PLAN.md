@@ -37,6 +37,28 @@ must be encoded as property tests. Section 6 lists known deferrals.
 
 ## 2. CRDT semantics (exact — implement precisely as written)
 
+> **CORRECTION (M1, 2026-06-11) — the semantics below as originally written are
+> not convergent; `internal/crdt` deviates deliberately. Do not "fix" the code
+> back to this text.** Property testing (`TestPropertyConvergence`) found two
+> counterexamples:
+> 1. A put delta whose context is `{only dot d}` lets a peer that received the
+>    field's remove before a stale put resurrect the stale register. → A put
+>    delta's context must also carry the dots of the registers it replaces.
+> 2. Collapsing concurrent registers to a single LWW winner **at merge time**
+>    loses the loser's dot: it is recorded only in the origin's full context,
+>    which deltas never carry, so a peer that adopts the loser after seeing the
+>    field's removal keeps it forever.
+>
+> The implemented model is the standard causal δ-ORMap with **multi-value
+> leaves**: `Fields map[string][]Register` keeps every concurrent register;
+> merge is the dotted-store join (a register survives iff present on both
+> sides, or present on one side and not covered by the other's context); LWW
+> arbitration (HLC, then actor bytes, then seq) happens **at read time** via
+> `Document.Get`. Any later put covers the field's whole register set, so
+> concurrency collapses on the next write. Client-visible semantics are
+> unchanged from this section's intent: one whole-value winner per field, no
+> partial mixing, no resurrection.
+
 ### 2.1 Types
 
 ```go

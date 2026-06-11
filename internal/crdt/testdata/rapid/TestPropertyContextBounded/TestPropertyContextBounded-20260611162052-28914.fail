@@ -1,0 +1,158 @@
+# 2026/06/11 16:20:52.021741 [TestPropertyContextBounded] [rapid] draw ops: 12
+# 2026/06/11 16:20:52.021753 [TestPropertyContextBounded] [rapid] draw kind0: 0
+# 2026/06/11 16:20:52.021760 [TestPropertyContextBounded] [rapid] draw replica0: 0
+# 2026/06/11 16:20:52.021767 [TestPropertyContextBounded] [rapid] draw field0: 0
+# 2026/06/11 16:20:52.021777 [TestPropertyContextBounded] [rapid] draw kind1: 0
+# 2026/06/11 16:20:52.021783 [TestPropertyContextBounded] [rapid] draw replica1: 0
+# 2026/06/11 16:20:52.021789 [TestPropertyContextBounded] [rapid] draw field1: 0
+# 2026/06/11 16:20:52.021796 [TestPropertyContextBounded] [rapid] draw kind2: 0
+# 2026/06/11 16:20:52.021801 [TestPropertyContextBounded] [rapid] draw replica2: 0
+# 2026/06/11 16:20:52.021809 [TestPropertyContextBounded] [rapid] draw field2: 0
+# 2026/06/11 16:20:52.021816 [TestPropertyContextBounded] [rapid] draw kind3: 0
+# 2026/06/11 16:20:52.021821 [TestPropertyContextBounded] [rapid] draw replica3: 0
+# 2026/06/11 16:20:52.021827 [TestPropertyContextBounded] [rapid] draw field3: 0
+# 2026/06/11 16:20:52.021833 [TestPropertyContextBounded] [rapid] draw kind4: 0
+# 2026/06/11 16:20:52.021839 [TestPropertyContextBounded] [rapid] draw replica4: 0
+# 2026/06/11 16:20:52.021844 [TestPropertyContextBounded] [rapid] draw field4: 0
+# 2026/06/11 16:20:52.021850 [TestPropertyContextBounded] [rapid] draw kind5: 0
+# 2026/06/11 16:20:52.021858 [TestPropertyContextBounded] [rapid] draw replica5: 0
+# 2026/06/11 16:20:52.021863 [TestPropertyContextBounded] [rapid] draw field5: 0
+# 2026/06/11 16:20:52.021869 [TestPropertyContextBounded] [rapid] draw kind6: 0
+# 2026/06/11 16:20:52.021875 [TestPropertyContextBounded] [rapid] draw replica6: 0
+# 2026/06/11 16:20:52.021880 [TestPropertyContextBounded] [rapid] draw field6: 0
+# 2026/06/11 16:20:52.021886 [TestPropertyContextBounded] [rapid] draw kind7: 0
+# 2026/06/11 16:20:52.021891 [TestPropertyContextBounded] [rapid] draw replica7: 0
+# 2026/06/11 16:20:52.021896 [TestPropertyContextBounded] [rapid] draw field7: 0
+# 2026/06/11 16:20:52.021903 [TestPropertyContextBounded] [rapid] draw kind8: 0
+# 2026/06/11 16:20:52.021908 [TestPropertyContextBounded] [rapid] draw replica8: 0
+# 2026/06/11 16:20:52.021914 [TestPropertyContextBounded] [rapid] draw field8: 0
+# 2026/06/11 16:20:52.021920 [TestPropertyContextBounded] [rapid] draw kind9: 0
+# 2026/06/11 16:20:52.021925 [TestPropertyContextBounded] [rapid] draw replica9: 0
+# 2026/06/11 16:20:52.021930 [TestPropertyContextBounded] [rapid] draw field9: 0
+# 2026/06/11 16:20:52.021936 [TestPropertyContextBounded] [rapid] draw kind10: 0
+# 2026/06/11 16:20:52.021942 [TestPropertyContextBounded] [rapid] draw replica10: 0
+# 2026/06/11 16:20:52.021947 [TestPropertyContextBounded] [rapid] draw field10: 0
+# 2026/06/11 16:20:52.021958 [TestPropertyContextBounded] [rapid] draw kind11: 1
+# 2026/06/11 16:20:52.021963 [TestPropertyContextBounded] [rapid] draw replica11: 0
+# 2026/06/11 16:20:52.021968 [TestPropertyContextBounded] [rapid] draw field11: 0
+# 2026/06/11 16:20:52.021975 [TestPropertyContextBounded] [rapid] draw shuffle: 0
+# 2026/06/11 16:20:52.022077 [TestPropertyContextBounded] replica 1 diverged:
+# &{map[] {map[[16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]:12] map[]}}
+# vs
+# &{map[a:{{[16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0] 10} 720896 [1]}] {map[[16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]:12] map[]}}
+# 
+v0.4.8#12026664183496091350
+0x0
+0x9867f1f40f739
+0xb
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
