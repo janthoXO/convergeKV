@@ -31,13 +31,21 @@ func (d *delegate) MergeRemoteState(buf []byte, join bool)     {}
 // eventDelegate maintains the dead-node table and pokes subscribers.
 type eventDelegate Cluster
 
+// The callbacks run inside memberlist's state-update path: n.Meta is stable
+// for their duration but mutated in place afterwards, so DecodeMeta's copy
+// here is the only safe place to capture it.
+
 func (e *eventDelegate) NotifyJoin(n *memberlist.Node) {
 	c := (*Cluster)(e)
-	if meta, err := DecodeMeta(n.Meta); err == nil {
-		c.mu.Lock()
-		delete(c.dead, meta.ID)
-		c.mu.Unlock()
+	meta, err := DecodeMeta(n.Meta)
+	if err != nil {
+		c.log.Warn("ignoring joined member with bad meta", "node", n.Name, "err", err)
+		return
 	}
+	c.mu.Lock()
+	c.alive[meta.ID] = Member{Meta: meta, Addr: n.Address()}
+	delete(c.dead, meta.ID)
+	c.mu.Unlock()
 	c.log.Info("member joined", "node", n.Name, "addr", n.Address())
 	c.notify()
 }
@@ -46,6 +54,7 @@ func (e *eventDelegate) NotifyLeave(n *memberlist.Node) {
 	c := (*Cluster)(e)
 	if meta, err := DecodeMeta(n.Meta); err == nil {
 		c.mu.Lock()
+		delete(c.alive, meta.ID)
 		c.dead[meta.ID] = time.Now()
 		c.mu.Unlock()
 	}
@@ -55,6 +64,14 @@ func (e *eventDelegate) NotifyLeave(n *memberlist.Node) {
 
 func (e *eventDelegate) NotifyUpdate(n *memberlist.Node) {
 	c := (*Cluster)(e)
+	meta, err := DecodeMeta(n.Meta)
+	if err != nil {
+		c.log.Warn("ignoring meta update with bad meta", "node", n.Name, "err", err)
+		return
+	}
+	c.mu.Lock()
+	c.alive[meta.ID] = Member{Meta: meta, Addr: n.Address()}
+	c.mu.Unlock()
 	c.log.Debug("member meta updated", "node", n.Name)
 	c.notify()
 }

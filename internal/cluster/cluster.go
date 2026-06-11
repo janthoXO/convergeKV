@@ -41,6 +41,7 @@ type Cluster struct {
 
 	mu     sync.RWMutex
 	meta   NodeMeta // our gossiped metadata
+	alive  map[[16]byte]Member
 	dead   map[[16]byte]time.Time
 	change chan struct{}
 }
@@ -56,6 +57,7 @@ func Join(cfg Config) (*Cluster, error) {
 	c := &Cluster{
 		log:    log,
 		nodeP:  cfg.Partitions,
+		alive:  make(map[[16]byte]Member),
 		dead:   make(map[[16]byte]time.Time),
 		change: make(chan struct{}, 1),
 		meta: NodeMeta{
@@ -114,15 +116,14 @@ func (c *Cluster) Self() NodeMeta {
 }
 
 // Members returns all alive members (including self) with decoded metadata.
+// The view is maintained from gossip event callbacks — memberlist's own node
+// list mutates its Meta in place and must not be read directly.
 func (c *Cluster) Members() []Member {
-	var out []Member
-	for _, n := range c.ml.Members() {
-		meta, err := DecodeMeta(n.Meta)
-		if err != nil {
-			c.log.Warn("skipping member with bad meta", "node", n.Name, "err", err)
-			continue
-		}
-		out = append(out, Member{Meta: meta, Addr: n.Address()})
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]Member, 0, len(c.alive))
+	for _, m := range c.alive {
+		out = append(out, cloneMember(m))
 	}
 	return out
 }
@@ -143,7 +144,12 @@ func (c *Cluster) Changed() <-chan struct{} { return c.change }
 func (c *Cluster) SetPartitionStatus(pid uint16, s Status) error {
 	c.mu.Lock()
 	c.meta.Flags.Set(pid, s)
+	if self, ok := c.alive[c.meta.ID]; ok { // our own view updates immediately
+		self.Meta = cloneMeta(c.meta)
+		c.alive[c.meta.ID] = self
+	}
 	c.mu.Unlock()
+	c.notify()
 	// Push the new meta through gossip (bounded wait; propagation continues
 	// asynchronously regardless).
 	return c.ml.UpdateNode(2 * time.Second)
@@ -169,5 +175,10 @@ func (c *Cluster) notify() {
 
 func cloneMeta(m NodeMeta) NodeMeta {
 	m.Flags = m.Flags.Clone()
+	return m
+}
+
+func cloneMember(m Member) Member {
+	m.Meta = cloneMeta(m.Meta)
 	return m
 }
