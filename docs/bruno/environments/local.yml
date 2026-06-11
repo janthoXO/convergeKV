@@ -1,4 +1,0 @@
-name: local
-variables:
-  - name: seed
-    value: http://localhost:50051
