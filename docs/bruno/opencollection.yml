@@ -8,7 +8,7 @@ config:
       - type: file
         path: ../../proto/kv/kv.proto
       - type: file
-        path: ../../proto/replication/replication.proto
+        path: ../../proto/debug/debug.proto
     importPaths:
       - path: ../../proto
   proxy:
@@ -21,6 +21,11 @@ config:
         username: ""
         password: ""
       bypassProxy: ""
+
+request:
+  auth:
+    type: bearer
+    token: mytoken
 bundled: false
 extensions:
   bruno:

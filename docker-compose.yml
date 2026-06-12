@@ -6,6 +6,8 @@ x-shared-env: &shared-env
   RF:          "3"
   SYNC_MS:     "20000"
   IBLT_CELLS:  "512"
+  DEBUG: "true"
+  DEBUG_TOKEN: "mytoken"
 
 x-node-defaults: &node-defaults
   build: .

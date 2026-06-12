@@ -1,0 +1,22 @@
+syntax = "proto3";
+package debug;
+option go_package = "github.com/janthoXO/convergeKV/gen/debug";
+
+import "kv/kv.proto";
+
+// DebugEntry is one (key, field) CRDT record as stored on this node.
+message DebugEntry {
+  string          key        = 1;
+  string          field      = 2;
+  string          value_json = 3;  // nil for a tombstone
+  kv.HLCTimestamp timestamp  = 4;
+  string          replica_id = 5;
+  bool            deleted    = 6;
+}
+
+message ScanRequest {}
+
+service DebugService {
+  // ScanAll streams every (key, field) entry persisted on this node.
+  rpc ScanAll (ScanRequest) returns (stream DebugEntry);
+}

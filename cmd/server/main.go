@@ -1,54 +1,44 @@
 // Package main is the ConvergeKV server entry point.
-// It wires together gossip-based cluster membership, rendezvous hashing for
-// replica placement, IBLT-based anti-entropy, and the gRPC service layer.
+// Config parsing and signal handling live here; all wiring is in wire.go.
 package main
 
 import (
 	"context"
-	"fmt"
 	"log"
-	"net"
+	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
-	"time"
 
 	cenv "github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection"
-
-	fwdpb "github.com/janthoXO/convergeKV/gen/forward"
-	kvpb "github.com/janthoXO/convergeKV/gen/kv"
-	repb "github.com/janthoXO/convergeKV/gen/replication"
-	"github.com/janthoXO/convergeKV/internal/api"
-	"github.com/janthoXO/convergeKV/internal/connpool"
-	"github.com/janthoXO/convergeKV/internal/coordinator"
-	"github.com/janthoXO/convergeKV/internal/gossip"
-	"github.com/janthoXO/convergeKV/internal/iblt"
-	"github.com/janthoXO/convergeKV/internal/node"
-	"github.com/janthoXO/convergeKV/internal/storage"
-	"github.com/janthoXO/convergeKV/internal/syncer"
 )
 
 // config holds all server configuration parsed from environment variables.
+//
+// IMPORTANT: NUM_PARTITIONS must be identical on every node in the cluster.
+// If two nodes disagree on this value they disagree on partition ownership and
+// the cluster silently diverges. Treat it as fixed cluster configuration.
 type config struct {
-	ReplicaID  string `env:"REPLICA_ID"` // optional; falls back to os.Hostname()
-	GRPCPort   int    `env:"GRPC_PORT"     envDefault:"50051"`
-	GossipPort int    `env:"GOSSIP_PORT"   envDefault:"7946"`
-	GossipBind string `env:"GOSSIP_BIND"   envDefault:"0.0.0.0"`
-	Seeds      string `env:"SEEDS"` // comma-separated gossip host:port; empty for single-node
-	DataDir    string `env:"DATA_DIR"      envDefault:"/data"`
-	RF         int    `env:"RF"            envDefault:"3"`
-	SyncMs     int    `env:"SYNC_MS"       envDefault:"2000"`
-	IBLTCells  int    `env:"IBLT_CELLS"    envDefault:"512"`
+	ReplicaID        string   `env:"REPLICA_ID"`
+	GRPCPort         int      `env:"GRPC_PORT"          envDefault:"50051"`
+	GossipPort       int      `env:"GOSSIP_PORT"        envDefault:"7946"`
+	GossipBind       string   `env:"GOSSIP_BIND"        envDefault:"0.0.0.0"`
+	Seeds            []string `env:"SEEDS" envSeparator:","`
+	DataDir          string   `env:"DATA_DIR"           envDefault:"/data"`
+	RF               int      `env:"RF"                 envDefault:"3"`
+	NumPartitions    int      `env:"NUM_PARTITIONS"     envDefault:"512"`
+	SyncMs           int      `env:"SYNC_MS"            envDefault:"2000"`
+	IBLTCells        int      `env:"IBLT_CELLS"         envDefault:"512"`
+	TombstoneGraceMs int      `env:"TOMBSTONE_GRACE_MS" envDefault:"86400000"`
+	GCIntervalMs     int      `env:"GC_INTERVAL_MS"     envDefault:"3600000"`
+	Debug            bool     `env:"DEBUG"      envDefault:"false"`
+	DebugToken       string   `env:"DEBUG_TOKEN"`
 }
 
 func main() {
-	// Load .env if present; silently ignored when the file doesn't exist.
 	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
-		log.Printf("[config] .env not loaded: %v", err)
+		slog.Warn(".env not loaded", "err", err)
 	}
 
 	var cfg config
@@ -62,117 +52,42 @@ func main() {
 		}
 		cfg.ReplicaID = h
 	}
-	log.Printf("[config] replica=%s grpc=%d gossip=%d seeds=%q dataDir=%s rf=%d syncMs=%d ibltCells=%d",
-		cfg.ReplicaID, cfg.GRPCPort, cfg.GossipPort, cfg.Seeds, cfg.DataDir, cfg.RF, cfg.SyncMs, cfg.IBLTCells)
-
-	// ── 1. Storage ─────────────────────────────────────────────────────────────
-	store, err := storage.Open(cfg.DataDir)
-	if err != nil {
-		log.Fatalf("open storage: %v", err)
+	if cfg.NumPartitions <= 0 {
+		log.Fatalf("config: NUM_PARTITIONS must be > 0, got %d", cfg.NumPartitions)
 	}
-
-	// ── 2. HLC floor — find highest persisted timestamp ───────────────────────
-	// If the system clock was corrected backwards (NTP), a freshly initialised
-	// HLC could issue timestamps older than ones already written to storage,
-	// silently breaking LWW causality. Seeding from the highest persisted
-	// timestamp guarantees the clock stays monotone across restarts.
-	hlcFloor, err := store.MaxTimestamp()
-	if err != nil {
-		log.Fatalf("scan HLC floor: %v", err)
+	if cfg.RF < 1 {
+		log.Fatalf("config: RF must be >= 1, got %d", cfg.RF)
 	}
-	log.Printf("[hlc] seeded floor ts=%d.%d", hlcFloor.PhysicalMs, hlcFloor.Logical)
-
-	// ── 3. IBLT State — build by streaming persisted data from Badger ─────────
-	ibltState, err := iblt.BuildFromStore(store, cfg.IBLTCells)
-	if err != nil {
-		log.Fatalf("build IBLT: %v", err)
+	if cfg.IBLTCells <= 0 {
+		log.Fatalf("config: IBLT_CELLS must be > 0, got %d", cfg.IBLTCells)
 	}
-	log.Printf("[iblt] built IBLT from persisted records (%d cells)", cfg.IBLTCells)
-
-	// ── 4. Node ────────────────────────────────────────────────────────────────
-	n := node.New(cfg.ReplicaID, store, ibltState, node.WithHLCFloor(hlcFloor))
-
-	// ── 5. Seeds ───────────────────────────────────────────────────────────────
-	var seeds []string
-	if cfg.Seeds != "" {
-		for s := range strings.SplitSeq(cfg.Seeds, ",") {
-			s = strings.TrimSpace(s)
-			if s == "" {
-				continue
-			}
-
-			seeds = append(seeds, s)
-		}
+	if cfg.SyncMs <= 0 {
+		log.Fatalf("config: SYNC_MS must be > 0, got %d", cfg.SyncMs)
 	}
-
-	// ── 6. Shared gRPC connection pool ────────────────────────────────────────
-	pool := connpool.New()
-
-	// ── 7. Gossip ─────────────────────────────────────────────────────────────
-	// OnChange evicts connections for departed peers; HRW reads Members() live.
-	g, err := gossip.Start(gossip.Config{
-		BindAddr:  cfg.GossipBind,
-		BindPort:  cfg.GossipPort,
-		LocalMeta: gossip.NodeMeta{ReplicaID: cfg.ReplicaID, GRPCPort: cfg.GRPCPort},
-		Seeds:     seeds,
-		OnChange: func(members []gossip.MemberInfo) {
-			log.Printf("[gossip] membership changed: %d members", len(members))
-			keep := make(map[string]struct{}, len(members))
-			for _, m := range members {
-				keep[m.GRPCAddr] = struct{}{}
-			}
-			go pool.EvictAbsent(keep)
-		},
-	})
-	if err != nil {
-		log.Fatalf("start gossip: %v", err)
+	if cfg.TombstoneGraceMs <= 0 {
+		log.Fatalf("config: TOMBSTONE_GRACE_MS must be > 0, got %d", cfg.TombstoneGraceMs)
 	}
+	if cfg.GCIntervalMs <= 0 {
+		log.Fatalf("config: GC_INTERVAL_MS must be > 0, got %d", cfg.GCIntervalMs)
+	}
+	if cfg.Debug && cfg.DebugToken == "" {
+		log.Fatalf("config: DEBUG=true requires DEBUG_TOKEN to be set")
+	}
+	slog.Info("config",
+		"replica", cfg.ReplicaID, "grpc", cfg.GRPCPort, "gossip", cfg.GossipPort, "seeds", cfg.Seeds, "dataDir", cfg.DataDir,
+		"rf", cfg.RF, "partitions", cfg.NumPartitions, "syncMs", cfg.SyncMs, "ibltCells", cfg.IBLTCells,
+		"tombstoneGraceMs", cfg.TombstoneGraceMs, "gcIntervalMs", cfg.GCIntervalMs, "debug", cfg.Debug)
 
-	// ── 8. Signal context ─────────────────────────────────────────────────────
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// ── 9. Syncer ─────────────────────────────────────────────────────────────
-	sync := syncer.New(n, g, pool,
-		syncer.WithContext(ctx),
-		syncer.WithSyncInterval(time.Duration(cfg.SyncMs)*time.Millisecond),
-	)
-
-	// ── 10. Forwarder and Coordinator ─────────────────────────────────────────
-	fwd := coordinator.NewForwarder(pool)
-	coord := coordinator.New(n, g, fwd, sync, cfg.RF)
-
-	// ── 11. gRPC server ───────────────────────────────────────────────────────
-	srv := grpc.NewServer()
-	kvpb.RegisterKVServiceServer(srv, api.NewHandler(coord, n, g))
-	fwdpb.RegisterForwardServiceServer(srv, api.NewForwardHandler(coord))
-	repb.RegisterSyncServiceServer(srv, syncer.NewHandler(n))
-	reflection.Register(srv)
-
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.GRPCPort))
+	sup, err := buildApp(cfg)
 	if err != nil {
-		log.Fatalf("listen: %v", err)
-	}
-	log.Printf("[%s] gRPC listening on :%d", cfg.ReplicaID, cfg.GRPCPort)
-
-	// ── 12. Anti-entropy loop ─────────────────────────────────────────────────
-	sync.Run()
-
-	// ── 13. Serve (blocking until signal) ─────────────────────────────────────
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.Serve(lis) }()
-
-	select {
-	case err := <-serveErr:
-		log.Fatalf("serve: %v", err)
-	case <-ctx.Done():
-		log.Printf("[%s] shutting down…", cfg.ReplicaID)
+		log.Fatalf("[%s] startup: %v", cfg.ReplicaID, err)
 	}
 
-	// Shutdown order: stop RPCs → drain syncer goroutines → pool → gossip → storage
-	srv.GracefulStop()
-	sync.Close()
-	pool.Close()
-	g.Leave(3 * time.Second)
-	store.Close()
+	if err := sup.Run(sigCtx); err != nil {
+		slog.Error("supervisor error", "replica", cfg.ReplicaID, "err", err)
+	}
+	slog.Info("shutdown complete", "replica", cfg.ReplicaID)
 }
