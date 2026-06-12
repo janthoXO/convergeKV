@@ -2,12 +2,10 @@ module github.com/janthoXO/convergeKV
 
 go 1.26.4
 
-require (
-	github.com/google/uuid v1.6.0
-	gopkg.in/yaml.v3 v3.0.1
-)
+require github.com/google/uuid v1.6.0
 
 require (
+	github.com/caarlos0/env/v11 v11.4.1
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cockroachdb/pebble/v2 v2.1.6
 	github.com/hashicorp/memberlist v0.5.4

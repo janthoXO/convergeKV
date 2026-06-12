@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: convergekv
+    # DNS A-record discovery picks up every replica of the scaled node
+    # service (compose publishes one A record per container).
+    dns_sd_configs:
+      - names:
+          - seed
+          - node
+        type: A
+        port: 7002

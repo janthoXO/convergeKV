@@ -1,10 +1,10 @@
-// kvnode is the convergeKV node binary: it loads configuration, establishes
-// the node identity, wires the subsystems together, and runs until signalled.
+// kvnode is the convergeKV node binary: it loads configuration from
+// CONVERGEKV_* environment variables, establishes the node identity, wires
+// the subsystems together, and runs until signalled.
 package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -23,10 +23,7 @@ func main() {
 }
 
 func run() error {
-	configPath := flag.String("config", "", "path to YAML config file (optional)")
-	flag.Parse()
-
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
