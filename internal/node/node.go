@@ -23,6 +23,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/gc"
 	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/identity"
+	"github.com/janthoXO/convergeKV/internal/metrics"
 	"github.com/janthoXO/convergeKV/internal/placement"
 	"github.com/janthoXO/convergeKV/internal/replication"
 	"github.com/janthoXO/convergeKV/internal/storage"
@@ -55,6 +56,7 @@ type Node struct {
 	nodeSrv    *grpc.Server
 	clientAddr string
 	nodeAddr   string
+	adminAddr  string
 	stopped    chan struct{}
 	cancel     context.CancelFunc
 }
@@ -95,15 +97,25 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 
 	// Tombstone-grace rule: a node that was gone longer than the crash
 	// grace period may hold state that predates cluster-wide GC; serving it
-	// would resurrect deleted documents. Wipe and re-bootstrap instead.
+	// would resurrect deleted documents. And the cluster may have RETIRED
+	// this actor from causal contexts — if it minted new dots, peers could
+	// never compact them (the retired prefix is gone). So: wipe the data
+	// AND re-enter as a brand-new actor.
 	if lastAlive, err := store.LastAlive(); err != nil {
 		return nil, err
 	} else if !lastAlive.IsZero() && time.Since(lastAlive) > cfg.CrashGracePeriod {
-		log.Warn("liveness lease expired; wiping local data to avoid resurrecting GC'd state",
-			"last_alive", lastAlive, "grace", cfg.CrashGracePeriod)
+		log.Warn("liveness lease expired; wiping data and rotating identity",
+			"last_alive", lastAlive, "grace", cfg.CrashGracePeriod, "old_id", id.String()[:8])
 		if err := store.WipeData(); err != nil {
 			return nil, err
 		}
+		if id, err = identity.Rotate(cfg.DataDir); err != nil {
+			return nil, err
+		}
+		if err := store.RebindNodeID(id); err != nil {
+			return nil, err
+		}
+		log = log.With("node_id", id.String()[:8])
 	}
 	if err := store.PersistLastAlive(time.Now()); err != nil {
 		return nil, err
@@ -173,6 +185,22 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 	n.bg(func() { n.checkpointHLC(ctx, min(time.Second, cfg.CrashGracePeriod/4)) })
 	n.bg(func() { n.AE.Run(ctx) })
 
+	if cfg.AdminAddr != "" {
+		n.adminAddr, err = metrics.Serve(ctx, cfg.AdminAddr, metrics.Sources{
+			Fanout:   n.fanout,
+			AE:       n.AE,
+			Transfer: n.transfer,
+			Cluster:  cl,
+		}, log)
+		if err != nil {
+			cancel()
+			_ = cl.Shutdown()
+			n.wg.Wait()
+			_ = store.Close()
+			return nil, fmt.Errorf("node: admin endpoint: %w", err)
+		}
+	}
+
 	n.clientSrv = grpc.NewServer()
 	pb.RegisterKVServer(n.clientSrv, &api.KVServer{Coord: n.Coord})
 	n.nodeSrv = grpc.NewServer()
@@ -187,6 +215,7 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 
 func (n *Node) ClientAddr() string { return n.clientAddr }
 func (n *Node) NodeAddr() string   { return n.nodeAddr }
+func (n *Node) AdminAddr() string  { return n.adminAddr }
 
 // View returns the current placement view.
 func (n *Node) View() *placement.View { return n.view.Load() }
@@ -211,16 +240,32 @@ func (n *Node) Stop(graceful bool) {
 	} else {
 		_ = n.cluster.Shutdown()
 	}
-	n.clientSrv.Stop()
-	n.nodeSrv.Stop()
+	// GracefulStop waits for in-flight handlers (which touch the store);
+	// plain Stop would only cancel them and race the store close below.
+	stopServer(n.clientSrv)
+	stopServer(n.nodeSrv)
 	n.fanout.Close()
 	n.pool.Close()
-	// Background goroutines (watch, HLC checkpoint, AE) touch the store;
-	// they must be fully out before it closes.
+	// Background goroutines (watch, HLC checkpoint, AE, bootstraps) touch
+	// the store; they must be fully out before it closes.
 	n.wg.Wait()
+	n.transfer.Wait()
 	_ = n.Store.PersistHLC(n.Clock.Last())
 	_ = n.Store.Close()
 	close(n.stopped)
+}
+
+func stopServer(s *grpc.Server) {
+	done := make(chan struct{})
+	go func() {
+		s.GracefulStop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		s.Stop() // stragglers (e.g. stuck streams) get the hard stop
+	}
 }
 
 func (n *Node) bg(f func()) {

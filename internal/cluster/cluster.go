@@ -43,7 +43,8 @@ type Cluster struct {
 	log   *slog.Logger
 	nodeP uint16
 
-	grace time.Duration
+	grace      time.Duration
+	gossipAddr string
 
 	// updateMu serializes memberlist.UpdateNode, which is not safe to call
 	// concurrently (it reads and writes the local node without full locking).
@@ -124,6 +125,7 @@ func Join(cfg Config) (*Cluster, error) {
 		return nil, fmt.Errorf("cluster: create memberlist: %w", err)
 	}
 	c.ml = ml
+	c.gossipAddr = ml.LocalNode().Address()
 
 	if len(cfg.Seeds) > 0 {
 		if _, err := ml.Join(cfg.Seeds); err != nil {
@@ -162,8 +164,9 @@ func (c *Cluster) pruneDead() {
 }
 
 // GossipAddr returns the address this node's gossip listener is reachable at
-// (the seed address for joining nodes).
-func (c *Cluster) GossipAddr() string { return c.ml.LocalNode().Address() }
+// (the seed address for joining nodes). Captured at Join time: reading
+// memberlist's local node later races with its in-place meta updates.
+func (c *Cluster) GossipAddr() string { return c.gossipAddr }
 
 // Self returns our own current metadata.
 func (c *Cluster) Self() NodeMeta {
@@ -226,6 +229,11 @@ func (c *Cluster) UpdateFlags(mutate func(PartitionFlags)) error {
 	}
 	c.mu.Unlock()
 	c.notify()
+	select {
+	case <-c.done:
+		return nil // shutting down: nobody left to gossip to
+	default:
+	}
 	// Push the new meta through gossip (bounded wait; propagation continues
 	// asynchronously regardless). Serialized: UpdateNode races with itself.
 	c.updateMu.Lock()
@@ -235,7 +243,9 @@ func (c *Cluster) UpdateFlags(mutate func(PartitionFlags)) error {
 
 // Leave broadcasts a graceful leave, then stops gossip.
 func (c *Cluster) Leave(timeout time.Duration) error {
+	c.closeDone()
 	if err := c.ml.Leave(timeout); err != nil {
+		_ = c.ml.Shutdown()
 		return err
 	}
 	return c.ml.Shutdown()
@@ -243,12 +253,16 @@ func (c *Cluster) Leave(timeout time.Duration) error {
 
 // Shutdown stops gossip without announcing (crash-like, for tests).
 func (c *Cluster) Shutdown() error {
+	c.closeDone()
+	return c.ml.Shutdown()
+}
+
+func (c *Cluster) closeDone() {
 	select {
 	case <-c.done:
 	default:
 		close(c.done)
 	}
-	return c.ml.Shutdown()
 }
 
 func (c *Cluster) notify() {

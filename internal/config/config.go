@@ -23,6 +23,8 @@ type Config struct {
 	NodeAddr string `yaml:"node_addr"`
 	// GossipAddr is the bind address for memberlist gossip.
 	GossipAddr string `yaml:"gossip_addr"`
+	// AdminAddr serves Prometheus metrics and pprof; empty disables it.
+	AdminAddr string `yaml:"admin_addr"`
 	// AdvertiseAddr is the address other nodes use to reach this one.
 	// Empty means derive from the bind address.
 	AdvertiseAddr string `yaml:"advertise_addr"`
@@ -55,6 +57,7 @@ func Default() Config {
 		ClientAddr:          ":7000",
 		NodeAddr:            ":7001",
 		GossipAddr:          ":7946",
+		AdminAddr:           ":7002",
 		Partitions:          256,
 		CrashGracePeriod:    10 * time.Minute,
 		AntiEntropyInterval: 45 * time.Second,
@@ -94,6 +97,7 @@ func (c *Config) applyEnv() error {
 	str("CONVERGEKV_CLIENT_ADDR", &c.ClientAddr)
 	str("CONVERGEKV_NODE_ADDR", &c.NodeAddr)
 	str("CONVERGEKV_GOSSIP_ADDR", &c.GossipAddr)
+	str("CONVERGEKV_ADMIN_ADDR", &c.AdminAddr)
 	str("CONVERGEKV_ADVERTISE_ADDR", &c.AdvertiseAddr)
 	str("CONVERGEKV_LOG_LEVEL", &c.LogLevel)
 

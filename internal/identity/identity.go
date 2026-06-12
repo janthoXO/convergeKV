@@ -45,6 +45,21 @@ func LoadOrCreate(dataDir string) (NodeID, error) {
 	return id, nil
 }
 
+// Rotate discards the node's identity and persists a fresh one. Used when
+// the liveness lease expired: the old actor may have been retired from
+// causal contexts cluster-wide, so it must never mint dots again — the node
+// re-enters the cluster as a brand-new replica.
+func Rotate(dataDir string) (NodeID, error) {
+	id, err := uuid.NewRandom()
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("generate node id: %w", err)
+	}
+	if err := writeAtomic(filepath.Join(dataDir, fileName), []byte(id.String())); err != nil {
+		return uuid.Nil, fmt.Errorf("persist rotated node id: %w", err)
+	}
+	return id, nil
+}
+
 func writeAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), fileName+".tmp*")
 	if err != nil {

@@ -369,6 +369,22 @@ func (s *Store) BindNodeID(id [16]byte) error {
 	return s.bindMeta(metaNodeID, id[:], "node id")
 }
 
+// RebindNodeID overwrites the pinned identity and resets the dot sequence —
+// only valid together with a data wipe and identity rotation (the fresh
+// actor has minted nothing).
+func (s *Store) RebindNodeID(id [16]byte) error {
+	b := s.db.NewBatch()
+	if err := b.Set(metaKey(metaNodeID), id[:], nil); err != nil {
+		_ = b.Close()
+		return err
+	}
+	if err := b.Set(metaKey(metaDotSeq), binary.BigEndian.AppendUint64(nil, 0), nil); err != nil {
+		_ = b.Close()
+		return err
+	}
+	return b.Commit(pebble.Sync)
+}
+
 // BindPartitionCount pins the cluster partition count P at bootstrap.
 func (s *Store) BindPartitionCount(p uint16) error {
 	return s.bindMeta(metaPartitions, binary.BigEndian.AppendUint16(nil, p), "partition count")

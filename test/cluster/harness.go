@@ -3,6 +3,7 @@
 package clustertest
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,38 @@ type Harness struct {
 	Nodes []*node.Node
 	cfgs  []config.Config
 	conns []*grpc.ClientConn
+	// mu guards Nodes against concurrent Kill/Restart (chaos suite); the
+	// single-threaded tests never contend on it.
+	mu sync.RWMutex
+}
+
+// get returns node i or nil, safely under concurrent chaos churn.
+func (h *Harness) get(i int) *node.Node {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if i >= len(h.Nodes) {
+		return nil
+	}
+	return h.Nodes[i]
+}
+
+// partition splits node indexes into running and down sets.
+func (h *Harness) partition() (running, down []int) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for i, nd := range h.Nodes {
+		if nd != nil {
+			running = append(running, i)
+		} else {
+			down = append(down, i)
+		}
+	}
+	return
+}
+
+func (h *Harness) downNodes() []int {
+	_, down := h.partition()
+	return down
 }
 
 func fastMemberlist() *memberlist.Config {
@@ -44,6 +77,7 @@ func nodeConfig(t *testing.T, seeds []string) config.Config {
 	cfg.ClientAddr = "127.0.0.1:0"
 	cfg.NodeAddr = "127.0.0.1:0"
 	cfg.GossipAddr = "127.0.0.1:0"
+	cfg.AdminAddr = "127.0.0.1:0"
 	cfg.Partitions = Partitions
 	cfg.Seeds = seeds
 	cfg.CrashGracePeriod = time.Second
@@ -172,8 +206,11 @@ func (h *Harness) NonOwner(key string) int {
 
 // Kill crashes node i (no leave broadcast) and forgets it.
 func (h *Harness) Kill(i int) {
-	h.Nodes[i].Stop(false)
+	h.mu.Lock()
+	nd := h.Nodes[i]
 	h.Nodes[i] = nil
+	h.mu.Unlock()
+	nd.Stop(false)
 }
 
 // Restart starts node i again on its original data dir, joining via any
@@ -186,7 +223,9 @@ func (h *Harness) Restart(i int) *node.Node {
 	if err != nil {
 		h.t.Fatalf("restart node %d: %v", i, err)
 	}
+	h.mu.Lock()
 	h.Nodes[i] = nd
+	h.mu.Unlock()
 	return nd
 }
 

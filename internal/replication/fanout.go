@@ -62,8 +62,9 @@ type Fanout struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	mu     sync.Mutex
-	queues map[string]chan Delta
+	mu       sync.Mutex
+	queues   map[string]chan Delta
+	inFlight map[string]*atomic.Pointer[time.Time]
 
 	dropped atomic.Uint64
 }
@@ -72,11 +73,12 @@ func NewFanout(cfg Config, send SendFunc) *Fanout {
 	cfg.defaults()
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Fanout{
-		cfg:    cfg,
-		send:   send,
-		ctx:    ctx,
-		cancel: cancel,
-		queues: make(map[string]chan Delta),
+		cfg:      cfg,
+		send:     send,
+		ctx:      ctx,
+		cancel:   cancel,
+		queues:   make(map[string]chan Delta),
+		inFlight: make(map[string]*atomic.Pointer[time.Time]),
 	}
 }
 
@@ -90,8 +92,9 @@ func (f *Fanout) Enqueue(addr string, d Delta) {
 	if !ok {
 		q = make(chan Delta, f.cfg.QueueSize)
 		f.queues[addr] = q
+		f.inFlight[addr] = &atomic.Pointer[time.Time]{}
 		f.wg.Add(1)
-		go f.worker(addr, q)
+		go f.worker(addr, q, f.inFlight[addr])
 	}
 	f.mu.Unlock()
 
@@ -114,20 +117,47 @@ func (f *Fanout) QueueDepth(addr string) int {
 	return len(f.queues[addr])
 }
 
+// QueueDepths returns every peer's current queue depth.
+func (f *Fanout) QueueDepths() map[string]int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]int, len(f.queues))
+	for addr, q := range f.queues {
+		out[addr] = len(q)
+	}
+	return out
+}
+
+// Lag returns, per peer, how long the delta currently being delivered has
+// been waiting (zero when idle) — the delta_lag_seconds metric.
+func (f *Fanout) Lag() map[string]time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]time.Duration, len(f.inFlight))
+	for addr, ts := range f.inFlight {
+		if e := ts.Load(); e != nil && !e.IsZero() {
+			out[addr] = time.Since(*e)
+		}
+	}
+	return out
+}
+
 // Close stops all workers; queued deltas are abandoned (AE owns them).
 func (f *Fanout) Close() {
 	f.cancel()
 	f.wg.Wait()
 }
 
-func (f *Fanout) worker(addr string, q chan Delta) {
+func (f *Fanout) worker(addr string, q chan Delta, inFlight *atomic.Pointer[time.Time]) {
 	defer f.wg.Done()
 	for {
 		select {
 		case <-f.ctx.Done():
 			return
 		case d := <-q:
+			inFlight.Store(&d.enqueued)
 			f.deliver(addr, d)
+			inFlight.Store(&time.Time{})
 		}
 	}
 }

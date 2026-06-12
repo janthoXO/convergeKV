@@ -58,6 +58,19 @@ must be encoded as property tests. Section 6 lists known deferrals.
 > concurrency collapses on the next write. Client-visible semantics are
 > unchanged from this section's intent: one whole-value winner per field, no
 > partial mixing, no resurrection.
+>
+> **Follow-on corrections required by the above:**
+> - *Merkle leaf hash (§1 anti-entropy row):* leaves hash the **full
+>   canonical document**, not just the causal context. With multi-value
+>   register sets, replicas can hold identical contexts with different
+>   register subsets; a context-only hash makes that divergence permanently
+>   invisible to anti-entropy (found by the chaos suite).
+> - *Actor retirement (§1 GC row):* a node whose liveness lease expired
+>   (dead past the crash grace period) wipes its data AND **rotates its
+>   actor identity** on restart. Its old actor may have been retired from
+>   contexts cluster-wide; if it minted new dots, peers could never compact
+>   them (the retired prefix is gone forever) and clouds would grow without
+>   bound.
 
 ### 2.1 Types
 

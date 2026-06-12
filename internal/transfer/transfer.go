@@ -37,13 +37,21 @@ type Manager struct {
 
 	mu      sync.Mutex
 	pending map[uint16]bool // partitions with a bootstrap in flight
+	wg      sync.WaitGroup
 
 	started atomic.Uint64
+	bytes   atomic.Uint64
 }
+
+// Wait blocks until all in-flight bootstraps have finished (shutdown).
+func (m *Manager) Wait() { m.wg.Wait() }
 
 // Started returns how many bootstrap transfers this node has begun
 // (the no-transfer-storm assertion for restarts within grace).
 func (m *Manager) Started() uint64 { return m.started.Load() }
+
+// Bytes returns the total document bytes received via bootstrap snapshots.
+func (m *Manager) Bytes() uint64 { return m.bytes.Load() }
 
 func New(self [16]byte, coord *coordinator.Coordinator, view func() *placement.View,
 	source Source, flags Flags, log *slog.Logger) *Manager {
@@ -73,7 +81,9 @@ func (m *Manager) Bootstrap(ctx context.Context, pid uint16) {
 	m.mu.Unlock()
 	m.started.Add(1)
 
+	m.wg.Add(1)
 	go func() {
+		defer m.wg.Done()
 		defer func() {
 			m.mu.Lock()
 			delete(m.pending, pid)
@@ -106,6 +116,7 @@ func (m *Manager) run(ctx context.Context, pid uint16) error {
 		_, err := m.coord.MergeDelta(pid, key, doc)
 		if err == nil {
 			streamed++
+			m.bytes.Add(uint64(len(key) + len(doc)))
 		}
 		return err
 	})

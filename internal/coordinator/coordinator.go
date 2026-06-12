@@ -307,7 +307,7 @@ func (c *Coordinator) RecomputeMerkleLeaf(pid uint16, bucket uint16) error {
 	var leaf merkle.Hash
 	err := c.store.ScanPartition(pid, func(key []byte, doc *crdt.Document) error {
 		if merkle.Bucket(key) == bucket {
-			merkle.XOR(&leaf, merkle.DocHash(key, doc.Context.Canonical()))
+			merkle.XOR(&leaf, merkle.DocHash(key, doc.Canonical()))
 		}
 		return nil
 	})
@@ -338,7 +338,7 @@ func (c *Coordinator) GCDocument(pid uint16, key []byte) error {
 	if err != nil {
 		return err
 	}
-	merkle.XOR(&leaf, merkle.DocHash(key, doc.Context.Canonical()))
+	merkle.XOR(&leaf, merkle.DocHash(key, doc.Canonical()))
 	b := c.store.NewBatch()
 	b.DeleteDocument(pid, key)
 	b.DeleteGCCounter(pid, key)
@@ -397,7 +397,7 @@ func (c *Coordinator) persist(pid uint16, key string, oldHash *merkle.Hash, doc 
 	if oldHash != nil {
 		merkle.XOR(&leaf, *oldHash)
 	}
-	merkle.XOR(&leaf, merkle.DocHash(keyB, doc.Context.Canonical()))
+	merkle.XOR(&leaf, merkle.DocHash(keyB, doc.Canonical()))
 
 	b := c.store.NewBatch()
 	b.SetDocument(pid, keyB, doc)
@@ -409,7 +409,7 @@ func docHashOf(key string, doc *crdt.Document) *merkle.Hash {
 	if doc == nil {
 		return nil
 	}
-	h := merkle.DocHash([]byte(key), doc.Context.Canonical())
+	h := merkle.DocHash([]byte(key), doc.Canonical())
 	return &h
 }
 
