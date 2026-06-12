@@ -20,6 +20,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/config"
 	"github.com/janthoXO/convergeKV/internal/coordinator"
 	"github.com/janthoXO/convergeKV/internal/crdt"
+	"github.com/janthoXO/convergeKV/internal/gc"
 	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/identity"
 	"github.com/janthoXO/convergeKV/internal/placement"
@@ -92,6 +93,22 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 		return nil, err
 	}
 
+	// Tombstone-grace rule: a node that was gone longer than the crash
+	// grace period may hold state that predates cluster-wide GC; serving it
+	// would resurrect deleted documents. Wipe and re-bootstrap instead.
+	if lastAlive, err := store.LastAlive(); err != nil {
+		return nil, err
+	} else if !lastAlive.IsZero() && time.Since(lastAlive) > cfg.CrashGracePeriod {
+		log.Warn("liveness lease expired; wiping local data to avoid resurrecting GC'd state",
+			"last_alive", lastAlive, "grace", cfg.CrashGracePeriod)
+		if err := store.WipeData(); err != nil {
+			return nil, err
+		}
+	}
+	if err := store.PersistLastAlive(time.Now()); err != nil {
+		return nil, err
+	}
+
 	// HLC restart rule: max(checkpoint, wall) + safety bump.
 	clock := hlc.New()
 	if checkpoint, err := store.HLC(); err != nil {
@@ -146,11 +163,14 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 	}
 	n.AE = antientropy.New(id, cfg.Partitions, store, n.Coord, n.View, n.pool,
 		cfg.AntiEntropyInterval, log)
+	n.AE.SetGC(gc.New(store, n.Coord, n.knownActors, log))
 	n.transfer = transfer.New(id, n.Coord, n.View, n.pool, cl, log)
 
 	n.recomputeView(cfg.Partitions)
 	n.bg(func() { n.watch(ctx, cfg.Partitions) })
-	n.bg(func() { n.checkpointHLC(ctx) })
+	// The heartbeat must beat the lease: several ticks per grace period, or
+	// an ordinary restart would look lease-expired and wipe.
+	n.bg(func() { n.checkpointHLC(ctx, min(time.Second, cfg.CrashGracePeriod/4)) })
 	n.bg(func() { n.AE.Run(ctx) })
 
 	n.clientSrv = grpc.NewServer()
@@ -314,10 +334,10 @@ func bootstrapSource(v *placement.View, pid uint16, self [16]byte) (placement.Ow
 	return placement.Owner{}, false
 }
 
-// checkpointHLC persists the clock periodically; the restart bump covers the
-// uncheckpointed window.
-func (n *Node) checkpointHLC(ctx context.Context) {
-	t := time.NewTicker(time.Second)
+// checkpointHLC persists the clock and the liveness lease periodically; the
+// restart bump covers the uncheckpointed window.
+func (n *Node) checkpointHLC(ctx context.Context, interval time.Duration) {
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
@@ -327,8 +347,24 @@ func (n *Node) checkpointHLC(ctx context.Context) {
 			if err := n.Store.PersistHLC(n.Clock.Last()); err != nil {
 				n.Log.Warn("hlc checkpoint failed", "err", err)
 			}
+			if err := n.Store.PersistLastAlive(time.Now()); err != nil {
+				n.Log.Warn("liveness lease heartbeat failed", "err", err)
+			}
 		}
 	}
+}
+
+// knownActors returns every actor that must not be retired: alive members
+// and members dead within the grace period.
+func (n *Node) knownActors() map[crdt.ActorID]bool {
+	out := make(map[crdt.ActorID]bool)
+	for _, m := range n.cluster.Members() {
+		out[m.Meta.ID] = true
+	}
+	for _, m := range n.cluster.DeadMembers() {
+		out[m.Meta.ID] = true
+	}
+	return out
 }
 
 // advertised picks the address peers should dial: the listener's concrete

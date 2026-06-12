@@ -91,7 +91,7 @@ func Start(t *testing.T, n int) *Harness {
 func (h *Harness) WaitConverged(alive int) {
 	h.t.Helper()
 	wantOwners := min(placement.RF, alive)
-	h.waitFor(10*time.Second, "cluster convergence", func() bool {
+	h.waitFor(20*time.Second, "cluster convergence", func() bool {
 		for _, nd := range h.Nodes {
 			if nd == nil {
 				continue

@@ -37,6 +37,14 @@ type Peer interface {
 	ApplyDelta(ctx context.Context, addr string, pid uint16, key, delta []byte) error
 }
 
+// GC receives garbage-collection triggers from the exchange (implemented by
+// internal/gc; optional).
+type GC interface {
+	OnCleanRound(pid uint16)
+	OnPeerBucket(pid, bucket uint16, peerKeys map[string]struct{})
+	OnPeerDoc(pid uint16, key, peerDoc []byte)
+}
+
 type Engine struct {
 	self  [16]byte
 	p     uint16
@@ -44,6 +52,7 @@ type Engine struct {
 	coord *coordinator.Coordinator
 	view  func() *placement.View
 	peer  Peer
+	gc    GC
 	log   *slog.Logger
 
 	interval time.Duration
@@ -74,6 +83,10 @@ func New(self [16]byte, p uint16, store *storage.Store, coord *coordinator.Coord
 		cleanRounds: make(map[uint16]int),
 	}
 }
+
+// SetGC attaches the garbage-collection hooks (wired by the node after both
+// components exist).
+func (e *Engine) SetGC(gc GC) { e.gc = gc }
 
 // KeysRepaired returns the number of documents changed by repairs.
 func (e *Engine) KeysRepaired() uint64 { return e.keysRepaired.Load() }
@@ -107,7 +120,7 @@ func (e *Engine) Run(ctx context.Context) {
 				return
 			}
 			if err := e.RunRound(ctx, pid); err != nil {
-				e.log.Debug("anti-entropy round failed", "partition", pid, "err", err)
+				e.log.Warn("anti-entropy round failed", "partition", pid, "err", err)
 			}
 		}
 	}
@@ -147,6 +160,10 @@ func (e *Engine) RunRound(ctx context.Context, pid uint16) error {
 		e.cleanRounds[pid] = 0
 	}
 	e.mu.Unlock()
+
+	if clean && e.gc != nil {
+		e.gc.OnCleanRound(pid)
+	}
 	return firstErr
 }
 
@@ -193,7 +210,10 @@ func (e *Engine) exchange(ctx context.Context, pid uint16, o placement.Owner) (b
 // pushes the (now merged) local documents back, then rebuilds the local leaf
 // from the data.
 func (e *Engine) repairBucket(ctx context.Context, pid, bucket uint16, o placement.Owner) error {
+	contagion := e.gc != nil && (o.Status == cluster.StatusActive || o.Status == cluster.StatusDraining)
+	peerKeys := make(map[string]struct{})
 	err := e.peer.SyncBucket(ctx, o.Addr, pid, bucket, func(key, doc []byte) error {
+		peerKeys[string(key)] = struct{}{}
 		changed, err := e.coord.MergeDelta(pid, key, doc)
 		if err != nil {
 			return err
@@ -201,10 +221,20 @@ func (e *Engine) repairBucket(ctx context.Context, pid, bucket uint16, o placeme
 		if changed {
 			e.keysRepaired.Add(1)
 		}
+		if contagion {
+			e.gc.OnPeerDoc(pid, key, doc)
+		}
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+
+	// GC contagion before the push: residuals a fully-serving peer no
+	// longer has must not be pushed back (a bootstrapping peer's bucket may
+	// simply be incomplete — its absences certify nothing).
+	if contagion {
+		e.gc.OnPeerBucket(pid, bucket, peerKeys)
 	}
 
 	// Push our merged view of the bucket back; the peer's MergeDelta keeps

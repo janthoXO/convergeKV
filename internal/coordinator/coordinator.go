@@ -272,6 +272,15 @@ func (c *Coordinator) MergeDelta(pid uint16, key, deltaBytes []byte) (bool, erro
 	if err != nil {
 		return false, err
 	}
+	if doc == nil && len(delta.Fields) == 0 {
+		// Absorbing GC rule: we hold nothing and the delta carries only a
+		// residual context. Recreating a residual we already garbage-
+		// collected would ping-pong with peers' GC forever. The cost: a
+		// node that never saw the document loses the context's protection
+		// against a stale put still in flight (bounded by the retry
+		// queue's max age) — anti-entropy repairs that transient.
+		return false, nil
+	}
 	oldHash := docHashOf(string(key), doc)
 	var before []byte
 	if doc == nil {
@@ -308,6 +317,70 @@ func (c *Coordinator) RecomputeMerkleLeaf(pid uint16, bucket uint16) error {
 	b := c.store.NewBatch()
 	b.SetMerkleNode(pid, merkle.BucketPath(bucket), leaf[:])
 	return c.store.Commit(b)
+}
+
+// --- garbage collection (called by internal/gc under AE certification) ----------
+
+// GCDocument removes a residual-context document outright, with its GC
+// counter and leaf contribution, iff it is still empty.
+func (c *Coordinator) GCDocument(pid uint16, key []byte) error {
+	c.locks[pid].Lock()
+	defer c.locks[pid].Unlock()
+	doc, err := c.store.GetDocument(pid, key)
+	if err != nil {
+		return err
+	}
+	if doc == nil || len(doc.Fields) > 0 {
+		return nil // re-created or already gone
+	}
+	bucket := merkle.Bucket(key)
+	leaf, err := c.store.MerkleLeaf(pid, bucket)
+	if err != nil {
+		return err
+	}
+	merkle.XOR(&leaf, merkle.DocHash(key, doc.Context.Canonical()))
+	b := c.store.NewBatch()
+	b.DeleteDocument(pid, key)
+	b.DeleteGCCounter(pid, key)
+	b.SetMerkleNode(pid, merkle.BucketPath(bucket), leaf[:])
+	return c.store.Commit(b)
+}
+
+// RetireActors drops version-vector entries of retired actors from one
+// document's context, provided the actor has no live register in it. Safe
+// because retirement is only certified once the actor is dead past grace and
+// the owners are in sync — no event from that actor can ever arrive again.
+func (c *Coordinator) RetireActors(pid uint16, key []byte, retired func(crdt.ActorID) bool) error {
+	c.locks[pid].Lock()
+	defer c.locks[pid].Unlock()
+	doc, err := c.store.GetDocument(pid, key)
+	if err != nil || doc == nil {
+		return err
+	}
+	live := map[crdt.ActorID]bool{}
+	for _, regs := range doc.Fields {
+		for _, r := range regs {
+			live[r.Dot.Actor] = true
+		}
+	}
+	oldHash := docHashOf(string(key), doc)
+	changed := false
+	for a := range doc.Context.VV {
+		if retired(a) && !live[a] {
+			delete(doc.Context.VV, a)
+			changed = true
+		}
+	}
+	for d := range doc.Context.Cloud {
+		if retired(d.Actor) && !live[d.Actor] {
+			delete(doc.Context.Cloud, d)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return c.persist(pid, string(key), oldHash, doc)
 }
 
 // --- internals -----------------------------------------------------------------

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/janthoXO/convergeKV/internal/crdt"
@@ -36,6 +37,7 @@ const (
 	metaDotSeq     = "dot_seq"
 	metaHLC        = "hlc"
 	metaOwned      = "owned"
+	metaLastAlive  = "last_alive"
 )
 
 type Store struct {
@@ -135,6 +137,58 @@ func partitionUpperBound(prefix byte, pid uint16) []byte {
 		return []byte{prefix + 1}
 	}
 	return partitionKey(prefix, pid+1, nil)
+}
+
+// GCCounter returns the clean-round counter for one key (0 if absent).
+func (s *Store) GCCounter(pid uint16, key []byte) (uint32, error) {
+	v, closer, err := s.db.Get(partitionKey(prefixGC, pid, key))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = closer.Close() }()
+	if len(v) != 4 {
+		return 0, fmt.Errorf("storage: gc counter has %d bytes", len(v))
+	}
+	return binary.BigEndian.Uint32(v), nil
+}
+
+// PersistLastAlive records a liveness lease heartbeat. A node restarting
+// with an expired lease (older than the crash grace period) must wipe its
+// data: the cluster may have garbage-collected tombstone state it missed,
+// and serving its stale documents would resurrect deleted data.
+func (s *Store) PersistLastAlive(t time.Time) error {
+	return s.db.Set(metaKey(metaLastAlive),
+		binary.BigEndian.AppendUint64(nil, uint64(t.UnixMilli())), pebble.NoSync)
+}
+
+// LastAlive returns the last liveness heartbeat (zero time if never written).
+func (s *Store) LastAlive() (time.Time, error) {
+	ms, err := s.metaUint64(metaLastAlive)
+	if err != nil || ms == 0 {
+		return time.Time{}, err
+	}
+	return time.UnixMilli(int64(ms)), nil
+}
+
+// WipeData deletes all documents, merkle leaves, GC counters, and the
+// ownership bitmap — node identity, partition count, dot-seq, and HLC
+// checkpoints survive (dots must never be reused, even across a wipe).
+func (s *Store) WipeData() error {
+	b := s.db.NewBatch()
+	for _, prefix := range []byte{prefixDoc, prefixMerkle, prefixGC} {
+		if err := b.DeleteRange([]byte{prefix}, []byte{prefix + 1}, nil); err != nil {
+			_ = b.Close()
+			return err
+		}
+	}
+	if err := b.Delete(metaKey(metaOwned), nil); err != nil {
+		_ = b.Close()
+		return err
+	}
+	return b.Commit(pebble.Sync)
 }
 
 // HasPartitionData reports whether any document exists in the partition.
