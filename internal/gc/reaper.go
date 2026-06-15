@@ -18,7 +18,6 @@ import (
 	"log/slog"
 
 	"github.com/janthoXO/convergeKV/internal/crdt"
-	"github.com/janthoXO/convergeKV/internal/merkle"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
 
@@ -98,15 +97,23 @@ func (r *Reaper) OnCleanRound(pid uint16) {
 	}
 }
 
+// OnDirtyRound voids every key's certification progress for the partition:
+// the plan requires two CONSECUTIVE clean rounds per key, and the durable
+// counters would otherwise survive a dirty round in between (two adjacent
+// clean rounds can be as little as interval/2 apart — less than a stale
+// delta can sit in a peer's retry queue).
+func (r *Reaper) OnDirtyRound(pid uint16) {
+	if err := r.store.ClearGCCounters(pid); err != nil {
+		r.log.Warn("gc counter reset failed", "partition", pid, "err", err)
+	}
+}
+
 // OnPeerBucket implements GC contagion: keys we hold as residuals that the
 // peer no longer has (it sent its complete bucket) were certified and
 // removed by the peer's GC — drop them here too instead of pushing them
 // back and freezing everyone's counters.
 func (r *Reaper) OnPeerBucket(pid, bucket uint16, peerKeys map[string]struct{}) {
-	err := r.store.ScanPartition(pid, func(key []byte, doc *crdt.Document) error {
-		if merkle.Bucket(key) != bucket {
-			return nil
-		}
+	err := r.store.ScanBucket(pid, bucket, func(key []byte, doc *crdt.Document) error {
 		if _, peerHas := peerKeys[string(key)]; peerHas {
 			return nil
 		}

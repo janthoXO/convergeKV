@@ -18,9 +18,12 @@ var crashActor = crdt.ActorID{0xCC}
 // TestCrashRestart spawns a child process that hammers the store with synced
 // writes, SIGKILLs it mid-storm, reopens the store, and verifies the two M2
 // acceptance properties: no torn documents (every stored doc decodes — done
-// implicitly by ScanPartition) and no dot reuse (the persisted dot-seq
-// checkpoint covers every dot found in any stored document, because doc and
-// checkpoint commit in one atomic batch).
+// implicitly by ScanPartition) and no dot reuse. Dots are minted per document
+// from its own persisted context (seq = Context.Next(self)), so the document
+// itself is the checkpoint: after a crash, every surviving doc's context must
+// be exactly the contiguous local-mint shape (no cloud dots for the writer,
+// register seqs covered by the VV) — a torn doc/context pair is the only way
+// reuse could happen, and the atomic batch forbids it.
 func TestCrashRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("crash test spawns child processes")
@@ -77,21 +80,24 @@ func verifyAfterCrash(t *testing.T, dir string, round int) {
 	}
 	defer func() { _ = s.Close() }()
 
-	checkpoint, err := s.DotSeq()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var maxSeen uint64
 	docs := 0
 	for pid := uint16(0); pid < 8; pid++ {
 		err := s.ScanPartition(pid, func(key []byte, doc *crdt.Document) error {
 			docs++ // decoding already proved the doc is not torn
-			if seq := doc.Context.VV[crashActor]; seq > maxSeen {
-				maxSeen = seq
-			}
+			// Local minting is contiguous per document: the writer's dots
+			// must all have folded into the VV. A cloud dot for the writer
+			// would mean the next mint (Context.Next) could collide.
 			for d := range doc.Context.Cloud {
-				if d.Actor == crashActor && d.Seq > maxSeen {
-					maxSeen = d.Seq
+				if d.Actor == crashActor {
+					return fmt.Errorf("doc %q: writer dot %d stuck in cloud", key, d.Seq)
+				}
+			}
+			for _, regs := range doc.Fields {
+				for _, r := range regs {
+					if r.Dot.Actor == crashActor && r.Dot.Seq > doc.Context.VV[crashActor] {
+						return fmt.Errorf("doc %q: register seq %d > VV %d",
+							key, r.Dot.Seq, doc.Context.VV[crashActor])
+					}
 				}
 			}
 			return nil
@@ -103,11 +109,7 @@ func verifyAfterCrash(t *testing.T, dir string, round int) {
 	if docs == 0 {
 		t.Fatalf("round %d: helper wrote nothing before being killed", round)
 	}
-	if maxSeen > checkpoint {
-		t.Fatalf("round %d: dot reuse possible: doc carries seq %d > checkpoint %d",
-			round, maxSeen, checkpoint)
-	}
-	t.Logf("round %d: %d docs intact, checkpoint %d >= max dot %d", round, docs, checkpoint, maxSeen)
+	t.Logf("round %d: %d docs intact with consistent contexts", round, docs)
 }
 
 // TestCrashWriterHelper is the child process body; it only runs when the
@@ -121,12 +123,6 @@ func TestCrashWriterHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seq, err := s.DotSeq()
-	if err != nil {
-		t.Fatal(err)
-	}
-	minter := &crdt.Minter{Actor: crashActor, Seq: seq}
-
 	fmt.Print("!") // signal: storm starting
 	for i := 0; ; i++ {
 		pid := uint16(i % 8)
@@ -138,10 +134,11 @@ func TestCrashWriterHelper(t *testing.T) {
 		if doc == nil {
 			doc = crdt.NewDocument()
 		}
-		doc.Put("n", binary.BigEndian.AppendUint64(nil, uint64(i)), minter.Next(), uint64(i)<<16)
+		// Per-document minting, exactly like the coordinator's applier.
+		dot := crdt.Dot{Actor: crashActor, Seq: doc.Context.Next(crashActor)}
+		doc.Put("n", binary.BigEndian.AppendUint64(nil, uint64(i)), dot, uint64(i)<<16)
 		b := s.NewBatch()
 		b.SetDocument(pid, key, doc)
-		b.SetDotSeq(minter.Seq)
 		if err := s.Commit(b); err != nil {
 			t.Fatal(err)
 		}

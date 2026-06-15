@@ -32,14 +32,15 @@ func Bucket(key []byte) uint16 {
 	return uint16(xxhash.Sum64(key) % Buckets)
 }
 
-// DocHash hashes one document's identity: key and canonical causal context.
-func DocHash(key, canonicalContext []byte) Hash {
+// DocHash hashes one document's identity: key and FULL canonical document
+// encoding (see the package comment for why context-only is not enough).
+func DocHash(key, canonicalDoc []byte) Hash {
 	h := blake3.New(HashSize, nil)
 	var n [4]byte
 	binary.BigEndian.PutUint32(n[:], uint32(len(key)))
 	_, _ = h.Write(n[:])
 	_, _ = h.Write(key)
-	_, _ = h.Write(canonicalContext)
+	_, _ = h.Write(canonicalDoc)
 	var out Hash
 	copy(out[:], h.Sum(nil))
 	return out

@@ -49,7 +49,13 @@ type Node struct {
 	fanout     *replication.Fanout
 	transfer   *transfer.Manager
 	partitions uint16
-	prevOwned  []byte // ownership bitmap persisted before the last shutdown
+	// owned is the persisted ownership bitmap: partitions this node serves
+	// plus partitions lost less than one watch tick ago (the flap window).
+	// A bit clears only when the partition's data is dropped, so a set bit
+	// always means "the local data is current enough for AE to close the
+	// gap" — the no-transfer-storm shortcut on restart within grace.
+	owned      []byte
+	lostSince  map[uint16]time.Time // partitions lost but not yet dropped
 	ctx        context.Context
 	wg         sync.WaitGroup
 	clientSrv  *grpc.Server
@@ -62,21 +68,35 @@ type Node struct {
 }
 
 // Start brings a node fully up: listeners first (to learn the real ports),
-// then storage and identity, then gossip, then serving.
+// then storage and identity, then gossip, then serving. Every acquired
+// resource lands on a cleanup stack that runs (in reverse) on any later
+// failure and is disarmed on success.
 func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 	if log == nil {
 		log = slog.Default()
 	}
 
+	var cleanups []func()
+	started := false
+	defer func() {
+		if started {
+			return
+		}
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}()
+
 	clientLn, err := net.Listen("tcp", cfg.ClientAddr)
 	if err != nil {
 		return nil, fmt.Errorf("node: client listener: %w", err)
 	}
+	cleanups = append(cleanups, func() { _ = clientLn.Close() })
 	nodeLn, err := net.Listen("tcp", cfg.NodeAddr)
 	if err != nil {
-		_ = clientLn.Close()
 		return nil, fmt.Errorf("node: node listener: %w", err)
 	}
+	cleanups = append(cleanups, func() { _ = nodeLn.Close() })
 
 	id, err := identity.LoadOrCreate(cfg.DataDir)
 	if err != nil {
@@ -88,6 +108,7 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	cleanups = append(cleanups, func() { _ = store.Close() })
 	if err := store.BindNodeID(id); err != nil {
 		return nil, err
 	}
@@ -129,12 +150,6 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 		clock.SetAtLeast(checkpoint + hlcRestartBump)
 	}
 
-	lastSeq, err := store.DotSeq()
-	if err != nil {
-		return nil, err
-	}
-	dots := coordinator.NewDotSource(crdt.ActorID(id), lastSeq, store.PersistDotSeq)
-
 	cl, err := cluster.Join(cluster.Config{
 		NodeID:          id,
 		Partitions:      cfg.Partitions,
@@ -147,9 +162,9 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 		Logger:          log,
 	})
 	if err != nil {
-		_ = store.Close()
 		return nil, err
 	}
+	cleanups = append(cleanups, func() { _ = cl.Shutdown() })
 
 	n := &Node{
 		ID:         id,
@@ -162,17 +177,25 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 		nodeAddr:   nodeLn.Addr().String(),
 		stopped:    make(chan struct{}),
 	}
-	n.fanout = replication.NewFanout(replication.Config{Logger: log}, n.pool.SendDelta)
-	n.Coord = coordinator.New(id, cfg.Partitions, store, clock, dots,
+	n.fanout = replication.NewFanout(replication.Config{
+		MaxAge: cfg.ReplicationMaxAge,
+		Logger: log,
+	}, n.pool.SendDelta)
+	n.Coord = coordinator.New(id, cfg.Partitions, store, clock,
 		n.View, n.pool, n.fanout, log)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	n.cancel = cancel
 	n.ctx = ctx
+	cleanups = append(cleanups, func() { cancel(); n.wg.Wait() })
 	n.partitions = cfg.Partitions
-	if n.prevOwned, err = store.Owned(); err != nil {
+	n.lostSince = make(map[uint16]time.Time)
+	prevOwned, err := store.Owned()
+	if err != nil {
 		return nil, err
 	}
+	n.owned = make([]byte, (int(cfg.Partitions)+7)/8)
+	copy(n.owned, prevOwned)
 	n.AE = antientropy.New(id, cfg.Partitions, store, n.Coord, n.View, n.pool,
 		cfg.AntiEntropyInterval, log)
 	n.AE.SetGC(gc.New(store, n.Coord, n.knownActors, log))
@@ -193,10 +216,6 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 			Cluster:  cl,
 		}, log)
 		if err != nil {
-			cancel()
-			_ = cl.Shutdown()
-			n.wg.Wait()
-			_ = store.Close()
 			return nil, fmt.Errorf("node: admin endpoint: %w", err)
 		}
 	}
@@ -210,6 +229,7 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 
 	log.Info("node started",
 		"client_addr", n.clientAddr, "node_addr", n.nodeAddr, "partitions", cfg.Partitions)
+	started = true // disarm the cleanup stack; Stop owns shutdown now
 	return n, nil
 }
 
@@ -295,6 +315,11 @@ func (n *Node) watch(ctx context.Context, p uint16) {
 	}
 }
 
+// lossGrace is how long a partition must stay un-owned before its local
+// data is dropped: one watch tick, so a membership flap that takes the
+// partition away and immediately back does not cost a re-fetch.
+const lossGrace = 2 * time.Second
+
 func (n *Node) recomputeView(p uint16) {
 	v := placement.Compute(p, n.cluster.Members(), n.cluster.DeadMembers())
 	n.view.Store(v)
@@ -302,29 +327,70 @@ func (n *Node) recomputeView(p uint16) {
 	self := n.cluster.Self()
 	var toActivate, toClear, toBootstrap []uint16
 	for pid := uint16(0); pid < p; pid++ {
-		owned := v.IsOwner(pid, n.ID)
+		isOwner := v.IsOwner(pid, n.ID)
 		st := self.Flags.Get(pid)
 		switch {
-		case owned && st == cluster.StatusNone:
-			hasData, err := n.Store.HasPartitionData(pid)
-			if err != nil {
-				n.Log.Warn("partition data probe failed", "partition", pid, "err", err)
-				continue
-			}
+		case isOwner && st == cluster.StatusNone:
+			delete(n.lostSince, pid)
 			_, hasSource := bootstrapSource(v, pid, n.ID)
 			switch {
-			case hasData || n.wasOwner(pid):
-				// Restart/rejoin of a previous owner: the data (if any) is
-				// here, AE closes any gap — no transfer storm.
+			case n.wasOwner(pid):
+				// Restart/rejoin of a previous owner whose data was never
+				// dropped: the data (if any) is here, AE closes any gap —
+				// no transfer storm.
 				toActivate = append(toActivate, pid)
+				n.setOwned(pid, true)
 			case hasSource:
+				// Gained anew. Any local leftover predates an ownership
+				// loss and may be staler than cluster-wide GC — it must
+				// not merge into the bootstrap (resurrection). The owned
+				// bit stays clear until the bootstrap flips us to active
+				// (below): a crash mid-bootstrap then re-bootstraps rather
+				// than activating incomplete data.
+				if hasData, err := n.Store.HasPartitionData(pid); err != nil {
+					n.Log.Warn("partition data probe failed", "partition", pid, "err", err)
+					continue
+				} else if hasData {
+					if err := n.Store.DropPartition(pid); err != nil {
+						n.Log.Warn("stale partition drop failed", "partition", pid, "err", err)
+						continue
+					}
+				}
 				toBootstrap = append(toBootstrap, pid)
 			default:
 				// Fresh partition with no serving owner anywhere.
 				toActivate = append(toActivate, pid)
+				n.setOwned(pid, true)
 			}
-		case !owned && st != cluster.StatusNone:
-			toClear = append(toClear, pid)
+		case isOwner:
+			delete(n.lostSince, pid) // serving (or bootstrapping) as usual
+			// Mark the data current only once we actually serve it; while
+			// bootstrapping (StatusBootstrapping) the copy is incomplete.
+			if st == cluster.StatusActive || st == cluster.StatusDraining {
+				n.setOwned(pid, true)
+			}
+		default: // not an owner
+			if st != cluster.StatusNone {
+				toClear = append(toClear, pid)
+			}
+			if !n.wasOwner(pid) {
+				break // nothing held, nothing to drop
+			}
+			since, marked := n.lostSince[pid]
+			switch {
+			case !marked:
+				n.lostSince[pid] = time.Now()
+			case time.Since(since) >= lossGrace:
+				// The loss survived a full watch tick: drop the data. From
+				// here on a regain must bootstrap from a serving owner.
+				if err := n.Store.DropPartition(pid); err != nil {
+					n.Log.Warn("partition drop failed", "partition", pid, "err", err)
+					break
+				}
+				n.Log.Info("partition ownership lost, data dropped", "partition", pid)
+				n.setOwned(pid, false)
+				delete(n.lostSince, pid)
+			}
 		}
 	}
 	if len(toActivate) > 0 || len(toClear) > 0 {
@@ -345,23 +411,43 @@ func (n *Node) recomputeView(p uint16) {
 	for _, pid := range toBootstrap {
 		n.transfer.Bootstrap(n.ctx, pid)
 	}
-	n.persistOwnership(v)
+	n.persistOwnership()
+	n.evictDepartedPeers()
 }
 
-// wasOwner reports whether the persisted pre-restart ownership bitmap covers
-// the partition.
-func (n *Node) wasOwner(pid uint16) bool {
-	bm := n.prevOwned
-	return int(pid/8) < len(bm) && bm[pid/8]&(1<<(pid%8)) != 0
-}
-
-// persistOwnership checkpoints current ownership for restart-within-grace.
-func (n *Node) persistOwnership(v *placement.View) {
-	bm := make([]byte, (int(n.partitions)+7)/8)
-	for _, pid := range v.OwnedPartitions(n.ID) {
-		bm[pid/8] |= 1 << (pid % 8)
+// evictDepartedPeers drops per-peer state (fan-out queues + workers, pooled
+// connections) of nodes no longer in the membership view, so a long-lived
+// node in a churning cluster does not grow without bound. Dead-within-grace
+// members are kept: they may come straight back.
+func (n *Node) evictDepartedPeers() {
+	keep := make(map[string]struct{})
+	for _, m := range n.cluster.Members() {
+		keep[m.Meta.RPCAddr] = struct{}{}
 	}
-	if err := n.Store.PersistOwned(bm); err != nil {
+	for _, m := range n.cluster.DeadMembers() {
+		keep[m.Meta.RPCAddr] = struct{}{}
+	}
+	n.fanout.Retain(keep)
+	n.pool.Retain(keep)
+}
+
+// wasOwner reports whether the ownership bitmap covers the partition (i.e.
+// this node holds data for it that was never dropped).
+func (n *Node) wasOwner(pid uint16) bool {
+	return n.owned[pid/8]&(1<<(pid%8)) != 0
+}
+
+func (n *Node) setOwned(pid uint16, v bool) {
+	if v {
+		n.owned[pid/8] |= 1 << (pid % 8)
+	} else {
+		n.owned[pid/8] &^= 1 << (pid % 8)
+	}
+}
+
+// persistOwnership checkpoints the ownership bitmap for restart-within-grace.
+func (n *Node) persistOwnership() {
+	if err := n.Store.PersistOwned(n.owned); err != nil {
 		n.Log.Warn("ownership checkpoint failed", "err", err)
 	}
 }

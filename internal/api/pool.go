@@ -37,6 +37,20 @@ func (p *Pool) conn(addr string) (*grpc.ClientConn, error) {
 	return c, nil
 }
 
+// Retain closes and forgets the connection of every peer not in keep
+// (membership change); a returning peer gets a fresh connection lazily.
+func (p *Pool) Retain(keep map[string]struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for addr, c := range p.conns {
+		if _, ok := keep[addr]; ok {
+			continue
+		}
+		_ = c.Close()
+		delete(p.conns, addr)
+	}
+}
+
 func (p *Pool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()

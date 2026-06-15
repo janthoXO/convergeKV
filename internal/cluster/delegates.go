@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"time"
@@ -52,7 +53,9 @@ func (e *eventDelegate) NotifyJoin(n *memberlist.Node) {
 
 func (e *eventDelegate) NotifyLeave(n *memberlist.Node) {
 	c := (*Cluster)(e)
+	var id [16]byte
 	if meta, err := DecodeMeta(n.Meta); err == nil {
+		id = meta.ID
 		c.mu.Lock()
 		// A graceful leave releases the placement slot immediately; only
 		// unannounced deaths hold it for the grace period.
@@ -65,6 +68,19 @@ func (e *eventDelegate) NotifyLeave(n *memberlist.Node) {
 		}
 		delete(c.alive, meta.ID)
 		c.mu.Unlock()
+	} else if raw, err := hex.DecodeString(n.Name); err == nil && len(raw) == len(id) {
+		copy(id[:], raw)
+		// Corrupt meta must not leave the member in the view forever; the
+		// memberlist name is the hex node ID, so eviction works without it.
+		c.log.Warn("leaving member has bad meta; evicting by name", "node", n.Name)
+		c.mu.Lock()
+		if m, ok := c.alive[id]; ok && n.State != memberlist.StateLeft {
+			c.dead[id] = deadEntry{member: m, since: time.Now()}
+		}
+		delete(c.alive, id)
+		c.mu.Unlock()
+	} else {
+		c.log.Warn("leaving member has bad meta and unparseable name; cannot evict", "node", n.Name)
 	}
 	c.log.Info("member left or died", "node", n.Name, "addr", n.Address())
 	c.notify()

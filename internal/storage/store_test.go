@@ -3,9 +3,11 @@ package storage
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"testing"
 
 	"github.com/janthoXO/convergeKV/internal/crdt"
+	"github.com/janthoXO/convergeKV/internal/merkle"
 )
 
 func openTest(t *testing.T) *Store {
@@ -18,11 +20,10 @@ func openTest(t *testing.T) *Store {
 	return s
 }
 
-func putDoc(t *testing.T, s *Store, pid uint16, key string, doc *crdt.Document, seq uint64) {
+func putDoc(t *testing.T, s *Store, pid uint16, key string, doc *crdt.Document) {
 	t.Helper()
 	b := s.NewBatch()
 	b.SetDocument(pid, []byte(key), doc)
-	b.SetDotSeq(seq)
 	if err := s.Commit(b); err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +34,7 @@ func TestDocumentRoundTrip(t *testing.T) {
 	m := &crdt.Minter{Actor: crdt.ActorID{1}}
 	doc := crdt.NewDocument()
 	doc.Put("f", []byte(`"v"`), m.Next(), 100)
-	putDoc(t, s, 42, "key", doc, m.Seq)
+	putDoc(t, s, 42, "key", doc)
 
 	got, err := s.GetDocument(42, []byte("key"))
 	if err != nil {
@@ -62,7 +63,7 @@ func TestScanPartitionExactness(t *testing.T) {
 	// Neighbours on both sides, including the partition-ID boundary bytes.
 	for _, pid := range []uint16{0, 6, 7, 8, 0xFFFF} {
 		for i := 0; i < 3; i++ {
-			putDoc(t, s, pid, fmt.Sprintf("key-%d", i), mk(), m.Seq)
+			putDoc(t, s, pid, fmt.Sprintf("key-%d", i), mk())
 		}
 	}
 
@@ -74,6 +75,8 @@ func TestScanPartitionExactness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Scan order is (bucket, key), so compare as a set.
+	sort.Strings(keys)
 	want := []string{"key-0", "key-1", "key-2"}
 	if len(keys) != len(want) {
 		t.Fatalf("scan returned %v, want %v", keys, want)
@@ -96,19 +99,60 @@ func TestScanPartitionExactness(t *testing.T) {
 	}
 }
 
+func TestScanBucket(t *testing.T) {
+	s := openTest(t)
+	m := &crdt.Minter{Actor: crdt.ActorID{1}}
+	byBucket := map[uint16][]string{}
+	for i := 0; i < 64; i++ {
+		key := fmt.Sprintf("key-%d", i)
+		d := crdt.NewDocument()
+		d.Put("f", []byte(`1`), m.Next(), 100)
+		putDoc(t, s, 7, key, d)
+		b := merkle.Bucket([]byte(key))
+		byBucket[b] = append(byBucket[b], key)
+	}
+	// A neighbouring partition must never leak into the scan.
+	other := crdt.NewDocument()
+	other.Put("f", []byte(`1`), m.Next(), 100)
+	putDoc(t, s, 8, "key-0", other)
+
+	total := 0
+	for bucket, want := range byBucket {
+		var got []string
+		err := s.ScanBucket(7, bucket, func(key []byte, _ *crdt.Document) error {
+			got = append(got, string(key))
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sort.Strings(got)
+		sort.Strings(want)
+		if len(got) != len(want) {
+			t.Fatalf("bucket %d: got %v, want %v", bucket, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("bucket %d: got %v, want %v", bucket, got, want)
+			}
+		}
+		total += len(got)
+	}
+	if total != 64 {
+		t.Fatalf("bucket scans covered %d docs, want 64", total)
+	}
+}
+
 func TestMetaCheckpoints(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if seq, _ := s.DotSeq(); seq != 0 {
-		t.Fatalf("fresh store DotSeq = %d", seq)
+	if ts, _ := s.HLC(); ts != 0 {
+		t.Fatalf("fresh store HLC = %d", ts)
 	}
-	b := s.NewBatch()
-	b.SetDotSeq(7)
-	b.SetHLC(12345)
-	if err := s.Commit(b); err != nil {
+	if err := s.PersistHLC(12345); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -120,9 +164,6 @@ func TestMetaCheckpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
-	if seq, _ := s.DotSeq(); seq != 7 {
-		t.Fatalf("DotSeq after reopen = %d, want 7", seq)
-	}
 	if ts, _ := s.HLC(); ts != 12345 {
 		t.Fatalf("HLC after reopen = %d, want 12345", ts)
 	}

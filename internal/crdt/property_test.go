@@ -198,6 +198,65 @@ func TestPropertyMergeLaws(t *testing.T) {
 	})
 }
 
+// Invariant 7 across many keys: with per-document minting (the applier's
+// scheme — seq = Context.Next(self) on the document being mutated), every
+// document's cloud compacts to empty after full delivery even though each
+// actor's writes interleave across documents. A node-wide counter fails
+// exactly this test: each document then observes only a sparse subset of an
+// actor's seqs, and the permanent gaps pin every dot in the cloud forever.
+func TestPropertyPerDocumentMintingCloudBounded(t *testing.T) {
+	const keys = 4
+	rapid.Check(t, func(t *rapid.T) {
+		actors := []ActorID{{0x10}, {0x20}, {0x30}}
+		// replicas[r][k] is replica r's copy of document k.
+		replicas := make([][]*Document, len(actors))
+		for r := range replicas {
+			replicas[r] = make([]*Document, keys)
+			for k := range replicas[r] {
+				replicas[r][k] = NewDocument()
+			}
+		}
+		deltas := make([][]*Document, keys)
+		ts := HLC(1 << 16)
+		n := rapid.IntRange(1, 24).Draw(t, "ops")
+		for i := 0; i < n; i++ {
+			r := rapid.IntRange(0, len(actors)-1).Draw(t, fmt.Sprintf("replica%d", i))
+			k := rapid.IntRange(0, keys-1).Draw(t, fmt.Sprintf("key%d", i))
+			f := fieldPool[rapid.IntRange(0, len(fieldPool)-1).Draw(t, fmt.Sprintf("field%d", i))]
+			doc := replicas[r][k]
+			dot := Dot{Actor: actors[r], Seq: doc.Context.Next(actors[r])}
+			ts += 1 << 16
+			var delta *Document
+			if rapid.Bool().Draw(t, fmt.Sprintf("kind%d", i)) {
+				delta = doc.Put(f, []byte{byte(i)}, dot, ts)
+			} else {
+				delta = doc.RemoveField(f, dot)
+			}
+			deltas[k] = append(deltas[k], delta)
+		}
+
+		rng := rand.New(rand.NewSource(rapid.Int64().Draw(t, "shuffle")))
+		for k := 0; k < keys; k++ {
+			for r := range replicas {
+				for _, i := range rng.Perm(len(deltas[k])) {
+					replicas[r][k].Merge(deltas[k][i])
+				}
+			}
+			want := replicas[0][k].Canonical()
+			for r := 1; r < len(replicas); r++ {
+				if !bytes.Equal(replicas[r][k].Canonical(), want) {
+					t.Fatalf("key %d: replica %d diverged", k, r)
+				}
+			}
+			for r := range replicas {
+				if cloud := replicas[r][k].Context.Cloud; len(cloud) != 0 {
+					t.Fatalf("key %d replica %d: cloud not compacted: %v", k, r, cloud)
+				}
+			}
+		}
+	})
+}
+
 // Invariant 7 (steady-state shape): context VV never has more entries than
 // actors that ever wrote, and the cloud is empty once all deltas from all
 // actors are delivered contiguously.

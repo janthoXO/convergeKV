@@ -40,6 +40,12 @@ type Config struct {
 	// AntiEntropyInterval is the base interval between Merkle exchange
 	// rounds per partition (jittered).
 	AntiEntropyInterval time.Duration `env:"ANTI_ENTROPY_INTERVAL"`
+	// ReplicationMaxAge is how long a delta may sit in a peer's fan-out
+	// retry queue before being dropped to the anti-entropy backstop. It
+	// must be shorter than the shortest possible gap between two AE rounds
+	// (AntiEntropyInterval/2, the jitter low bound): GC certifies on two
+	// adjacent clean rounds, and no stale delta may outlive that.
+	ReplicationMaxAge time.Duration `env:"REPLICATION_MAX_AGE"`
 
 	LogLevel string `env:"LOG_LEVEL"`
 
@@ -58,6 +64,7 @@ func Default() Config {
 		Partitions:          256,
 		CrashGracePeriod:    10 * time.Minute,
 		AntiEntropyInterval: 45 * time.Second,
+		ReplicationMaxAge:   20 * time.Second,
 		LogLevel:            "info",
 	}
 }
@@ -86,6 +93,12 @@ func (c *Config) validate() error {
 		// Per-partition status flags must fit memberlist's 512-byte
 		// metadata cap (see internal/cluster.NodeMeta).
 		return fmt.Errorf("partitions must be <= 1024, got %d", c.Partitions)
+	}
+	if c.AntiEntropyInterval/2 <= c.ReplicationMaxAge {
+		// GC certification needs every stale delta gone before two adjacent
+		// AE rounds can both come up clean (jitter low bound = interval/2).
+		return fmt.Errorf("anti-entropy interval/2 (%v) must exceed replication max age (%v)",
+			c.AntiEntropyInterval/2, c.ReplicationMaxAge)
 	}
 	return nil
 }

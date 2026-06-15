@@ -91,6 +91,41 @@ func TestGivesUpAfterMaxAttempts(t *testing.T) {
 	}
 }
 
+func TestRetainEvictsDepartedPeers(t *testing.T) {
+	var delivered atomic.Int64
+	f := NewFanout(Config{}, func(ctx context.Context, addr string, d Delta) error {
+		delivered.Add(1)
+		return nil
+	})
+	defer f.Close()
+
+	f.Enqueue("kept", Delta{})
+	f.Enqueue("departed", Delta{})
+	deadline := time.Now().Add(2 * time.Second)
+	for delivered.Load() != 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	f.Retain(map[string]struct{}{"kept": {}})
+	depths := f.QueueDepths()
+	if _, ok := depths["departed"]; ok {
+		t.Fatal("departed peer's queue survived Retain")
+	}
+	if _, ok := depths["kept"]; !ok {
+		t.Fatal("kept peer's queue was evicted")
+	}
+
+	// A returning peer gets a fresh queue lazily and deliveries resume.
+	f.Enqueue("departed", Delta{})
+	deadline = time.Now().Add(2 * time.Second)
+	for delivered.Load() != 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if delivered.Load() != 3 {
+		t.Fatal("re-created queue never delivered")
+	}
+}
+
 func TestPerPeerIsolation(t *testing.T) {
 	var mu sync.Mutex
 	got := map[string]int{}

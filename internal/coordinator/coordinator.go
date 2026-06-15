@@ -46,7 +46,6 @@ type Coordinator struct {
 	p      uint16
 	store  *storage.Store
 	clock  *hlc.Clock
-	dots   *DotSource
 	view   func() *placement.View
 	peers  Forwarder
 	fanout *replication.Fanout
@@ -55,7 +54,7 @@ type Coordinator struct {
 }
 
 func New(self [16]byte, p uint16, store *storage.Store, clock *hlc.Clock,
-	dots *DotSource, view func() *placement.View, peers Forwarder,
+	view func() *placement.View, peers Forwarder,
 	fanout *replication.Fanout, log *slog.Logger) *Coordinator {
 	if log == nil {
 		log = slog.Default()
@@ -65,7 +64,6 @@ func New(self [16]byte, p uint16, store *storage.Store, clock *hlc.Clock,
 		p:      p,
 		store:  store,
 		clock:  clock,
-		dots:   dots,
 		view:   view,
 		peers:  peers,
 		fanout: fanout,
@@ -88,6 +86,12 @@ type GetResult struct {
 func (c *Coordinator) Put(ctx context.Context, key string, jsonDoc []byte) error {
 	fields, err := codec.SplitFields(jsonDoc)
 	if err != nil {
+		return ErrInvalidDocument
+	}
+	if len(fields) == 0 {
+		// An empty object would persist an empty document with an empty
+		// context that peers' MergeDelta absorbing rule drops — a permanent
+		// divergence AE would churn on. Reject before minting anything.
 		return ErrInvalidDocument
 	}
 	pid := placement.Partition([]byte(key), c.p)
@@ -176,13 +180,10 @@ func (c *Coordinator) CheckReadEligible(pid uint16) error {
 	return c.CheckWriteEligible(pid) // read set == active owners
 }
 
-// ApplyPut is the applier path: mint one dot per field, apply and persist
-// under the partition lock, then fan out the delta.
+// ApplyPut is the applier path: mint one dot per field from the document's
+// own context, apply and persist under the partition lock, then fan out the
+// delta.
 func (c *Coordinator) ApplyPut(pid uint16, key string, fields map[string][]byte) error {
-	mint, err := c.dots.Mint(len(fields))
-	if err != nil {
-		return fmt.Errorf("coordinator: reserve dots: %w", err)
-	}
 	c.locks[pid].Lock()
 	defer c.locks[pid].Unlock()
 
@@ -194,7 +195,7 @@ func (c *Coordinator) ApplyPut(pid uint16, key string, fields map[string][]byte)
 	if doc == nil {
 		doc = crdt.NewDocument()
 	}
-	delta := doc.PutMulti(fields, mint, c.clock.Now())
+	delta := doc.PutMulti(fields, c.minter(doc), c.clock.Now())
 	if err := c.persist(pid, key, oldHash, doc); err != nil {
 		return err
 	}
@@ -204,10 +205,6 @@ func (c *Coordinator) ApplyPut(pid uint16, key string, fields map[string][]byte)
 
 // ApplyDelete is the applier path for document deletion.
 func (c *Coordinator) ApplyDelete(pid uint16, key string) error {
-	mint, err := c.dots.Mint(1)
-	if err != nil {
-		return fmt.Errorf("coordinator: reserve dots: %w", err)
-	}
 	c.locks[pid].Lock()
 	defer c.locks[pid].Unlock()
 
@@ -219,7 +216,7 @@ func (c *Coordinator) ApplyDelete(pid uint16, key string) error {
 	if doc == nil {
 		doc = crdt.NewDocument()
 	}
-	delta := doc.Delete(mint())
+	delta := doc.Delete(c.minter(doc)())
 	if err := c.persist(pid, key, oldHash, doc); err != nil {
 		return err
 	}
@@ -305,10 +302,8 @@ func (c *Coordinator) RecomputeMerkleLeaf(pid uint16, bucket uint16) error {
 	c.locks[pid].Lock()
 	defer c.locks[pid].Unlock()
 	var leaf merkle.Hash
-	err := c.store.ScanPartition(pid, func(key []byte, doc *crdt.Document) error {
-		if merkle.Bucket(key) == bucket {
-			merkle.XOR(&leaf, merkle.DocHash(key, doc.Canonical()))
-		}
+	err := c.store.ScanBucket(pid, bucket, func(key []byte, doc *crdt.Document) error {
+		merkle.XOR(&leaf, merkle.DocHash(key, doc.Canonical()))
 		return nil
 	})
 	if err != nil {
@@ -384,6 +379,19 @@ func (c *Coordinator) RetireActors(pid uint16, key []byte, retired func(crdt.Act
 }
 
 // --- internals -----------------------------------------------------------------
+
+// minter hands out this node's next dots for one document, sequential from
+// the document's own context (per-document minting: uniqueness only has to
+// hold within one document's context, and the VV persisted with the op is the
+// crash-safe checkpoint). Callers hold the partition lock.
+func (c *Coordinator) minter(doc *crdt.Document) func() crdt.Dot {
+	actor := crdt.ActorID(c.self)
+	seq := doc.Context.Next(actor) - 1
+	return func() crdt.Dot {
+		seq++
+		return crdt.Dot{Actor: actor, Seq: seq}
+	}
+}
 
 // persist writes the document and its incremental merkle-leaf update in one
 // synced atomic batch. Callers hold the partition lock.

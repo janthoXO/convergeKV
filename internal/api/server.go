@@ -62,8 +62,8 @@ func (s *NodeServer) Forward(ctx context.Context, req *pb.ForwardRequest) (*pb.F
 			return nil, toStatus(err)
 		}
 		fields, err := codec.SplitFields(op.Put.GetDocument())
-		if err != nil {
-			return nil, status.Error(codes.InvalidArgument, "document must be a JSON object")
+		if err != nil || len(fields) == 0 {
+			return nil, status.Error(codes.InvalidArgument, "document must be a non-empty JSON object")
 		}
 		if err := s.Coord.ApplyPut(pid, req.GetKey(), fields); err != nil {
 			return nil, toStatus(err)
@@ -132,10 +132,7 @@ func (s *NodeServer) Snapshot(req *pb.SnapshotRequest, stream pb.Node_SnapshotSe
 
 func (s *NodeServer) SyncBucket(req *pb.SyncBucketRequest, stream pb.Node_SyncBucketServer) error {
 	pid, bucket := uint16(req.GetPartition()), uint16(req.GetBucket())
-	return s.Store.ScanPartition(pid, func(key []byte, doc *crdt.Document) error {
-		if merkle.Bucket(key) != bucket {
-			return nil
-		}
+	return s.Store.ScanBucket(pid, bucket, func(key []byte, doc *crdt.Document) error {
 		return stream.Send(&pb.SyncDoc{Key: key, Document: doc.Canonical()})
 	})
 }

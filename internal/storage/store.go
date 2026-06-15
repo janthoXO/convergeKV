@@ -1,13 +1,15 @@
-// Package storage wraps Pebble with the key layout of spec section 3.4:
+// Package storage wraps Pebble with the key layout of spec section 3.4
+// (amended: the merkle bucket sits inside the document key, so bucket scans
+// are bounded range scans instead of partition scans with a filter):
 //
-//	'd' ‖ partitionID(uint16 BE) ‖ userKey  -> canonical Document encoding
-//	'm' ‖ partitionID ‖ treePath            -> merkle node hash
-//	'g' ‖ partitionID ‖ userKey             -> GC clean-round counter
-//	'x' ‖ name                              -> node meta
+//	'd' ‖ partitionID(uint16 BE) ‖ bucket(uint16 BE) ‖ userKey -> canonical Document
+//	'm' ‖ partitionID ‖ treePath                               -> merkle node hash
+//	'g' ‖ partitionID ‖ bucket ‖ userKey                       -> GC clean-round counter
+//	'x' ‖ name                                                 -> node meta
 //
-// All related writes (document + merkle leaf + dot-seq checkpoint) go through
-// one synced atomic batch: a crash never tears a document apart from its
-// merkle leaf and never lets a dot sequence number be reused.
+// All related writes (document + merkle leaf) go through one synced atomic
+// batch: a crash never tears a document apart from its merkle leaf, and the
+// document's own persisted causal context is the dot-minting checkpoint.
 package storage
 
 import (
@@ -34,7 +36,6 @@ const (
 const (
 	metaNodeID     = "node_id"
 	metaPartitions = "partitions"
-	metaDotSeq     = "dot_seq"
 	metaHLC        = "hlc"
 	metaOwned      = "owned"
 	metaLastAlive  = "last_alive"
@@ -79,6 +80,21 @@ func partitionKey(prefix byte, pid uint16, rest []byte) []byte {
 	return append(k, rest...)
 }
 
+// bucketKey builds keys for the prefixes that embed the merkle bucket
+// ('d' and 'g'): prefix ‖ pid ‖ bucket ‖ userKey. Putting the bucket in the
+// key makes one bucket a contiguous range, so anti-entropy bucket scans are
+// O(bucket), not O(partition).
+func bucketKey(prefix byte, pid uint16, key []byte) []byte {
+	k := make([]byte, 0, 5+len(key))
+	k = append(k, prefix)
+	k = binary.BigEndian.AppendUint16(k, pid)
+	k = binary.BigEndian.AppendUint16(k, merkle.Bucket(key))
+	return append(k, key...)
+}
+
+// userKeyOffset is where the user key starts in a bucketKey.
+const userKeyOffset = 5
+
 func metaKey(name string) []byte {
 	return append([]byte{prefixMeta}, name...)
 }
@@ -87,7 +103,7 @@ func metaKey(name string) []byte {
 
 // GetDocument returns the stored document for (pid, key), or nil if absent.
 func (s *Store) GetDocument(pid uint16, key []byte) (*crdt.Document, error) {
-	v, closer, err := s.db.Get(partitionKey(prefixDoc, pid, key))
+	v, closer, err := s.db.Get(bucketKey(prefixDoc, pid, key))
 	if errors.Is(err, pebble.ErrNotFound) {
 		return nil, nil
 	}
@@ -102,8 +118,8 @@ func (s *Store) GetDocument(pid uint16, key []byte) (*crdt.Document, error) {
 	return doc, nil
 }
 
-// ScanPartition calls fn for every document of a partition, in key order,
-// over a consistent snapshot.
+// ScanPartition calls fn for every document of a partition, in (bucket,
+// key) order, over a consistent snapshot.
 func (s *Store) ScanPartition(pid uint16, fn func(key []byte, doc *crdt.Document) error) error {
 	snap := s.db.NewSnapshot()
 	defer func() { _ = snap.Close() }()
@@ -116,19 +132,56 @@ func (s *Store) ScanPartition(pid uint16, fn func(key []byte, doc *crdt.Document
 		return err
 	}
 	defer func() { _ = iter.Close() }()
+	return scanDocs(iter, pid, fn)
+}
 
+// ScanBucket calls fn for every document of one merkle bucket, in key order,
+// over a consistent snapshot — a bounded range scan thanks to the bucket
+// being part of the document key.
+func (s *Store) ScanBucket(pid, bucket uint16, fn func(key []byte, doc *crdt.Document) error) error {
+	snap := s.db.NewSnapshot()
+	defer func() { _ = snap.Close() }()
+
+	iter, err := snap.NewIter(&pebble.IterOptions{
+		LowerBound: bucketLowerBound(prefixDoc, pid, bucket),
+		UpperBound: bucketUpperBound(prefixDoc, pid, bucket),
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = iter.Close() }()
+	return scanDocs(iter, pid, fn)
+}
+
+func scanDocs(iter *pebble.Iterator, pid uint16, fn func(key []byte, doc *crdt.Document) error) error {
 	for iter.First(); iter.Valid(); iter.Next() {
 		doc, err := crdt.DecodeDocument(iter.Value())
 		if err != nil {
-			return fmt.Errorf("storage: corrupt document %q in partition %d: %w", iter.Key()[3:], pid, err)
+			return fmt.Errorf("storage: corrupt document %q in partition %d: %w",
+				iter.Key()[userKeyOffset:], pid, err)
 		}
-		userKey := make([]byte, len(iter.Key())-3)
-		copy(userKey, iter.Key()[3:])
+		userKey := make([]byte, len(iter.Key())-userKeyOffset)
+		copy(userKey, iter.Key()[userKeyOffset:])
 		if err := fn(userKey, doc); err != nil {
 			return err
 		}
 	}
 	return iter.Error()
+}
+
+// bucketLowerBound is the inclusive lower bound of one bucket's keyspace.
+func bucketLowerBound(prefix byte, pid, bucket uint16) []byte {
+	k := []byte{prefix}
+	k = binary.BigEndian.AppendUint16(k, pid)
+	return binary.BigEndian.AppendUint16(k, bucket)
+}
+
+// bucketUpperBound is the exclusive upper bound of one bucket's keyspace.
+func bucketUpperBound(prefix byte, pid, bucket uint16) []byte {
+	if bucket == 0xFFFF {
+		return partitionUpperBound(prefix, pid)
+	}
+	return bucketLowerBound(prefix, pid, bucket+1)
 }
 
 // partitionUpperBound is the exclusive upper bound of one partition's keyspace.
@@ -141,7 +194,7 @@ func partitionUpperBound(prefix byte, pid uint16) []byte {
 
 // GCCounter returns the clean-round counter for one key (0 if absent).
 func (s *Store) GCCounter(pid uint16, key []byte) (uint32, error) {
-	v, closer, err := s.db.Get(partitionKey(prefixGC, pid, key))
+	v, closer, err := s.db.Get(bucketKey(prefixGC, pid, key))
 	if errors.Is(err, pebble.ErrNotFound) {
 		return 0, nil
 	}
@@ -174,8 +227,10 @@ func (s *Store) LastAlive() (time.Time, error) {
 }
 
 // WipeData deletes all documents, merkle leaves, GC counters, and the
-// ownership bitmap — node identity, partition count, dot-seq, and HLC
-// checkpoints survive (dots must never be reused, even across a wipe).
+// ownership bitmap — node identity, partition count, and the HLC checkpoint
+// survive. Dots are minted per document from its persisted context, so a
+// wipe MUST be paired with identity rotation: the wiped contexts were the
+// only record of what this actor had minted.
 func (s *Store) WipeData() error {
 	b := s.db.NewBatch()
 	for _, prefix := range []byte{prefixDoc, prefixMerkle, prefixGC} {
@@ -187,6 +242,27 @@ func (s *Store) WipeData() error {
 	if err := b.Delete(metaKey(metaOwned), nil); err != nil {
 		_ = b.Close()
 		return err
+	}
+	return b.Commit(pebble.Sync)
+}
+
+// ClearGCCounters deletes every GC clean-round counter of one partition
+// (certification progress is voided by a dirty anti-entropy round).
+func (s *Store) ClearGCCounters(pid uint16) error {
+	return s.db.DeleteRange(partitionKey(prefixGC, pid, nil), partitionUpperBound(prefixGC, pid), pebble.Sync)
+}
+
+// DropPartition deletes one partition's documents, merkle nodes, and GC
+// counters in a single synced batch. Used when ownership is lost: the data
+// lives on the new owners, and a stale copy kept here could resurrect
+// documents they have since deleted and garbage-collected.
+func (s *Store) DropPartition(pid uint16) error {
+	b := s.db.NewBatch()
+	for _, prefix := range []byte{prefixDoc, prefixMerkle, prefixGC} {
+		if err := b.DeleteRange(partitionKey(prefix, pid, nil), partitionUpperBound(prefix, pid), nil); err != nil {
+			_ = b.Close()
+			return err
+		}
 	}
 	return b.Commit(pebble.Sync)
 }
@@ -262,14 +338,14 @@ func (b *Batch) set(key, val []byte) {
 }
 
 func (b *Batch) SetDocument(pid uint16, key []byte, doc *crdt.Document) {
-	b.set(partitionKey(prefixDoc, pid, key), doc.Canonical())
+	b.set(bucketKey(prefixDoc, pid, key), doc.Canonical())
 }
 
 // DeleteDocument removes a document outright (GC of residual contexts only —
 // normal deletes write a residual document instead).
 func (b *Batch) DeleteDocument(pid uint16, key []byte) {
 	if b.err == nil {
-		b.err = b.b.Delete(partitionKey(prefixDoc, pid, key), nil)
+		b.err = b.b.Delete(bucketKey(prefixDoc, pid, key), nil)
 	}
 }
 
@@ -278,24 +354,13 @@ func (b *Batch) SetMerkleNode(pid uint16, path, hash []byte) {
 }
 
 func (b *Batch) SetGCCounter(pid uint16, key []byte, rounds uint32) {
-	b.set(partitionKey(prefixGC, pid, key), binary.BigEndian.AppendUint32(nil, rounds))
+	b.set(bucketKey(prefixGC, pid, key), binary.BigEndian.AppendUint32(nil, rounds))
 }
 
 func (b *Batch) DeleteGCCounter(pid uint16, key []byte) {
 	if b.err == nil {
-		b.err = b.b.Delete(partitionKey(prefixGC, pid, key), nil)
+		b.err = b.b.Delete(bucketKey(prefixGC, pid, key), nil)
 	}
-}
-
-// SetDotSeq checkpoints the actor's last minted dot sequence number. It MUST
-// be part of the same batch as every applied local op.
-func (b *Batch) SetDotSeq(seq uint64) {
-	b.set(metaKey(metaDotSeq), binary.BigEndian.AppendUint64(nil, seq))
-}
-
-// SetHLC checkpoints the hybrid logical clock.
-func (b *Batch) SetHLC(ts uint64) {
-	b.set(metaKey(metaHLC), binary.BigEndian.AppendUint64(nil, ts))
 }
 
 // Commit applies the batch atomically and synced to disk.
@@ -308,14 +373,6 @@ func (s *Store) Commit(b *Batch) error {
 }
 
 // --- meta -----------------------------------------------------------------------
-
-// DotSeq returns the persisted dot sequence checkpoint (0 if never written).
-func (s *Store) DotSeq() (uint64, error) { return s.metaUint64(metaDotSeq) }
-
-// PersistDotSeq durably checkpoints the dot sequence reservation.
-func (s *Store) PersistDotSeq(seq uint64) error {
-	return s.db.Set(metaKey(metaDotSeq), binary.BigEndian.AppendUint64(nil, seq), pebble.Sync)
-}
 
 // PersistHLC durably checkpoints the hybrid logical clock.
 func (s *Store) PersistHLC(ts uint64) error {
@@ -369,20 +426,10 @@ func (s *Store) BindNodeID(id [16]byte) error {
 	return s.bindMeta(metaNodeID, id[:], "node id")
 }
 
-// RebindNodeID overwrites the pinned identity and resets the dot sequence —
-// only valid together with a data wipe and identity rotation (the fresh
-// actor has minted nothing).
+// RebindNodeID overwrites the pinned identity — only valid together with a
+// data wipe and identity rotation (the fresh actor has minted nothing).
 func (s *Store) RebindNodeID(id [16]byte) error {
-	b := s.db.NewBatch()
-	if err := b.Set(metaKey(metaNodeID), id[:], nil); err != nil {
-		_ = b.Close()
-		return err
-	}
-	if err := b.Set(metaKey(metaDotSeq), binary.BigEndian.AppendUint64(nil, 0), nil); err != nil {
-		_ = b.Close()
-		return err
-	}
-	return b.Commit(pebble.Sync)
+	return s.db.Set(metaKey(metaNodeID), id[:], pebble.Sync)
 }
 
 // BindPartitionCount pins the cluster partition count P at bootstrap.

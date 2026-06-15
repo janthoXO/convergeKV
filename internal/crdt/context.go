@@ -39,6 +39,22 @@ func (c *CausalContext) Add(d Dot) {
 	c.Cloud[d] = struct{}{}
 }
 
+// Next returns the next unused sequence number for an actor in this
+// document's context (the dot-store "next dot"). The applier mints with it
+// under the partition lock; the document's persisted VV is the crash-safe
+// checkpoint because it commits in the same batch as the op. The cloud scan
+// is defensive: locally minted dots are always contiguous, so it is empty in
+// practice.
+func (c *CausalContext) Next(a ActorID) uint64 {
+	next := c.VV[a] + 1
+	for d := range c.Cloud {
+		if d.Actor == a && d.Seq >= next {
+			next = d.Seq + 1
+		}
+	}
+	return next
+}
+
 // UnionWith merges another context into this one: pointwise VV max, cloud
 // union, then compaction.
 func (c *CausalContext) UnionWith(o CausalContext) {

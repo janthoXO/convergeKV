@@ -84,10 +84,12 @@ func NewFanout(cfg Config, send SendFunc) *Fanout {
 
 // Enqueue queues a delta for one peer. It never blocks: when the peer's
 // queue is full the delta is dropped and counted — the Merkle backstop will
-// repair it.
+// repair it. The send happens under the mutex so Retain can never close a
+// channel with a send in flight.
 func (f *Fanout) Enqueue(addr string, d Delta) {
 	d.enqueued = time.Now()
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	q, ok := f.queues[addr]
 	if !ok {
 		q = make(chan Delta, f.cfg.QueueSize)
@@ -96,7 +98,6 @@ func (f *Fanout) Enqueue(addr string, d Delta) {
 		f.wg.Add(1)
 		go f.worker(addr, q, f.inFlight[addr])
 	}
-	f.mu.Unlock()
 
 	select {
 	case q <- d:
@@ -104,6 +105,22 @@ func (f *Fanout) Enqueue(addr string, d Delta) {
 		f.dropped.Add(1)
 		f.cfg.Logger.Warn("replication queue overflow, delta dropped",
 			"peer", addr, "partition", d.Partition)
+	}
+}
+
+// Retain drops the queue and worker of every peer not in keep (membership
+// change): the channel close lets the worker drain what is queued and exit.
+// A peer that returns gets a fresh queue lazily on the next Enqueue.
+func (f *Fanout) Retain(keep map[string]struct{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for addr, q := range f.queues {
+		if _, ok := keep[addr]; ok {
+			continue
+		}
+		close(q)
+		delete(f.queues, addr)
+		delete(f.inFlight, addr)
 	}
 }
 
@@ -154,7 +171,10 @@ func (f *Fanout) worker(addr string, q chan Delta, inFlight *atomic.Pointer[time
 		select {
 		case <-f.ctx.Done():
 			return
-		case d := <-q:
+		case d, ok := <-q:
+			if !ok {
+				return // evicted by Retain
+			}
 			inFlight.Store(&d.enqueued)
 			f.deliver(addr, d)
 			inFlight.Store(&time.Time{})

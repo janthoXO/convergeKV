@@ -41,6 +41,9 @@ type Peer interface {
 // internal/gc; optional).
 type GC interface {
 	OnCleanRound(pid uint16)
+	// OnDirtyRound voids per-key certification progress: "2 clean rounds"
+	// must mean consecutive ones.
+	OnDirtyRound(pid uint16)
 	OnPeerBucket(pid, bucket uint16, peerKeys map[string]struct{})
 	OnPeerDoc(pid uint16, key, peerDoc []byte)
 }
@@ -161,8 +164,12 @@ func (e *Engine) RunRound(ctx context.Context, pid uint16) error {
 	}
 	e.mu.Unlock()
 
-	if clean && e.gc != nil {
-		e.gc.OnCleanRound(pid)
+	if e.gc != nil {
+		if clean {
+			e.gc.OnCleanRound(pid)
+		} else {
+			e.gc.OnDirtyRound(pid)
+		}
 	}
 	return firstErr
 }
@@ -239,10 +246,7 @@ func (e *Engine) repairBucket(ctx context.Context, pid, bucket uint16, o placeme
 
 	// Push our merged view of the bucket back; the peer's MergeDelta keeps
 	// its own leaf consistent.
-	err = e.store.ScanPartition(pid, func(key []byte, doc *crdt.Document) error {
-		if merkle.Bucket(key) != bucket {
-			return nil
-		}
+	err = e.store.ScanBucket(pid, bucket, func(key []byte, doc *crdt.Document) error {
 		return e.peer.ApplyDelta(ctx, o.Addr, pid, key, doc.Canonical())
 	})
 	if err != nil {
