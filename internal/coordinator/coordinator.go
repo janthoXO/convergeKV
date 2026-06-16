@@ -19,6 +19,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/merkle"
+	"github.com/janthoXO/convergeKV/internal/nodeid"
 	"github.com/janthoXO/convergeKV/internal/placement"
 	"github.com/janthoXO/convergeKV/internal/replication"
 	"github.com/janthoXO/convergeKV/internal/storage"
@@ -41,7 +42,7 @@ type Forwarder interface {
 }
 
 type Coordinator struct {
-	self   [16]byte
+	self   nodeid.ID
 	p      uint16
 	store  *storage.Store
 	clock  *hlc.Clock
@@ -52,7 +53,7 @@ type Coordinator struct {
 	log    *slog.Logger
 }
 
-func New(self [16]byte, p uint16, store *storage.Store, clock *hlc.Clock,
+func New(self nodeid.ID, p uint16, store *storage.Store, clock *hlc.Clock,
 	view func() *placement.View, peers Forwarder,
 	fanout *replication.Fanout, log *slog.Logger) *Coordinator {
 	if log == nil {

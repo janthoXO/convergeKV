@@ -24,6 +24,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/coordinator"
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/merkle"
+	"github.com/janthoXO/convergeKV/internal/nodeid"
 	"github.com/janthoXO/convergeKV/internal/placement"
 	"github.com/janthoXO/convergeKV/internal/storage"
 )
@@ -49,7 +50,7 @@ type GC interface {
 }
 
 type Engine struct {
-	self  [16]byte
+	self  nodeid.ID
 	p     uint16
 	store *storage.Store
 	coord *coordinator.Coordinator
@@ -69,7 +70,7 @@ type Engine struct {
 	rootChecks   atomic.Uint64
 }
 
-func New(self [16]byte, p uint16, store *storage.Store, coord *coordinator.Coordinator,
+func New(self nodeid.ID, p uint16, store *storage.Store, coord *coordinator.Coordinator,
 	view func() *placement.View, peer Peer, interval time.Duration, log *slog.Logger) *Engine {
 	if log == nil {
 		log = slog.Default()

@@ -3,6 +3,8 @@ package cluster
 import (
 	"encoding/binary"
 	"fmt"
+
+	"github.com/janthoXO/convergeKV/internal/nodeid"
 )
 
 // Status is a node's per-partition replication status, gossiped to the
@@ -69,7 +71,7 @@ func (f PartitionFlags) Clone() PartitionFlags {
 // Wire size: 28 + len(RPCAddr) + P/4 bytes. memberlist caps metadata at 512
 // bytes, so P is limited to 1024 with this encoding (config enforces it).
 type NodeMeta struct {
-	ID         [16]byte
+	ID         nodeid.ID
 	Partitions uint16 // cluster-wide P this node was bootstrapped with
 	Generation uint64 // node start time (ms); orders restarts of one node
 	RPCAddr    string // node-service gRPC address peers must dial

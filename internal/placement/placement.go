@@ -11,6 +11,7 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/janthoXO/convergeKV/internal/cluster"
+	"github.com/janthoXO/convergeKV/internal/nodeid"
 )
 
 // RF is the replication factor: owners per partition.
@@ -23,7 +24,7 @@ func Partition(key []byte, p uint16) uint16 {
 
 // Owner is one ranked owner of a partition.
 type Owner struct {
-	ID     [16]byte
+	ID     nodeid.ID
 	Addr   string
 	Status cluster.Status
 	// Dead marks a node within its post-crash grace period: it holds its
@@ -133,7 +134,7 @@ func (v *View) Applier(pid uint16) (Owner, bool) {
 }
 
 // IsOwner reports whether the node owns the partition in this view.
-func (v *View) IsOwner(pid uint16, id [16]byte) bool {
+func (v *View) IsOwner(pid uint16, id nodeid.ID) bool {
 	for _, o := range v.owners[pid] {
 		if o.ID == id {
 			return true
@@ -143,7 +144,7 @@ func (v *View) IsOwner(pid uint16, id [16]byte) bool {
 }
 
 // OwnedPartitions returns all partitions a node owns in this view.
-func (v *View) OwnedPartitions(id [16]byte) []uint16 {
+func (v *View) OwnedPartitions(id nodeid.ID) []uint16 {
 	var out []uint16
 	for pid := range v.owners {
 		if v.IsOwner(uint16(pid), id) {

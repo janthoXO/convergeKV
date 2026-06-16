@@ -14,10 +14,12 @@ import (
 	"time"
 
 	"github.com/hashicorp/memberlist"
+
+	"github.com/janthoXO/convergeKV/internal/nodeid"
 )
 
 type Config struct {
-	NodeID     [16]byte
+	NodeID     nodeid.ID
 	Partitions uint16
 	RPCAddr    string // node-service gRPC address gossiped to peers
 	BindAddr   string // host:port for gossip; port 0 picks a free port
@@ -52,8 +54,8 @@ type Cluster struct {
 
 	mu     sync.RWMutex
 	meta   NodeMeta // our gossiped metadata
-	alive  map[[16]byte]Member
-	dead   map[[16]byte]deadEntry
+	alive  map[nodeid.ID]Member
+	dead   map[nodeid.ID]deadEntry
 	change chan struct{}
 	done   chan struct{}
 }
@@ -79,8 +81,8 @@ func Join(cfg Config) (*Cluster, error) {
 		log:    log,
 		nodeP:  cfg.Partitions,
 		grace:  grace,
-		alive:  make(map[[16]byte]Member),
-		dead:   make(map[[16]byte]deadEntry),
+		alive:  make(map[nodeid.ID]Member),
+		dead:   make(map[nodeid.ID]deadEntry),
 		change: make(chan struct{}, 1),
 		done:   make(chan struct{}),
 		meta: NodeMeta{
@@ -190,7 +192,7 @@ func (c *Cluster) Members() []Member {
 
 // DeadSince returns when a currently-dead node was declared dead, if it is
 // still within its grace period.
-func (c *Cluster) DeadSince(id [16]byte) (time.Time, bool) {
+func (c *Cluster) DeadSince(id nodeid.ID) (time.Time, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	e, ok := c.dead[id]

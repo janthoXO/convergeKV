@@ -24,6 +24,7 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/merkle"
+	"github.com/janthoXO/convergeKV/internal/nodeid"
 )
 
 const (
@@ -429,13 +430,13 @@ func (s *Store) metaUint64(name string) (uint64, error) {
 // BindNodeID pins the owning node's identity to this data directory on first
 // use and rejects any other identity afterwards (protects against pointing a
 // node at a foreign data dir, which would forge that actor's dots).
-func (s *Store) BindNodeID(id [16]byte) error {
+func (s *Store) BindNodeID(id nodeid.ID) error {
 	return s.bindMeta(metaNodeID, id[:], "node id")
 }
 
 // RebindNodeID overwrites the pinned identity — only valid together with a
 // data wipe and identity rotation (the fresh actor has minted nothing).
-func (s *Store) RebindNodeID(id [16]byte) error {
+func (s *Store) RebindNodeID(id nodeid.ID) error {
 	return s.db.Set(metaKey(metaNodeID), id[:], pebble.Sync)
 }
 

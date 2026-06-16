@@ -24,6 +24,7 @@ import (
 	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/identity"
 	"github.com/janthoXO/convergeKV/internal/metrics"
+	"github.com/janthoXO/convergeKV/internal/nodeid"
 	"github.com/janthoXO/convergeKV/internal/placement"
 	"github.com/janthoXO/convergeKV/internal/replication"
 	"github.com/janthoXO/convergeKV/internal/storage"
@@ -466,7 +467,7 @@ func (n *Node) persistOwnership() {
 }
 
 // bootstrapSource reports whether some other owner could serve a snapshot.
-func bootstrapSource(v *placement.View, pid uint16, self [16]byte) (placement.Owner, bool) {
+func bootstrapSource(v *placement.View, pid uint16, self nodeid.ID) (placement.Owner, bool) {
 	for _, o := range v.Owners(pid) {
 		if o.ID == self || o.Dead {
 			continue

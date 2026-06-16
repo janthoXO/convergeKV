@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/memberlist"
+
+	"github.com/janthoXO/convergeKV/internal/nodeid"
 )
 
 // delegate serves our metadata to gossip.
@@ -53,7 +55,7 @@ func (e *eventDelegate) NotifyJoin(n *memberlist.Node) {
 
 func (e *eventDelegate) NotifyLeave(n *memberlist.Node) {
 	c := (*Cluster)(e)
-	var id [16]byte
+	var id nodeid.ID
 	if meta, err := DecodeMeta(n.Meta); err == nil {
 		id = meta.ID
 		c.mu.Lock()
