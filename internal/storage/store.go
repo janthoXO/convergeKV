@@ -341,6 +341,13 @@ func (b *Batch) SetDocument(pid uint16, key []byte, doc *crdt.Document) {
 	b.set(bucketKey(prefixDoc, pid, key), doc.Canonical())
 }
 
+// SetDocumentRaw writes a document already serialized to its canonical bytes.
+// Callers that have just computed Canonical() (e.g. for the merkle leaf hash)
+// use this to avoid serializing the same document a second time.
+func (b *Batch) SetDocumentRaw(pid uint16, key, canonical []byte) {
+	b.set(bucketKey(prefixDoc, pid, key), canonical)
+}
+
 // DeleteDocument removes a document outright (GC of residual contexts only —
 // normal deletes write a residual document instead).
 func (b *Batch) DeleteDocument(pid uint16, key []byte) {

@@ -15,7 +15,6 @@ import (
 	"sync"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/janthoXO/convergeKV/internal/cluster"
 	"github.com/janthoXO/convergeKV/internal/codec"
 	"github.com/janthoXO/convergeKV/internal/crdt"
 	"github.com/janthoXO/convergeKV/internal/hlc"
@@ -147,7 +146,7 @@ func (c *Coordinator) Get(ctx context.Context, key string) (GetResult, error) {
 func (c *Coordinator) routeWrite(ctx context.Context, pid uint16, req *pb.ForwardRequest, local func() error) error {
 	v := c.view()
 	for _, o := range v.Owners(pid) {
-		if o.Dead || (o.Status != cluster.StatusActive && o.Status != cluster.StatusDraining) {
+		if o.Dead || !o.Status.Serving() {
 			continue
 		}
 		if o.ID == c.self {
@@ -168,7 +167,7 @@ func (c *Coordinator) routeWrite(ctx context.Context, pid uint16, req *pb.Forwar
 func (c *Coordinator) CheckWriteEligible(pid uint16) error {
 	v := c.view()
 	for _, o := range v.Owners(pid) {
-		if o.ID == c.self && (o.Status == cluster.StatusActive || o.Status == cluster.StatusDraining) {
+		if o.ID == c.self && o.Status.Serving() {
 			return nil
 		}
 	}
@@ -278,18 +277,23 @@ func (c *Coordinator) MergeDelta(pid uint16, key, deltaBytes []byte) (bool, erro
 		// queue's max age) — anti-entropy repairs that transient.
 		return false, nil
 	}
-	oldHash := docHashOf(string(key), doc)
+	// Serialize the pre-merge document once: reuse the bytes for both the old
+	// leaf hash and the idempotent-redelivery equality check below.
+	var oldHash *merkle.Hash
 	var before []byte
 	if doc == nil {
 		doc = crdt.NewDocument()
 	} else {
 		before = doc.Canonical()
+		h := merkle.DocHash(key, before)
+		oldHash = &h
 	}
 	doc.Merge(delta)
-	if before != nil && bytes.Equal(before, doc.Canonical()) {
+	after := doc.Canonical()
+	if before != nil && bytes.Equal(before, after) {
 		return false, nil // idempotent redelivery: nothing to persist
 	}
-	if err := c.persist(pid, string(key), oldHash, doc); err != nil {
+	if err := c.persistCanonical(pid, string(key), oldHash, after); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -396,6 +400,13 @@ func (c *Coordinator) minter(doc *crdt.Document) func() crdt.Dot {
 // persist writes the document and its incremental merkle-leaf update in one
 // synced atomic batch. Callers hold the partition lock.
 func (c *Coordinator) persist(pid uint16, key string, oldHash *merkle.Hash, doc *crdt.Document) error {
+	return c.persistCanonical(pid, key, oldHash, doc.Canonical())
+}
+
+// persistCanonical is persist for callers that already hold the document's
+// canonical bytes, so the document is serialized once (not once for the leaf
+// hash and again inside SetDocument). Callers hold the partition lock.
+func (c *Coordinator) persistCanonical(pid uint16, key string, oldHash *merkle.Hash, canonical []byte) error {
 	keyB := []byte(key)
 	bucket := merkle.Bucket(keyB)
 	leaf, err := c.store.MerkleLeaf(pid, bucket)
@@ -405,10 +416,10 @@ func (c *Coordinator) persist(pid uint16, key string, oldHash *merkle.Hash, doc 
 	if oldHash != nil {
 		merkle.XOR(&leaf, *oldHash)
 	}
-	merkle.XOR(&leaf, merkle.DocHash(keyB, doc.Canonical()))
+	merkle.XOR(&leaf, merkle.DocHash(keyB, canonical))
 
 	b := c.store.NewBatch()
-	b.SetDocument(pid, keyB, doc)
+	b.SetDocumentRaw(pid, keyB, canonical)
 	b.SetMerkleNode(pid, merkle.BucketPath(bucket), leaf[:])
 	return c.store.Commit(b)
 }

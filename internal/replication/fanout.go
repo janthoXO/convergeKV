@@ -63,6 +63,7 @@ type Fanout struct {
 	wg     sync.WaitGroup
 
 	mu       sync.Mutex
+	closed   bool
 	queues   map[string]chan Delta
 	inFlight map[string]*atomic.Pointer[time.Time]
 
@@ -90,6 +91,9 @@ func (f *Fanout) Enqueue(addr string, d Delta) {
 	d.enqueued = time.Now()
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.closed {
+		return // shutting down: do not Add to the WaitGroup Close is Wait-ing on
+	}
 	q, ok := f.queues[addr]
 	if !ok {
 		q = make(chan Delta, f.cfg.QueueSize)
@@ -161,6 +165,11 @@ func (f *Fanout) Lag() map[string]time.Duration {
 
 // Close stops all workers; queued deltas are abandoned (AE owns them).
 func (f *Fanout) Close() {
+	// Mark closed under the mutex BEFORE Wait so no concurrent Enqueue can
+	// call wg.Add once Wait has begun (a WaitGroup Add-vs-Wait race / panic).
+	f.mu.Lock()
+	f.closed = true
+	f.mu.Unlock()
 	f.cancel()
 	f.wg.Wait()
 }

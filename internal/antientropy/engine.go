@@ -130,6 +130,12 @@ func (e *Engine) Run(ctx context.Context) {
 }
 
 func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		// rand.N panics on a non-positive argument; a direct-construction or
+		// test path that leaves the interval unset must not crash the AE
+		// goroutine. Fall back to no delay (the Run loop still honors ctx).
+		return 0
+	}
 	return d/2 + rand.N(d)
 }
 
@@ -217,7 +223,7 @@ func (e *Engine) exchange(ctx context.Context, pid uint16, o placement.Owner) (b
 // pushes the (now merged) local documents back, then rebuilds the local leaf
 // from the data.
 func (e *Engine) repairBucket(ctx context.Context, pid, bucket uint16, o placement.Owner) error {
-	contagion := e.gc != nil && (o.Status == cluster.StatusActive || o.Status == cluster.StatusDraining)
+	contagion := e.gc != nil && o.Status.Serving()
 	peerKeys := make(map[string]struct{})
 	err := e.peer.SyncBucket(ctx, o.Addr, pid, bucket, func(key, doc []byte) error {
 		peerKeys[string(key)] = struct{}{}

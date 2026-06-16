@@ -133,7 +133,7 @@ func (m *Manager) pickSource(pid uint16) (placement.Owner, bool) {
 		if o.ID == m.self || o.Dead {
 			continue
 		}
-		if o.Status == cluster.StatusActive || o.Status == cluster.StatusDraining {
+		if o.Status.Serving() {
 			return o, true
 		}
 	}

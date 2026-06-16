@@ -118,16 +118,14 @@ func (v *View) WriteSet(pid uint16) []Owner {
 // ReadSet returns the owners allowed to serve reads: active and draining
 // (bootstrapping owners have incomplete data).
 func (v *View) ReadSet(pid uint16) []Owner {
-	return v.filter(pid, func(s cluster.Status) bool {
-		return s == cluster.StatusActive || s == cluster.StatusDraining
-	})
+	return v.filter(pid, cluster.Status.Serving)
 }
 
 // Applier returns the partition's dot-minting applier: the first fully
 // serving (active or draining) owner in HRW rank order.
 func (v *View) Applier(pid uint16) (Owner, bool) {
 	for _, o := range v.owners[pid] {
-		if !o.Dead && (o.Status == cluster.StatusActive || o.Status == cluster.StatusDraining) {
+		if !o.Dead && o.Status.Serving() {
 			return o, true
 		}
 	}

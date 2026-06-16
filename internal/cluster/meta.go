@@ -21,6 +21,13 @@ const (
 	StatusDraining
 )
 
+// Serving reports whether an owner in this status answers reads and writes:
+// active or draining (a leaver keeps serving until its successor is active).
+// Bootstrapping owners have incomplete data and None owners hold nothing.
+func (s Status) Serving() bool {
+	return s == StatusActive || s == StatusDraining
+}
+
 func (s Status) String() string {
 	switch s {
 	case StatusNone:

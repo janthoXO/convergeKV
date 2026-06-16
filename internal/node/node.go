@@ -64,6 +64,7 @@ type Node struct {
 	nodeAddr   string
 	adminAddr  string
 	stopped    chan struct{}
+	stopOnce   sync.Once
 	cancel     context.CancelFunc
 }
 
@@ -177,10 +178,12 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 		nodeAddr:   nodeLn.Addr().String(),
 		stopped:    make(chan struct{}),
 	}
+
 	n.fanout = replication.NewFanout(replication.Config{
 		MaxAge: cfg.ReplicationMaxAge,
 		Logger: log,
 	}, n.pool.SendDelta)
+
 	n.Coord = coordinator.New(id, cfg.Partitions, store, clock,
 		n.View, n.pool, n.fanout, log)
 
@@ -190,14 +193,17 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 	cleanups = append(cleanups, func() { cancel(); n.wg.Wait() })
 	n.partitions = cfg.Partitions
 	n.lostSince = make(map[uint16]time.Time)
+
 	prevOwned, err := store.Owned()
 	if err != nil {
 		return nil, err
 	}
 	n.owned = make([]byte, (int(cfg.Partitions)+7)/8)
 	copy(n.owned, prevOwned)
+
 	n.AE = antientropy.New(id, cfg.Partitions, store, n.Coord, n.View, n.pool,
 		cfg.AntiEntropyInterval, log)
+		
 	n.AE.SetGC(gc.New(store, n.Coord, n.knownActors, log))
 	n.transfer = transfer.New(id, n.Coord, n.View, n.pool, cl, log)
 
@@ -250,29 +256,36 @@ func (n *Node) Transfer() *transfer.Manager { return n.transfer }
 // for successors to go active), broadcast a leave, then exit. Otherwise the
 // node drops off the network without a word (crash simulation in tests).
 func (n *Node) Stop(graceful bool) {
-	if graceful {
-		owned := n.View().OwnedPartitions(n.ID)
-		transfer.Drain(n.ID, n.View, n.cluster, owned, 15*time.Second, n.Log)
-	}
-	n.cancel()
-	if graceful {
-		_ = n.cluster.Leave(2 * time.Second)
-	} else {
-		_ = n.cluster.Shutdown()
-	}
-	// GracefulStop waits for in-flight handlers (which touch the store);
-	// plain Stop would only cancel them and race the store close below.
-	stopServer(n.clientSrv)
-	stopServer(n.nodeSrv)
-	n.fanout.Close()
-	n.pool.Close()
-	// Background goroutines (watch, HLC checkpoint, AE, bootstraps) touch
-	// the store; they must be fully out before it closes.
-	n.wg.Wait()
-	n.transfer.Wait()
-	_ = n.Store.PersistHLC(n.Clock.Last())
-	_ = n.Store.Close()
-	close(n.stopped)
+	// Idempotent: a double Stop (e.g. signal handler then test teardown) must
+	// not double-close the store/cluster or panic on close(n.stopped).
+	n.stopOnce.Do(func() {
+		if graceful {
+			owned := n.View().OwnedPartitions(n.ID)
+			transfer.Drain(n.ID, n.View, n.cluster, owned, 15*time.Second, n.Log)
+		}
+		n.cancel()
+		if graceful {
+			_ = n.cluster.Leave(2 * time.Second)
+		} else {
+			_ = n.cluster.Shutdown()
+		}
+		// GracefulStop waits for in-flight handlers (which touch the store);
+		// plain Stop would only cancel them and race the store close below.
+		stopServer(n.clientSrv)
+		stopServer(n.nodeSrv)
+		// Background goroutines (watch, HLC checkpoint, AE, bootstraps) touch
+		// the store AND the connection pool / fan-out via their RPCs. cancel()
+		// above unblocks their ctx-bound calls, so wait them out FIRST, then
+		// tear down the dependencies they were using — otherwise an in-flight
+		// AE/bootstrap goroutine races a closed pool.
+		n.wg.Wait()
+		n.transfer.Wait()
+		n.fanout.Close()
+		n.pool.Close()
+		_ = n.Store.PersistHLC(n.Clock.Last())
+		_ = n.Store.Close()
+		close(n.stopped)
+	})
 }
 
 func stopServer(s *grpc.Server) {
@@ -458,7 +471,7 @@ func bootstrapSource(v *placement.View, pid uint16, self [16]byte) (placement.Ow
 		if o.ID == self || o.Dead {
 			continue
 		}
-		if o.Status == cluster.StatusActive || o.Status == cluster.StatusDraining {
+		if o.Status.Serving() {
 			return o, true
 		}
 	}
