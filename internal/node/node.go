@@ -203,7 +203,7 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 
 	n.AE = antientropy.New(id, cfg.Partitions, store, n.Coord, n.View, n.pool,
 		cfg.AntiEntropyInterval, log)
-		
+
 	n.AE.SetGC(gc.New(store, n.Coord, n.knownActors, log))
 	n.transfer = transfer.New(id, n.Coord, n.View, n.pool, cl, log)
 

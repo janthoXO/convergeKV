@@ -21,7 +21,7 @@ import "sort"
 // Invariant: for every register r in Fields, Context.Contains(r.Dot).
 type Document struct {
 	// which data the node shows to the client (multiple cause after a merge others might be deleted)
-	Fields  map[string][]Register // concurrent registers, sorted by dot
+	Fields map[string][]Register // concurrent registers, sorted by dot
 	// which events the node has seen
 	Context CausalContext
 }
