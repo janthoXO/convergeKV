@@ -1,0 +1,12 @@
+info:
+  name: Get Item
+  type: grpc
+  seq: 2
+
+grpc:
+  url: "{{seed}}"
+  method: /convergekv.KV/Get
+  methodType: unary
+  protoFilePath: ../../pkg/proto/kv.proto
+  message: "{}"
+  auth: inherit

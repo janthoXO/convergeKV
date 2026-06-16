@@ -1,0 +1,15 @@
+info:
+  name: Delete Item
+  type: grpc
+  seq: 3
+
+grpc:
+  url: ""
+  method: /convergekv.KV/Delete
+  methodType: unary
+  protoFilePath: ../../pkg/proto/kv.proto
+  message: |-
+    {
+      "key": "user:1"
+    }
+  auth: inherit

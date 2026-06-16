@@ -1,0 +1,18 @@
+info:
+  name: Put Item
+  type: grpc
+  seq: 1
+
+grpc:
+  url: ""
+  method: /convergekv.KV/Put
+  methodType: unary
+  protoFilePath: ../../pkg/proto/kv.proto
+  message: |-
+    {
+      "key": "user:1",
+      "document": {
+        "name": "Alice"
+      }
+    }
+  auth: inherit
