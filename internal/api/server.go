@@ -33,7 +33,7 @@ func (s *KVServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetResponse
 }
 
 func (s *KVServer) Put(ctx context.Context, req *pb.PutRequest) (*pb.PutResponse, error) {
-	if err := s.Coord.Put(ctx, req.GetKey(), req.GetDocument()); err != nil {
+	if err := s.Coord.Put(ctx, req.GetKey(), req.GetValue()); err != nil {
 		return nil, toStatus(err)
 	}
 	return &pb.PutResponse{}, nil
@@ -61,7 +61,7 @@ func (s *NodeServer) Forward(ctx context.Context, req *pb.ForwardRequest) (*pb.F
 		if err := s.Coord.CheckWriteEligible(pid); err != nil {
 			return nil, toStatus(err)
 		}
-		fields, err := codec.SplitFields(op.Put.GetDocument())
+		fields, err := codec.SplitFields(op.Put.GetValue())
 		if err != nil || len(fields) == 0 {
 			return nil, status.Error(codes.InvalidArgument, "document must be a non-empty JSON object")
 		}

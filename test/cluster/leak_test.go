@@ -22,7 +22,7 @@ func TestNoGoroutineLeaks(t *testing.T) {
 	h := Start(t, 3)
 	ctx := context.Background()
 	client := h.Client(0)
-	if _, err := client.Put(ctx, &pb.PutRequest{Key: "leak", Document: []byte(`{"v": 1}`)}); err != nil {
+	if _, err := client.Put(ctx, &pb.PutRequest{Key: "leak", Value: []byte(`{"v": 1}`)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.Get(ctx, &pb.GetRequest{Key: "leak"}); err != nil {

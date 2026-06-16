@@ -18,7 +18,7 @@ func TestWriteViaNonOwnerVisibleOnAllOwners(t *testing.T) {
 	client := h.Client(h.NonOwner(key))
 
 	if _, err := client.Put(ctx, &pb.PutRequest{
-		Key: key, Document: []byte(`{"a": 1, "b": {"nested": true}}`),
+		Key: key, Value: []byte(`{"a": 1, "b": {"nested": true}}`),
 	}); err != nil {
 		t.Fatalf("put via non-owner: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestWriteSucceedsWithTwoOfThreeOwnersDown(t *testing.T) {
 
 	client := h.Client(0)
 	if _, err := client.Put(ctx, &pb.PutRequest{
-		Key: "lonely", Document: []byte(`{"v": "still works"}`),
+		Key: "lonely", Value: []byte(`{"v": "still works"}`),
 	}); err != nil {
 		t.Fatalf("put with 2/3 owners down: %v", err)
 	}
@@ -68,11 +68,11 @@ func TestConcurrentDifferentFieldsBothSurvive(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, err1 = c1.Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"a": "from-c1"}`)})
+		_, err1 = c1.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"a": "from-c1"}`)})
 	}()
 	go func() {
 		defer wg.Done()
-		_, err2 = c2.Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"b": "from-c2"}`)})
+		_, err2 = c2.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"b": "from-c2"}`)})
 	}()
 	wg.Wait()
 	if err1 != nil || err2 != nil {
@@ -103,11 +103,11 @@ func TestConcurrentSameFieldConvergesToOneWinner(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = c1.Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"x": {"version": 1, "only": "c1"}}`)})
+		_, _ = c1.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"x": {"version": 1, "only": "c1"}}`)})
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = c2.Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"x": {"version": 2, "only": "c2"}}`)})
+		_, _ = c2.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"x": {"version": 2, "only": "c2"}}`)})
 	}()
 	wg.Wait()
 	// WaitOwnersConverged asserts byte-identical state (incl. context) on
@@ -144,7 +144,7 @@ func TestDeleteVisibleEverywhere(t *testing.T) {
 
 	const key = "to-delete"
 	client := h.Client(0)
-	if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"v": 1}`)}); err != nil {
+	if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"v": 1}`)}); err != nil {
 		t.Fatal(err)
 	}
 	h.WaitOwnersConverged(key, time.Second)
@@ -168,7 +168,7 @@ func TestInvalidDocumentRejected(t *testing.T) {
 	h := Start(t, 3)
 	ctx := context.Background()
 	for _, bad := range []string{`[1,2]`, `"scalar"`, `null`, `not json`} {
-		if _, err := h.Client(0).Put(ctx, &pb.PutRequest{Key: "k", Document: []byte(bad)}); err == nil {
+		if _, err := h.Client(0).Put(ctx, &pb.PutRequest{Key: "k", Value: []byte(bad)}); err == nil {
 			t.Fatalf("document %q must be rejected", bad)
 		}
 	}

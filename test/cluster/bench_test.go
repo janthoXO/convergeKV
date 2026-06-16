@@ -29,7 +29,7 @@ func TestBenchmarkReport(t *testing.T) {
 
 	// Warm-up.
 	for i := 0; i < 200; i++ {
-		if _, err := client.Put(ctx, &pb.PutRequest{Key: fmt.Sprintf("warm-%d", i), Document: doc}); err != nil {
+		if _, err := client.Put(ctx, &pb.PutRequest{Key: fmt.Sprintf("warm-%d", i), Value: doc}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -38,7 +38,7 @@ func TestBenchmarkReport(t *testing.T) {
 	putLat := make([]time.Duration, 0, samples)
 	for i := 0; i < samples; i++ {
 		start := time.Now()
-		if _, err := client.Put(ctx, &pb.PutRequest{Key: fmt.Sprintf("bench-%d", i%256), Document: doc}); err != nil {
+		if _, err := client.Put(ctx, &pb.PutRequest{Key: fmt.Sprintf("bench-%d", i%256), Value: doc}); err != nil {
 			t.Fatal(err)
 		}
 		putLat = append(putLat, time.Since(start))
@@ -58,7 +58,7 @@ func TestBenchmarkReport(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		key := fmt.Sprintf("conv-%d", i)
 		start := time.Now()
-		if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Document: doc}); err != nil {
+		if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Value: doc}); err != nil {
 			t.Fatal(err)
 		}
 		h.WaitOwnersConverged(key, 5*time.Second)

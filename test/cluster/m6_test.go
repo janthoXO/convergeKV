@@ -21,7 +21,7 @@ func TestAERepairsLaggedReplica(t *testing.T) {
 	for i := range keys {
 		keys[i] = fmt.Sprintf("ae-key-%d", i)
 		doc := fmt.Sprintf(`{"i": %d}`, i)
-		if _, err := client.Put(ctx, &pb.PutRequest{Key: keys[i], Document: []byte(doc)}); err != nil {
+		if _, err := client.Put(ctx, &pb.PutRequest{Key: keys[i], Value: []byte(doc)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -64,7 +64,7 @@ func TestAECleanRoundsAreCheapAndCounted(t *testing.T) {
 	client := h.Client(0)
 
 	const key = "clean-key"
-	if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"v": 1}`)}); err != nil {
+	if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"v": 1}`)}); err != nil {
 		t.Fatal(err)
 	}
 	h.WaitOwnersConverged(key, time.Second)
@@ -102,7 +102,7 @@ func TestAEHealsDroppedDeltas(t *testing.T) {
 	// node 0's applier path, then wipe the doc from node 2 again.
 	client := h.Client(0)
 	const key = "dropped-delta"
-	if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"v": "x"}`)}); err != nil {
+	if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"v": "x"}`)}); err != nil {
 		t.Fatal(err)
 	}
 	h.WaitOwnersConverged(key, time.Second)

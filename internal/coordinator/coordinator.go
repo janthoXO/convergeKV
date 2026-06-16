@@ -97,7 +97,7 @@ func (c *Coordinator) Put(ctx context.Context, key string, jsonDoc []byte) error
 	pid := placement.Partition([]byte(key), c.p)
 	req := &pb.ForwardRequest{
 		Key: key,
-		Op:  &pb.ForwardRequest_Put{Put: &pb.PutRequest{Key: key, Document: jsonDoc}},
+		Op:  &pb.ForwardRequest_Put{Put: &pb.PutRequest{Key: key, Value: jsonDoc}},
 	}
 	return c.routeWrite(ctx, pid, req, func() error {
 		return c.ApplyPut(pid, key, fields)

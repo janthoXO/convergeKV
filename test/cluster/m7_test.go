@@ -35,7 +35,7 @@ func TestScaleOutUnderLoadZeroFailures(t *testing.T) {
 	// Seed some data.
 	for i := 0; i < 32; i++ {
 		key := fmt.Sprintf("scale-key-%d", i)
-		if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Document: fmt.Appendf(nil, `{"i": %d}`, i)}); err != nil {
+		if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Value: fmt.Appendf(nil, `{"i": %d}`, i)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -57,7 +57,7 @@ func TestScaleOutUnderLoadZeroFailures(t *testing.T) {
 			}
 			key := fmt.Sprintf("scale-key-%d", i%32)
 			if i%3 == 0 {
-				if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Document: fmt.Appendf(nil, `{"i": %d}`, i)}); err != nil {
+				if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Value: fmt.Appendf(nil, `{"i": %d}`, i)}); err != nil {
 					t.Logf("put %s failed: %v", key, err)
 					failures.Add(1)
 				}
@@ -98,7 +98,7 @@ func TestPermanentCrashRestoresRFAfterGrace(t *testing.T) {
 
 	for i := 0; i < 16; i++ {
 		key := fmt.Sprintf("rf-key-%d", i)
-		if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"v": 1}`)}); err != nil {
+		if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"v": 1}`)}); err != nil {
 			t.Fatal(err)
 		}
 		h.WaitOwnersConverged(key, time.Second)
@@ -134,7 +134,7 @@ func TestRestartWithinGraceNoTransfer(t *testing.T) {
 
 	for i := 0; i < 16; i++ {
 		key := fmt.Sprintf("restart-key-%d", i)
-		if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"v": 1}`)}); err != nil {
+		if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"v": 1}`)}); err != nil {
 			t.Fatal(err)
 		}
 		h.WaitOwnersConverged(key, time.Second)
@@ -164,7 +164,7 @@ func TestGracefulLeaveKeepsServing(t *testing.T) {
 
 	for i := 0; i < 16; i++ {
 		key := fmt.Sprintf("leave-key-%d", i)
-		if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"v": "x"}`)}); err != nil {
+		if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"v": "x"}`)}); err != nil {
 			t.Fatal(err)
 		}
 		h.WaitOwnersConverged(key, time.Second)

@@ -36,7 +36,7 @@ func TestResidualContextsPurged(t *testing.T) {
 	const keys = 20
 	for i := 0; i < keys; i++ {
 		key := fmt.Sprintf("purge-%d", i)
-		if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"v": 1}`)}); err != nil {
+		if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"v": 1}`)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -79,7 +79,7 @@ func TestNoResurrectionAfterOfflineReplicaReturns(t *testing.T) {
 	ctx := context.Background()
 
 	const key = "lazarus"
-	if _, err := h.Client(0).Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"v": "alive"}`)}); err != nil {
+	if _, err := h.Client(0).Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"v": "alive"}`)}); err != nil {
 		t.Fatal(err)
 	}
 	h.WaitOwnersConverged(key, 2*time.Second)
@@ -150,7 +150,7 @@ func TestDeadActorsRetiredFromContexts(t *testing.T) {
 	// Write via every node so multiple actors mint dots.
 	for i := 0; i < keys; i++ {
 		key := fmt.Sprintf("retire-%d", i)
-		if _, err := h.Client(i%4).Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"v": 1}`)}); err != nil {
+		if _, err := h.Client(i%4).Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"v": 1}`)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -166,7 +166,7 @@ func TestDeadActorsRetiredFromContexts(t *testing.T) {
 	// entries (live registers pin them).
 	for i := 0; i < keys; i++ {
 		key := fmt.Sprintf("retire-%d", i)
-		if _, err := h.Client(0).Put(ctx, &pb.PutRequest{Key: key, Document: []byte(`{"v": 2}`)}); err != nil {
+		if _, err := h.Client(0).Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"v": 2}`)}); err != nil {
 			t.Fatal(err)
 		}
 	}

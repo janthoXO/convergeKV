@@ -131,7 +131,7 @@ type PutRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 	// A JSON object; each top-level field becomes an independent register.
-	Document      []byte `protobuf:"bytes,2,opt,name=document,proto3" json:"document,omitempty"`
+	Value         []byte `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -173,9 +173,9 @@ func (x *PutRequest) GetKey() string {
 	return ""
 }
 
-func (x *PutRequest) GetDocument() []byte {
+func (x *PutRequest) GetValue() []byte {
 	if x != nil {
-		return x.Document
+		return x.Value
 	}
 	return nil
 }
@@ -308,11 +308,11 @@ const file_kv_proto_rawDesc = "" +
 	"\vGetResponse\x12\x14\n" +
 	"\x05found\x18\x01 \x01(\bR\x05found\x12\x1a\n" +
 	"\bdocument\x18\x02 \x01(\fR\bdocument\x12!\n" +
-	"\fcontext_hash\x18\x03 \x01(\fR\vcontextHash\":\n" +
+	"\fcontext_hash\x18\x03 \x01(\fR\vcontextHash\"4\n" +
 	"\n" +
 	"PutRequest\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x1a\n" +
-	"\bdocument\x18\x02 \x01(\fR\bdocument\"\r\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\"\r\n" +
 	"\vPutResponse\"!\n" +
 	"\rDeleteRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\"\x10\n" +

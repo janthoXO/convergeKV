@@ -122,7 +122,7 @@ func TestChaos(t *testing.T) {
 				case 1, 2, 3, 4:
 					_, err = client.Put(cctx, &pb.PutRequest{
 						Key:      k,
-						Document: fmt.Appendf(nil, `{"w": %d, "v": %d, "nested": {"deep": [%d]}}`, seed, rng.Int63(), rng.Intn(100)),
+						Value: fmt.Appendf(nil, `{"w": %d, "v": %d, "nested": {"deep": [%d]}}`, seed, rng.Int63(), rng.Intn(100)),
 					})
 				default:
 					_, err = client.Get(cctx, &pb.GetRequest{Key: k})
