@@ -14,6 +14,7 @@ import (
 
 	"github.com/janthoXO/convergeKV/internal/cluster"
 	"github.com/janthoXO/convergeKV/internal/coordinator"
+	"github.com/janthoXO/convergeKV/internal/nodeid"
 	"github.com/janthoXO/convergeKV/internal/placement"
 )
 
@@ -28,7 +29,7 @@ type Flags interface {
 }
 
 type Manager struct {
-	self   [16]byte
+	self   nodeid.ID
 	coord  *coordinator.Coordinator
 	view   func() *placement.View
 	source Source
@@ -53,7 +54,7 @@ func (m *Manager) Started() uint64 { return m.started.Load() }
 // Bytes returns the total document bytes received via bootstrap snapshots.
 func (m *Manager) Bytes() uint64 { return m.bytes.Load() }
 
-func New(self [16]byte, coord *coordinator.Coordinator, view func() *placement.View,
+func New(self nodeid.ID, coord *coordinator.Coordinator, view func() *placement.View,
 	source Source, flags Flags, log *slog.Logger) *Manager {
 	if log == nil {
 		log = slog.Default()
@@ -142,7 +143,7 @@ func (m *Manager) pickSource(pid uint16) (placement.Owner, bool) {
 
 // Drain marks every owned partition draining and blocks until each one has
 // RF serving owners besides this node, or the timeout passes.
-func Drain(self [16]byte, view func() *placement.View, flags interface {
+func Drain(self nodeid.ID, view func() *placement.View, flags interface {
 	UpdateFlags(func(cluster.PartitionFlags)) error
 }, owned []uint16, timeout time.Duration, log *slog.Logger) {
 	err := flags.UpdateFlags(func(f cluster.PartitionFlags) {
