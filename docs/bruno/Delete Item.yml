@@ -4,7 +4,7 @@ info:
   seq: 3
 
 grpc:
-  url: ""
+  url: "{{seed}}"
   method: /convergekv.KV/Delete
   methodType: unary
   protoFilePath: ../../pkg/proto/kv.proto

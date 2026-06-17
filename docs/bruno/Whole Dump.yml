@@ -1,0 +1,11 @@
+info:
+  name: Whole Dump
+  type: grpc
+  seq: 5
+
+grpc:
+  url: "{{seed}}"
+  method: /convergekv.Debug/DumpDocuments
+  methodType: server-streaming
+  protoFilePath: ../../pkg/proto/debug.proto
+  auth: inherit

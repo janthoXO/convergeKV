@@ -4,15 +4,13 @@ info:
   seq: 1
 
 grpc:
-  url: ""
+  url: "{{seed}}"
   method: /convergekv.KV/Put
   methodType: unary
   protoFilePath: ../../pkg/proto/kv.proto
   message: |-
     {
       "key": "user:1",
-      "document": {
-        "name": "Alice"
-      }
+      "value": "eyJuYW1lIjoiQWxpY2UifQ=="
     }
   auth: inherit

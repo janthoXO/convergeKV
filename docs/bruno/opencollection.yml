@@ -7,6 +7,8 @@ config:
     protoFiles:
       - type: file
         path: ../../pkg/proto/kv.proto
+      - type: file
+        path: ../../pkg/proto/debug.proto
   proxy:
     inherit: true
     config:

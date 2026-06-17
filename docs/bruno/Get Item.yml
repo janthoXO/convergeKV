@@ -8,5 +8,8 @@ grpc:
   method: /convergekv.KV/Get
   methodType: unary
   protoFilePath: ../../pkg/proto/kv.proto
-  message: "{}"
+  message: |-
+    {
+      "key": "user:1"
+    }
   auth: inherit
