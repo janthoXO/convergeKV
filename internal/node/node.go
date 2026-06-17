@@ -229,6 +229,14 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 
 	n.clientSrv = grpc.NewServer()
 	pb.RegisterKVServer(n.clientSrv, &api.KVServer{Coord: n.Coord})
+	pb.RegisterDebugServer(n.clientSrv, &api.DebugServer{
+		ID:         id,
+		Partitions: cfg.Partitions,
+		ClientAddr: n.clientAddr,
+		View:       n.View,
+		Cluster:    cl,
+		Store:      store,
+	})
 	n.nodeSrv = grpc.NewServer()
 	pb.RegisterNodeServer(n.nodeSrv, &api.NodeServer{Coord: n.Coord, Store: store, Partitions: cfg.Partitions})
 	go func() { _ = n.clientSrv.Serve(clientLn) }()
