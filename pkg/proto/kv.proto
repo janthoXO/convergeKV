@@ -19,7 +19,7 @@ message GetRequest {
 message GetResponse {
   bool found = 1;
   // The merged document rendered as a JSON object.
-  bytes document = 2;
+  bytes value = 2;
   // Hash of the document's causal context (diagnostics only).
   bytes context_hash = 3;
 }

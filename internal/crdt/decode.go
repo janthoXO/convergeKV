@@ -17,11 +17,13 @@ func DecodeDocument(b []byte) (*Document, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := uint32(0); i < nFields; i++ {
+
+	for range nFields {
 		name, err := r.bytes32()
 		if err != nil {
 			return nil, err
 		}
+
 		nRegs, err := r.uint32()
 		if err != nil {
 			return nil, err
@@ -29,8 +31,9 @@ func DecodeDocument(b []byte) (*Document, error) {
 		if nRegs == 0 {
 			return nil, errors.New("crdt: empty register set")
 		}
+
 		regs := make([]Register, 0, nRegs)
-		for j := uint32(0); j < nRegs; j++ {
+		for range nRegs {
 			var reg Register
 			if reg.Dot, err = r.dot(); err != nil {
 				return nil, err
@@ -52,24 +55,28 @@ func DecodeDocument(b []byte) (*Document, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := uint32(0); i < nVV; i++ {
+
+	for range nVV {
 		d, err := r.dot()
 		if err != nil {
 			return nil, err
 		}
 		doc.Context.VV[d.Actor] = d.Seq
 	}
+
 	nCloud, err := r.uint32()
 	if err != nil {
 		return nil, err
 	}
-	for i := uint32(0); i < nCloud; i++ {
+
+	for range nCloud {
 		d, err := r.dot()
 		if err != nil {
 			return nil, err
 		}
 		doc.Context.Cloud[d] = struct{}{}
 	}
+	
 	if len(r.buf) != 0 {
 		return nil, fmt.Errorf("crdt: %d trailing bytes", len(r.buf))
 	}

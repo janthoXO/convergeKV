@@ -29,7 +29,7 @@ func (s *KVServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetResponse
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &pb.GetResponse{Found: res.Found, Document: res.Document, ContextHash: res.ContextHash}, nil
+	return &pb.GetResponse{Found: res.Found, Value: res.Document, ContextHash: res.ContextHash}, nil
 }
 
 func (s *KVServer) Put(ctx context.Context, req *pb.PutRequest) (*pb.PutResponse, error) {
@@ -88,7 +88,7 @@ func (s *NodeServer) Forward(ctx context.Context, req *pb.ForwardRequest) (*pb.F
 			return nil, toStatus(err)
 		}
 		return &pb.ForwardResponse{Get: &pb.GetResponse{
-			Found: res.Found, Document: res.Document, ContextHash: res.ContextHash,
+			Found: res.Found, Value: res.Document, ContextHash: res.ContextHash,
 		}}, nil
 
 	default:

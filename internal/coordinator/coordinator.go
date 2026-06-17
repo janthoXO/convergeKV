@@ -33,7 +33,7 @@ var (
 	// at the sender) — FAILED_PRECONDITION, sender retries elsewhere.
 	ErrNotEligible = errors.New("coordinator: node not an eligible owner")
 	// ErrInvalidDocument: the client value is not a JSON object.
-	ErrInvalidDocument = errors.New("coordinator: document must be a JSON object")
+	ErrInvalidDocument = errors.New("coordinator: value must be a JSON object")
 )
 
 // Forwarder sends a forward request to a peer node (gRPC in production).
@@ -94,11 +94,13 @@ func (c *Coordinator) Put(ctx context.Context, key string, jsonDoc []byte) error
 		// divergence AE would churn on. Reject before minting anything.
 		return ErrInvalidDocument
 	}
+
 	pid := placement.Partition([]byte(key), c.p)
 	req := &pb.ForwardRequest{
 		Key: key,
 		Op:  &pb.ForwardRequest_Put{Put: &pb.PutRequest{Key: key, Value: jsonDoc}},
 	}
+
 	return c.routeWrite(ctx, pid, req, func() error {
 		return c.ApplyPut(pid, key, fields)
 	})
@@ -111,6 +113,7 @@ func (c *Coordinator) Delete(ctx context.Context, key string) error {
 		Key: key,
 		Op:  &pb.ForwardRequest_Delete{Delete: &pb.DeleteRequest{Key: key}},
 	}
+
 	return c.routeWrite(ctx, pid, req, func() error {
 		return c.ApplyDelete(pid, key)
 	})
@@ -126,6 +129,7 @@ func (c *Coordinator) Get(ctx context.Context, key string) (GetResult, error) {
 			return c.ReadLocal(pid, key)
 		}
 	}
+
 	req := &pb.ForwardRequest{
 		Key: key,
 		Op:  &pb.ForwardRequest_Get{Get: &pb.GetRequest{Key: key}},
@@ -137,8 +141,9 @@ func (c *Coordinator) Get(ctx context.Context, key string) (GetResult, error) {
 			continue
 		}
 		g := resp.GetGet()
-		return GetResult{Found: g.GetFound(), Document: g.GetDocument(), ContextHash: g.GetContextHash()}, nil
+		return GetResult{Found: g.GetFound(), Document: g.GetValue(), ContextHash: g.GetContextHash()}, nil
 	}
+
 	return GetResult{}, ErrNoOwnerAvailable
 }
 
@@ -159,6 +164,7 @@ func (c *Coordinator) routeWrite(ctx context.Context, pid uint16, req *pb.Forwar
 			c.log.Debug("write forward failed, trying next owner", "peer", o.Addr, "err", err)
 		}
 	}
+
 	return ErrNoOwnerAvailable
 }
 
@@ -172,6 +178,7 @@ func (c *Coordinator) CheckWriteEligible(pid uint16) error {
 			return nil
 		}
 	}
+
 	return ErrNotEligible
 }
 
@@ -191,14 +198,18 @@ func (c *Coordinator) ApplyPut(pid uint16, key string, fields map[string][]byte)
 	if err != nil {
 		return err
 	}
+
 	oldHash := docHashOf(key, doc) // nil for an absent document
+
 	if doc == nil {
 		doc = crdt.NewDocument()
 	}
-	delta := doc.PutMulti(fields, c.minter(doc), c.clock.Now())
+
+	delta := doc.PutMulti(fields, doc.Minter(crdt.ActorID(c.self)), c.clock.Now())
 	if err := c.persist(pid, key, oldHash, doc); err != nil {
 		return err
 	}
+
 	c.replicate(pid, key, delta)
 	return nil
 }
@@ -212,14 +223,17 @@ func (c *Coordinator) ApplyDelete(pid uint16, key string) error {
 	if err != nil {
 		return err
 	}
+
 	oldHash := docHashOf(key, doc) // nil for an absent document
 	if doc == nil {
 		doc = crdt.NewDocument()
 	}
-	delta := doc.Delete(c.minter(doc)())
+
+	delta := doc.Delete(doc.Minter(crdt.ActorID(c.self))())
 	if err := c.persist(pid, key, oldHash, doc); err != nil {
 		return err
 	}
+
 	c.replicate(pid, key, delta)
 	return nil
 }
@@ -230,13 +244,16 @@ func (c *Coordinator) ReadLocal(pid uint16, key string) (GetResult, error) {
 	if err != nil {
 		return GetResult{}, err
 	}
+
 	if doc == nil || len(doc.Fields) == 0 {
 		return GetResult{Found: false}, nil
 	}
+
 	rendered, err := codec.RenderDocument(doc)
 	if err != nil {
 		return GetResult{}, err
 	}
+
 	return GetResult{Found: true, Document: rendered, ContextHash: contextHash(doc)}, nil
 }
 
@@ -249,6 +266,7 @@ func (c *Coordinator) MergeDelta(pid uint16, key, deltaBytes []byte) (bool, erro
 	if err != nil {
 		return false, fmt.Errorf("coordinator: bad delta: %w", err)
 	}
+
 	// HLC receive rule: fold the delta's largest timestamp into our clock.
 	var maxTS crdt.HLC
 	for _, regs := range delta.Fields {
@@ -278,6 +296,7 @@ func (c *Coordinator) MergeDelta(pid uint16, key, deltaBytes []byte) (bool, erro
 		// queue's max age) — anti-entropy repairs that transient.
 		return false, nil
 	}
+
 	// Serialize the pre-merge document once: reuse the bytes for both the old
 	// leaf hash and the idempotent-redelivery equality check below.
 	var oldHash *merkle.Hash
@@ -290,6 +309,7 @@ func (c *Coordinator) MergeDelta(pid uint16, key, deltaBytes []byte) (bool, erro
 		oldHash = &h
 	}
 	doc.Merge(delta)
+
 	after := doc.Canonical()
 	if before != nil && bytes.Equal(before, after) {
 		return false, nil // idempotent redelivery: nothing to persist
@@ -297,6 +317,7 @@ func (c *Coordinator) MergeDelta(pid uint16, key, deltaBytes []byte) (bool, erro
 	if err := c.persistCanonical(pid, string(key), oldHash, after); err != nil {
 		return false, err
 	}
+
 	return true, nil
 }
 
@@ -306,6 +327,7 @@ func (c *Coordinator) MergeDelta(pid uint16, key, deltaBytes []byte) (bool, erro
 func (c *Coordinator) RecomputeMerkleLeaf(pid uint16, bucket uint16) error {
 	c.locks[pid].Lock()
 	defer c.locks[pid].Unlock()
+
 	var leaf merkle.Hash
 	err := c.store.ScanBucket(pid, bucket, func(key []byte, doc *crdt.Document) error {
 		merkle.XOR(&leaf, merkle.DocHash(key, doc.Canonical()))
@@ -314,8 +336,10 @@ func (c *Coordinator) RecomputeMerkleLeaf(pid uint16, bucket uint16) error {
 	if err != nil {
 		return err
 	}
+
 	b := c.store.NewBatch()
 	b.SetMerkleNode(pid, merkle.BucketPath(bucket), leaf[:])
+
 	return c.store.Commit(b)
 }
 
@@ -326,6 +350,7 @@ func (c *Coordinator) RecomputeMerkleLeaf(pid uint16, bucket uint16) error {
 func (c *Coordinator) GCDocument(pid uint16, key []byte) error {
 	c.locks[pid].Lock()
 	defer c.locks[pid].Unlock()
+
 	doc, err := c.store.GetDocument(pid, key)
 	if err != nil {
 		return err
@@ -333,16 +358,19 @@ func (c *Coordinator) GCDocument(pid uint16, key []byte) error {
 	if doc == nil || len(doc.Fields) > 0 {
 		return nil // re-created or already gone
 	}
+
 	bucket := merkle.Bucket(key)
 	leaf, err := c.store.MerkleLeaf(pid, bucket)
 	if err != nil {
 		return err
 	}
+
 	merkle.XOR(&leaf, merkle.DocHash(key, doc.Canonical()))
 	b := c.store.NewBatch()
 	b.DeleteDocument(pid, key)
 	b.DeleteGCCounter(pid, key)
 	b.SetMerkleNode(pid, merkle.BucketPath(bucket), leaf[:])
+
 	return c.store.Commit(b)
 }
 
@@ -353,16 +381,19 @@ func (c *Coordinator) GCDocument(pid uint16, key []byte) error {
 func (c *Coordinator) RetireActors(pid uint16, key []byte, retired func(crdt.ActorID) bool) error {
 	c.locks[pid].Lock()
 	defer c.locks[pid].Unlock()
+
 	doc, err := c.store.GetDocument(pid, key)
 	if err != nil || doc == nil {
 		return err
 	}
+
 	live := map[crdt.ActorID]bool{}
 	for _, regs := range doc.Fields {
 		for _, r := range regs {
 			live[r.Dot.Actor] = true
 		}
 	}
+
 	oldHash := docHashOf(string(key), doc)
 	changed := false
 	for a := range doc.Context.VV {
@@ -371,6 +402,7 @@ func (c *Coordinator) RetireActors(pid uint16, key []byte, retired func(crdt.Act
 			changed = true
 		}
 	}
+
 	for d := range doc.Context.Cloud {
 		if retired(d.Actor) && !live[d.Actor] {
 			delete(doc.Context.Cloud, d)
@@ -380,23 +412,11 @@ func (c *Coordinator) RetireActors(pid uint16, key []byte, retired func(crdt.Act
 	if !changed {
 		return nil
 	}
+
 	return c.persist(pid, string(key), oldHash, doc)
 }
 
 // --- internals -----------------------------------------------------------------
-
-// minter hands out this node's next dots for one document, sequential from
-// the document's own context (per-document minting: uniqueness only has to
-// hold within one document's context, and the VV persisted with the op is the
-// crash-safe checkpoint). Callers hold the partition lock.
-func (c *Coordinator) minter(doc *crdt.Document) func() crdt.Dot {
-	actor := crdt.ActorID(c.self)
-	seq := doc.Context.Next(actor) - 1
-	return func() crdt.Dot {
-		seq++
-		return crdt.Dot{Actor: actor, Seq: seq}
-	}
-}
 
 // persist writes the document and its incremental merkle-leaf update in one
 // synced atomic batch. Callers hold the partition lock.
@@ -414,6 +434,7 @@ func (c *Coordinator) persistCanonical(pid uint16, key string, oldHash *merkle.H
 	if err != nil {
 		return err
 	}
+
 	if oldHash != nil {
 		merkle.XOR(&leaf, *oldHash)
 	}
@@ -422,6 +443,7 @@ func (c *Coordinator) persistCanonical(pid uint16, key string, oldHash *merkle.H
 	b := c.store.NewBatch()
 	b.SetDocumentRaw(pid, keyB, canonical)
 	b.SetMerkleNode(pid, merkle.BucketPath(bucket), leaf[:])
+
 	return c.store.Commit(b)
 }
 
@@ -429,6 +451,7 @@ func docHashOf(key string, doc *crdt.Document) *merkle.Hash {
 	if doc == nil {
 		return nil
 	}
+
 	h := merkle.DocHash([]byte(key), doc.Canonical())
 	return &h
 }

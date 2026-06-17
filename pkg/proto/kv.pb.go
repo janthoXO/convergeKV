@@ -69,7 +69,7 @@ type GetResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Found bool                   `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
 	// The merged document rendered as a JSON object.
-	Document []byte `protobuf:"bytes,2,opt,name=document,proto3" json:"document,omitempty"`
+	Value []byte `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
 	// Hash of the document's causal context (diagnostics only).
 	ContextHash   []byte `protobuf:"bytes,3,opt,name=context_hash,json=contextHash,proto3" json:"context_hash,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -113,9 +113,9 @@ func (x *GetResponse) GetFound() bool {
 	return false
 }
 
-func (x *GetResponse) GetDocument() []byte {
+func (x *GetResponse) GetValue() []byte {
 	if x != nil {
-		return x.Document
+		return x.Value
 	}
 	return nil
 }
@@ -304,10 +304,10 @@ const file_kv_proto_rawDesc = "" +
 	"convergekv\"\x1e\n" +
 	"\n" +
 	"GetRequest\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\"b\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\"\\\n" +
 	"\vGetResponse\x12\x14\n" +
-	"\x05found\x18\x01 \x01(\bR\x05found\x12\x1a\n" +
-	"\bdocument\x18\x02 \x01(\fR\bdocument\x12!\n" +
+	"\x05found\x18\x01 \x01(\bR\x05found\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12!\n" +
 	"\fcontext_hash\x18\x03 \x01(\fR\vcontextHash\"4\n" +
 	"\n" +
 	"PutRequest\x12\x10\n" +

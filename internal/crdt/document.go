@@ -37,6 +37,7 @@ func (d *Document) ensure() {
 	if d.Fields == nil {
 		d.Fields = make(map[string][]Register)
 	}
+
 	d.Context.ensure()
 }
 
@@ -47,12 +48,14 @@ func (d *Document) Get(field string) (Register, bool) {
 	if len(regs) == 0 {
 		return Register{}, false
 	}
+
 	win := regs[0]
 	for _, r := range regs[1:] {
 		if r.supersedes(win) {
 			win = r
 		}
 	}
+
 	return win, true
 }
 
@@ -69,6 +72,7 @@ func (d *Document) Clone() *Document {
 		copy(cp, regs)
 		out.Fields[f] = cp
 	}
+
 	out.Context = d.Context.Clone()
 	return out
 }
@@ -76,6 +80,22 @@ func (d *Document) Clone() *Document {
 // --- Local operations (applier only, under the partition lock) -------------
 //
 // Each returns the delta document to replicate to the other owners.
+
+// Minter returns a generator of this document's next dots for actor, seeded
+// from the document's own causal context (per-document minting: uniqueness
+// only has to hold within one document's context, and the VV persisted with
+// the op is the crash-safe checkpoint). The actor is injected — a document is
+// shared, actor-agnostic state and does not own an identity. The closure is
+// seeded once, so a multi-field PutMulti does not rescan the context per field.
+// Callers hold the partition lock.
+func (d *Document) Minter(actor ActorID) func() Dot {
+	d.ensure()
+	seq := d.Context.Next(actor) - 1
+	return func() Dot {
+		seq++
+		return Dot{Actor: actor, Seq: seq}
+	}
+}
 
 // Put assigns value to one field using a freshly minted dot. The new register
 // replaces every register currently in the field's set; the delta context
@@ -87,6 +107,7 @@ func (d *Document) Put(field string, value []byte, dot Dot, ts HLC) *Document {
 	for _, old := range d.Fields[field] {
 		delta.Context.Add(old.Dot)
 	}
+
 	reg := Register{Dot: dot, HLC: ts, Value: value}
 	d.Fields[field] = []Register{reg}
 	d.Context.Add(dot)
@@ -108,8 +129,11 @@ func (d *Document) PutMulti(fields map[string][]byte, mint func() Dot, ts HLC) *
 
 	delta := NewDocument()
 	for _, f := range names {
-		delta.Merge(d.Put(f, fields[f], mint(), ts))
+		delta.Merge(
+			d.Put(f, fields[f], mint(), ts),
+		)
 	}
+
 	return delta
 }
 
@@ -124,6 +148,7 @@ func (d *Document) RemoveField(field string, dot Dot) *Document {
 	delete(d.Fields, field)
 	d.Context.Add(dot)
 	delta.Context.Add(dot)
+
 	return delta
 }
 
@@ -132,6 +157,7 @@ func (d *Document) RemoveField(field string, dot Dot) *Document {
 // its full context as a residual (GC'd after clean anti-entropy rounds).
 func (d *Document) Delete(dot Dot) *Document {
 	d.ensure()
+
 	delta := NewDocument()
 	for _, regs := range d.Fields {
 		for _, reg := range regs {
@@ -141,6 +167,7 @@ func (d *Document) Delete(dot Dot) *Document {
 	clear(d.Fields)
 	d.Context.Add(dot)
 	delta.Context.Add(dot)
+
 	return delta
 }
 
@@ -160,6 +187,7 @@ func (d *Document) Merge(remote *Document) {
 			delete(d.Fields, f)
 		}
 	}
+
 	for f, regs := range d.Fields {
 		if _, inRemote := remote.Fields[f]; inRemote {
 			continue // handled above
@@ -181,6 +209,7 @@ func mergeField(local []Register, localCtx *CausalContext, remote []Register, re
 			out = append(out, l)
 		}
 	}
+
 	for _, r := range remote {
 		if !hasDot(local, r.Dot) && !localCtx.Contains(r.Dot) {
 			out = append(out, r)
@@ -189,6 +218,7 @@ func mergeField(local []Register, localCtx *CausalContext, remote []Register, re
 	if len(out) == 0 {
 		return nil
 	}
+
 	sort.Slice(out, func(i, j int) bool { return lessDot(out[i].Dot, out[j].Dot) })
 	return out
 }
@@ -199,5 +229,6 @@ func hasDot(regs []Register, d Dot) bool {
 			return true
 		}
 	}
+
 	return false
 }

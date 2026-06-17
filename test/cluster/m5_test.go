@@ -29,11 +29,11 @@ func TestWriteViaNonOwnerVisibleOnAllOwners(t *testing.T) {
 		t.Fatalf("get: %v found=%v", err, got.GetFound())
 	}
 	var doc map[string]any
-	if err := json.Unmarshal(got.GetDocument(), &doc); err != nil {
+	if err := json.Unmarshal(got.GetValue(), &doc); err != nil {
 		t.Fatal(err)
 	}
 	if doc["a"] != float64(1) {
-		t.Fatalf("unexpected doc: %s", got.GetDocument())
+		t.Fatalf("unexpected doc: %s", got.GetValue())
 	}
 }
 
@@ -85,11 +85,11 @@ func TestConcurrentDifferentFieldsBothSurvive(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	}
 	var doc map[string]any
-	if err := json.Unmarshal(got.GetDocument(), &doc); err != nil {
+	if err := json.Unmarshal(got.GetValue(), &doc); err != nil {
 		t.Fatal(err)
 	}
 	if doc["a"] != "from-c1" || doc["b"] != "from-c2" {
-		t.Fatalf("concurrent fields lost: %s", got.GetDocument())
+		t.Fatalf("concurrent fields lost: %s", got.GetValue())
 	}
 }
 
@@ -119,7 +119,7 @@ func TestConcurrentSameFieldConvergesToOneWinner(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	}
 	var doc map[string]map[string]any
-	if err := json.Unmarshal(got.GetDocument(), &doc); err != nil {
+	if err := json.Unmarshal(got.GetValue(), &doc); err != nil {
 		t.Fatal(err)
 	}
 	x := doc["x"]

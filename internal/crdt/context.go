@@ -92,6 +92,7 @@ func (c *CausalContext) ensure() {
 	if c.VV == nil {
 		c.VV = make(map[ActorID]uint64)
 	}
+	
 	if c.Cloud == nil {
 		c.Cloud = make(map[Dot]struct{})
 	}
