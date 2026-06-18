@@ -40,12 +40,28 @@ jobs:
             -c 'tail -f /dev/null'
 
       - name: Compile .mermaid files to .svg
+        # mmdc is a symlink in the image's node_modules and is NOT on PATH, so call
+        # it by full path. The image's real entrypoint also passes the bundled
+        # Puppeteer config (sets Chromium's executablePath + --no-sandbox); since we
+        # overrode the entrypoint with a shell, we must re-supply it via -p here.
         run: |
           docker exec mermaid sh -c '
-            find /data/docs -type f -name "*.mermaid" | while read -r file; do
+            mmdc=/home/mermaidcli/node_modules/.bin/mmdc
+            rc=0
+            # Read from a file (not a pipe) so rc set inside the loop survives.
+            find /data/docs -type f -name "*.mermaid" -print > /tmp/diagrams.txt
+            while read -r file; do
+              if [ ! -s "$file" ]; then
+                echo "Skipping empty file: $file"
+                continue
+              fi
               echo "Compiling $file..."
-              mmdc -i "$file" -o "${file%.mermaid}.svg"
-            done
+              if ! "$mmdc" -p /puppeteer-config.json -i "$file" -o "${file%.mermaid}.svg"; then
+                echo "ERROR: failed to render $file"
+                rc=1
+              fi
+            done < /tmp/diagrams.txt
+            exit $rc
           '
 
       - name: Stop mermaid-cli container
