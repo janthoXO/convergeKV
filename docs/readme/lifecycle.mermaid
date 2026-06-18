@@ -1,0 +1,10 @@
+flowchart TD
+    START["Node restarts"] --> CHECK{"last_alive older than<br/>CrashGracePeriod?"}
+
+    CHECK -->|"no - normal restart"| KEEP["keep data + identity<br/>resume owned partitions via the bitmap<br/>anti-entropy closes any small gap"]
+    CHECK -->|"yes - gone too long"| WIPE["WipeData + rotate UUID + rebind store"]
+
+    WIPE --> FRESH["rejoin as a brand-new actor<br/>bootstrap partitions from current owners"]
+
+    KEEP --> SERVE["serve reads and writes"]
+    FRESH --> SERVE

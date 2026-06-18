@@ -1,0 +1,21 @@
+flowchart TB
+    subgraph clients["Clients"]
+        C1["Client A"]
+        C2["Client B"]
+    end
+
+    subgraph cluster["convergeKV cluster - every node runs identical code"]
+        N1["Node 1"]
+        N2["Node 2"]
+        N3["Node 3"]
+        N4["Node 4"]
+    end
+
+    C1 -->|"Get / Put / Delete - gRPC"| N1
+    C2 -->|"Get / Put / Delete - gRPC"| N3
+
+    N1 <-->|"gossip + replication"| N2
+    N2 <-->|"gossip + replication"| N3
+    N3 <-->|"gossip + replication"| N4
+    N4 <-->|"gossip + replication"| N1
+    N1 <-->|"gossip + replication"| N3

@@ -1,0 +1,19 @@
+sequenceDiagram
+    autonumber
+    participant CL as Client
+    participant RX as Receiving node
+    participant AP as Applier - owner 1
+    participant O2 as Owner 2
+    participant O3 as Owner 3
+
+    CL->>RX: Put key, JSON value
+    Note over RX: hash key to partition, find owners
+    RX->>AP: forward to first healthy owner
+    Note over AP: mint dot, apply, durable fsync<br/>no quorum, no peer round-trip
+    AP-->>RX: ok
+    RX-->>CL: ok - write acknowledged
+
+    Note over AP,O3: asynchronous, after the client is done
+    AP-)O2: replicate delta - best effort
+    AP-)O3: replicate delta - best effort
+    Note over O2,O3: anti-entropy heals anything that was dropped
