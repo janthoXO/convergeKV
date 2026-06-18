@@ -355,6 +355,7 @@ type ForwardRequest struct {
 	//	*ForwardRequest_Put
 	//	*ForwardRequest_Delete
 	//	*ForwardRequest_Get
+	//	*ForwardRequest_Patch
 	Op            isForwardRequest_Op `protobuf_oneof:"op"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -431,6 +432,15 @@ func (x *ForwardRequest) GetGet() *GetRequest {
 	return nil
 }
 
+func (x *ForwardRequest) GetPatch() *PatchRequest {
+	if x != nil {
+		if x, ok := x.Op.(*ForwardRequest_Patch); ok {
+			return x.Patch
+		}
+	}
+	return nil
+}
+
 type isForwardRequest_Op interface {
 	isForwardRequest_Op()
 }
@@ -447,11 +457,17 @@ type ForwardRequest_Get struct {
 	Get *GetRequest `protobuf:"bytes,4,opt,name=get,proto3,oneof"`
 }
 
+type ForwardRequest_Patch struct {
+	Patch *PatchRequest `protobuf:"bytes,5,opt,name=patch,proto3,oneof"`
+}
+
 func (*ForwardRequest_Put) isForwardRequest_Op() {}
 
 func (*ForwardRequest_Delete) isForwardRequest_Op() {}
 
 func (*ForwardRequest_Get) isForwardRequest_Op() {}
+
+func (*ForwardRequest_Patch) isForwardRequest_Op() {}
 
 type ForwardResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -616,12 +632,13 @@ const file_node_proto_rawDesc = "" +
 	"\x06bucket\x18\x02 \x01(\rR\x06bucket\"7\n" +
 	"\aSyncDoc\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x1a\n" +
-	"\bdocument\x18\x02 \x01(\fR\bdocument\"\xb5\x01\n" +
+	"\bdocument\x18\x02 \x01(\fR\bdocument\"\xe7\x01\n" +
 	"\x0eForwardRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12*\n" +
 	"\x03put\x18\x02 \x01(\v2\x16.convergekv.PutRequestH\x00R\x03put\x123\n" +
 	"\x06delete\x18\x03 \x01(\v2\x19.convergekv.DeleteRequestH\x00R\x06delete\x12*\n" +
-	"\x03get\x18\x04 \x01(\v2\x16.convergekv.GetRequestH\x00R\x03getB\x04\n" +
+	"\x03get\x18\x04 \x01(\v2\x16.convergekv.GetRequestH\x00R\x03get\x120\n" +
+	"\x05patch\x18\x05 \x01(\v2\x18.convergekv.PatchRequestH\x00R\x05patchB\x04\n" +
 	"\x02op\"<\n" +
 	"\x0fForwardResponse\x12)\n" +
 	"\x03get\x18\x01 \x01(\v2\x17.convergekv.GetResponseR\x03get\"Y\n" +
@@ -669,30 +686,32 @@ var file_node_proto_goTypes = []any{
 	(*PutRequest)(nil),           // 11: convergekv.PutRequest
 	(*DeleteRequest)(nil),        // 12: convergekv.DeleteRequest
 	(*GetRequest)(nil),           // 13: convergekv.GetRequest
-	(*GetResponse)(nil),          // 14: convergekv.GetResponse
+	(*PatchRequest)(nil),         // 14: convergekv.PatchRequest
+	(*GetResponse)(nil),          // 15: convergekv.GetResponse
 }
 var file_node_proto_depIdxs = []int32{
 	11, // 0: convergekv.ForwardRequest.put:type_name -> convergekv.PutRequest
 	12, // 1: convergekv.ForwardRequest.delete:type_name -> convergekv.DeleteRequest
 	13, // 2: convergekv.ForwardRequest.get:type_name -> convergekv.GetRequest
-	14, // 3: convergekv.ForwardResponse.get:type_name -> convergekv.GetResponse
-	7,  // 4: convergekv.Node.Forward:input_type -> convergekv.ForwardRequest
-	9,  // 5: convergekv.Node.ApplyDelta:input_type -> convergekv.ApplyDeltaRequest
-	1,  // 6: convergekv.Node.MerkleRoot:input_type -> convergekv.MerkleRootRequest
-	3,  // 7: convergekv.Node.MerkleLeaves:input_type -> convergekv.MerkleLeavesRequest
-	5,  // 8: convergekv.Node.SyncBucket:input_type -> convergekv.SyncBucketRequest
-	0,  // 9: convergekv.Node.Snapshot:input_type -> convergekv.SnapshotRequest
-	8,  // 10: convergekv.Node.Forward:output_type -> convergekv.ForwardResponse
-	10, // 11: convergekv.Node.ApplyDelta:output_type -> convergekv.ApplyDeltaResponse
-	2,  // 12: convergekv.Node.MerkleRoot:output_type -> convergekv.MerkleRootResponse
-	4,  // 13: convergekv.Node.MerkleLeaves:output_type -> convergekv.MerkleLeavesResponse
-	6,  // 14: convergekv.Node.SyncBucket:output_type -> convergekv.SyncDoc
-	6,  // 15: convergekv.Node.Snapshot:output_type -> convergekv.SyncDoc
-	10, // [10:16] is the sub-list for method output_type
-	4,  // [4:10] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	14, // 3: convergekv.ForwardRequest.patch:type_name -> convergekv.PatchRequest
+	15, // 4: convergekv.ForwardResponse.get:type_name -> convergekv.GetResponse
+	7,  // 5: convergekv.Node.Forward:input_type -> convergekv.ForwardRequest
+	9,  // 6: convergekv.Node.ApplyDelta:input_type -> convergekv.ApplyDeltaRequest
+	1,  // 7: convergekv.Node.MerkleRoot:input_type -> convergekv.MerkleRootRequest
+	3,  // 8: convergekv.Node.MerkleLeaves:input_type -> convergekv.MerkleLeavesRequest
+	5,  // 9: convergekv.Node.SyncBucket:input_type -> convergekv.SyncBucketRequest
+	0,  // 10: convergekv.Node.Snapshot:input_type -> convergekv.SnapshotRequest
+	8,  // 11: convergekv.Node.Forward:output_type -> convergekv.ForwardResponse
+	10, // 12: convergekv.Node.ApplyDelta:output_type -> convergekv.ApplyDeltaResponse
+	2,  // 13: convergekv.Node.MerkleRoot:output_type -> convergekv.MerkleRootResponse
+	4,  // 14: convergekv.Node.MerkleLeaves:output_type -> convergekv.MerkleLeavesResponse
+	6,  // 15: convergekv.Node.SyncBucket:output_type -> convergekv.SyncDoc
+	6,  // 16: convergekv.Node.Snapshot:output_type -> convergekv.SyncDoc
+	11, // [11:17] is the sub-list for method output_type
+	5,  // [5:11] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_node_proto_init() }
@@ -705,6 +724,7 @@ func file_node_proto_init() {
 		(*ForwardRequest_Put)(nil),
 		(*ForwardRequest_Delete)(nil),
 		(*ForwardRequest_Get)(nil),
+		(*ForwardRequest_Patch)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

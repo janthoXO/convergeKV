@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 
 	"github.com/cespare/xxhash/v2"
@@ -81,8 +82,12 @@ type GetResult struct {
 
 // --- client entry points (any node) ------------------------------------------
 
-// Put routes a client write to the applier and returns once it has applied
-// and persisted (replication to the other owners is asynchronous).
+// Put routes a client replace write to the applier and returns once it has
+// applied and persisted (replication to the other owners is asynchronous). The
+// applier sets the provided fields and removes every field it currently holds
+// that the request omits — add-wins, so a concurrently added field the applier
+// has not yet observed survives (no hard whole-document replace under
+// concurrency).
 func (c *Coordinator) Put(ctx context.Context, key string, jsonDoc []byte) error {
 	fields, err := codec.SplitFields(jsonDoc)
 	if err != nil {
@@ -103,6 +108,33 @@ func (c *Coordinator) Put(ctx context.Context, key string, jsonDoc []byte) error
 
 	return c.routeWrite(ctx, pid, req, func() error {
 		return c.ApplyPut(pid, key, fields)
+	})
+}
+
+// Patch routes a client partial write to the applier: it sets the provided
+// fields (jsonDoc may be empty when only deleting) and removes the named
+// fields. Fields not mentioned are left untouched.
+func (c *Coordinator) Patch(ctx context.Context, key string, jsonDoc []byte, deleteFields []string) error {
+	var fields map[string][]byte
+	if len(jsonDoc) > 0 {
+		var err error
+		fields, err = codec.SplitFields(jsonDoc)
+		if err != nil {
+			return ErrInvalidDocument
+		}
+	}
+	if err := validatePatch(fields, deleteFields); err != nil {
+		return err
+	}
+
+	pid := placement.Partition([]byte(key), c.p)
+	req := &pb.ForwardRequest{
+		Key: key,
+		Op:  &pb.ForwardRequest_Patch{Patch: &pb.PatchRequest{Key: key, Value: jsonDoc, DeleteFields: deleteFields}},
+	}
+
+	return c.routeWrite(ctx, pid, req, func() error {
+		return c.ApplyPatch(pid, key, fields, deleteFields)
 	})
 }
 
@@ -187,10 +219,30 @@ func (c *Coordinator) CheckReadEligible(pid uint16) error {
 	return c.CheckWriteEligible(pid) // read set == active owners
 }
 
-// ApplyPut is the applier path: mint one dot per field from the document's
-// own context, apply and persist under the partition lock, then fan out the
-// delta.
+// ApplyPut is the applier path for a replace write: set the provided fields and
+// remove every locally-observed field the request omits, under the partition
+// lock, then fan out the delta.
 func (c *Coordinator) ApplyPut(pid uint16, key string, fields map[string][]byte) error {
+	return c.applyWrite(pid, key, fields, nil, true)
+}
+
+// ApplyPatch is the applier path for a partial write: set the provided fields
+// and remove the named fields (those present locally), under the partition
+// lock, then fan out the delta.
+func (c *Coordinator) ApplyPatch(pid uint16, key string, fields map[string][]byte, deleteFields []string) error {
+	if err := validatePatch(fields, deleteFields); err != nil {
+		return err
+	}
+	return c.applyWrite(pid, key, fields, deleteFields, false)
+}
+
+// applyWrite is the shared upsert+remove core. It mints one dot per mutated
+// field from the document's own context, applies the changes (producing one
+// combined delta), persists doc + merkle leaf in one synced batch, and fans the
+// delta out. When replace is set, every observed field absent from upserts is
+// also removed. Removal is add-wins: only fields the applier currently holds are
+// removed, so an unobserved concurrent add survives the merge.
+func (c *Coordinator) applyWrite(pid uint16, key string, upserts map[string][]byte, deletes []string, replace bool) error {
 	c.locks[pid].Lock()
 	defer c.locks[pid].Unlock()
 
@@ -198,19 +250,50 @@ func (c *Coordinator) ApplyPut(pid uint16, key string, fields map[string][]byte)
 	if err != nil {
 		return err
 	}
-
 	oldHash := docHashOf(key, doc) // nil for an absent document
-
 	if doc == nil {
 		doc = crdt.NewDocument()
 	}
 
-	delta := doc.PutMulti(fields, doc.Minter(crdt.ActorID(c.self)), c.clock.Now())
+	if replace {
+		for f := range doc.Fields {
+			if _, keep := upserts[f]; !keep {
+				deletes = append(deletes, f)
+			}
+		}
+	}
+
+	mint := doc.Minter(crdt.ActorID(c.self))
+	delta := doc.PutMulti(upserts, mint, c.clock.Now())
+	sort.Strings(deletes) // deterministic dot assignment across replicas
+	for _, f := range deletes {
+		if len(doc.Fields[f]) == 0 {
+			continue // nothing observed to remove (a removal here is pure context churn)
+		}
+		delta.Merge(doc.RemoveField(f, mint()))
+	}
+
+	if delta.Context.Empty() {
+		return nil // no-op (e.g. a patch naming only absent fields)
+	}
 	if err := c.persist(pid, key, oldHash, doc); err != nil {
 		return err
 	}
 
 	c.replicate(pid, key, delta)
+	return nil
+}
+
+// validatePatch rejects a patch that would do nothing or contradicts itself.
+func validatePatch(fields map[string][]byte, deleteFields []string) error {
+	if len(fields) == 0 && len(deleteFields) == 0 {
+		return ErrInvalidDocument
+	}
+	for _, f := range deleteFields {
+		if _, ok := fields[f]; ok {
+			return ErrInvalidDocument // a field may not be both set and deleted
+		}
+	}
 	return nil
 }
 

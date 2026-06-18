@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	KV_Get_FullMethodName    = "/convergekv.KV/Get"
 	KV_Put_FullMethodName    = "/convergekv.KV/Put"
+	KV_Patch_FullMethodName  = "/convergekv.KV/Patch"
 	KV_Delete_FullMethodName = "/convergekv.KV/Delete"
 )
 
@@ -32,7 +33,12 @@ const (
 // forwards internally when it is not an owner of the key's partition.
 type KVClient interface {
 	Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (*GetResponse, error)
+	// Put replaces the document: it sets the provided fields and removes every
+	// field the applier currently holds that the request omits.
 	Put(ctx context.Context, in *PutRequest, opts ...grpc.CallOption) (*PutResponse, error)
+	// Patch partially updates the document: it sets the provided fields and
+	// removes the fields named in delete_fields. Fields not mentioned are kept.
+	Patch(ctx context.Context, in *PatchRequest, opts ...grpc.CallOption) (*PatchResponse, error)
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
 }
 
@@ -64,6 +70,16 @@ func (c *kVClient) Put(ctx context.Context, in *PutRequest, opts ...grpc.CallOpt
 	return out, nil
 }
 
+func (c *kVClient) Patch(ctx context.Context, in *PatchRequest, opts ...grpc.CallOption) (*PatchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PatchResponse)
+	err := c.cc.Invoke(ctx, KV_Patch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *kVClient) Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteResponse)
@@ -82,7 +98,12 @@ func (c *kVClient) Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.C
 // forwards internally when it is not an owner of the key's partition.
 type KVServer interface {
 	Get(context.Context, *GetRequest) (*GetResponse, error)
+	// Put replaces the document: it sets the provided fields and removes every
+	// field the applier currently holds that the request omits.
 	Put(context.Context, *PutRequest) (*PutResponse, error)
+	// Patch partially updates the document: it sets the provided fields and
+	// removes the fields named in delete_fields. Fields not mentioned are kept.
+	Patch(context.Context, *PatchRequest) (*PatchResponse, error)
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
 	mustEmbedUnimplementedKVServer()
 }
@@ -99,6 +120,9 @@ func (UnimplementedKVServer) Get(context.Context, *GetRequest) (*GetResponse, er
 }
 func (UnimplementedKVServer) Put(context.Context, *PutRequest) (*PutResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Put not implemented")
+}
+func (UnimplementedKVServer) Patch(context.Context, *PatchRequest) (*PatchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Patch not implemented")
 }
 func (UnimplementedKVServer) Delete(context.Context, *DeleteRequest) (*DeleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Delete not implemented")
@@ -160,6 +184,24 @@ func _KV_Put_Handler(srv interface{}, ctx context.Context, dec func(interface{})
 	return interceptor(ctx, in, info, handler)
 }
 
+func _KV_Patch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KVServer).Patch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KV_Patch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KVServer).Patch(ctx, req.(*PatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _KV_Delete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeleteRequest)
 	if err := dec(in); err != nil {
@@ -192,6 +234,10 @@ var KV_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Put",
 			Handler:    _KV_Put_Handler,
+		},
+		{
+			MethodName: "Patch",
+			Handler:    _KV_Patch_Handler,
 		},
 		{
 			MethodName: "Delete",

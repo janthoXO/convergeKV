@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	sockaddr "github.com/hashicorp/go-sockaddr"
 	"google.golang.org/grpc"
 
 	"github.com/janthoXO/convergeKV/internal/antientropy"
@@ -155,7 +156,7 @@ func Start(cfg config.Config, log *slog.Logger) (*Node, error) {
 	cl, err := cluster.Join(cluster.Config{
 		NodeID:          id,
 		Partitions:      cfg.Partitions,
-		RPCAddr:         advertised(nodeLn.Addr().String(), cfg.NodeAddr),
+		RPCAddr:         advertised(nodeLn.Addr().String(), cfg.NodeAddr, cfg.AdvertiseAddr),
 		BindAddr:        cfg.GossipAddr,
 		Advertise:       cfg.AdvertiseAddr,
 		Seeds:           cfg.Seeds,
@@ -520,13 +521,30 @@ func (n *Node) knownActors() map[crdt.ActorID]bool {
 	return out
 }
 
-// advertised picks the address peers should dial: the listener's concrete
-// address, unless it bound a wildcard host in which case the configured host
-// is kept. Tests always bind 127.0.0.1 explicitly.
-func advertised(listenerAddr, configured string) string {
-	host, _, err := net.SplitHostPort(listenerAddr)
-	if err != nil || host == "::" || host == "0.0.0.0" || host == "" {
+// advertised picks the host:port peers should dial for this node's Node-service
+// gRPC. If the listener bound a concrete host (e.g. tests on 127.0.0.1) that is
+// used verbatim. If it bound a wildcard host (0.0.0.0/::/empty, as when
+// NODE_ADDR is just ":7001"), the configured value carries no routable host, so
+// we substitute a reachable host with the same port: an explicit ADVERTISE_ADDR
+// host if set, otherwise the auto-detected private IP that memberlist itself
+// advertises for gossip. Without this, every peer would dial a portless
+// ":7001" that resolves to loopback (itself), and replication/anti-entropy
+// would never cross node boundaries — e.g. inside Docker.
+func advertised(listenerAddr, configured, advertiseAddr string) string {
+	host, port, err := net.SplitHostPort(listenerAddr)
+	if err != nil {
 		return configured
 	}
-	return listenerAddr
+	if host != "::" && host != "0.0.0.0" && host != "" {
+		return listenerAddr
+	}
+	if advertiseAddr != "" {
+		if h, _, err := net.SplitHostPort(advertiseAddr); err == nil && h != "" {
+			return net.JoinHostPort(h, port)
+		}
+	}
+	if ip, err := sockaddr.GetPrivateIP(); err == nil && ip != "" {
+		return net.JoinHostPort(ip, port)
+	}
+	return configured
 }

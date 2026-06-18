@@ -76,7 +76,7 @@ func DecodeDocument(b []byte) (*Document, error) {
 		}
 		doc.Context.Cloud[d] = struct{}{}
 	}
-	
+
 	if len(r.buf) != 0 {
 		return nil, fmt.Errorf("crdt: %d trailing bytes", len(r.buf))
 	}

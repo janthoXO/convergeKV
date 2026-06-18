@@ -86,7 +86,7 @@ top. The CRDT core can be tested exhaustively with no network or disk.
 | Package | Responsibility |
 |---|---|
 | `internal/crdt` | **Pure CRDT core**: documents, causal context (version vector + cloud), OR-Map fields, LWW registers, dots, merge/join. **Imports the Go standard library only.** |
-| `internal/coordinator` | Request handling: Put/Get/Delete, routing, per-partition locking, delta merge. The same code runs on every node — "coordinator" is a per-request role, not a node. |
+| `internal/coordinator` | Request handling: Put/Patch/Get/Delete, routing, per-partition locking, delta merge. The same code runs on every node — "coordinator" is a per-request role, not a node. |
 | `internal/placement` | HRW ownership computation; the immutable owners `View`. |
 | `internal/cluster` | Gossip membership (`memberlist`) and per-node metadata. |
 | `internal/storage` | Pebble wrapper: atomic doc+leaf batches, ownership bitmap, liveness lease, GC state, partition/bucket scans. |
@@ -144,20 +144,34 @@ disk write).
 
 All in `internal/coordinator/coordinator.go`; the same code runs everywhere.
 
-**Put / Delete (write path):**
+**Put / Patch / Delete (write path):**
 
-1. The receiving node splits the JSON into fields (`codec.SplitFields`) and
-   rejects anything that isn't a non-empty object **before** minting anything.
+1. The receiving node parses the request — for `Put`/`Patch` it splits the JSON
+   into fields (`codec.SplitFields`); `Put` rejects anything that isn't a
+   non-empty object, `Patch` allows an empty `value` when it only deletes
+   fields — **before** minting anything.
 2. It computes the partition and routes to the **applier** — the first
    serving owner in HRW rank order. If the receiving node is that owner, it runs
    locally (no hop); otherwise it `Forward`s the whole request (one hop).
 3. The applier **re-checks eligibility** (`CheckWriteEligible`) because the
    sender's membership view may be stale.
 4. Under the **per-partition lock**, it loads the doc, mints dot(s), applies the
-   mutation (producing a delta), and persists the doc + Merkle leaf in **one
-   synced atomic batch**.
+   mutation (producing one combined delta), and persists the doc + Merkle leaf in
+   **one synced atomic batch**.
 5. It acknowledges the client — **no quorum**, no peer round-trip.
 6. It enqueues the delta for asynchronous fan-out to the other owners.
+
+`Put`, `Patch`, and `Delete` share one core (`Coordinator.applyWrite`):
+upsert a set of fields and remove a set of fields under the lock, as one delta.
+
+- **`Put` is replace:** the remove set is *every observed field the request
+  omits*, computed from the loaded doc.
+- **`Patch` is partial:** the remove set is the explicit `delete_fields`.
+- Both removals are **add-wins** — `RemoveField` only covers dots the applier has
+  already observed, so an unobserved concurrent add survives (no hard
+  whole-document replace under concurrency). Removing a field the applier doesn't
+  hold is skipped, so it never adds pointless tombstone context.
+- **`Delete`** removes the whole document, leaving a residual context (below).
 
 **Get (read path):** served from **one** active owner, locally if possible
 (`ReadLocal`), otherwise forwarded. **No read repair** — a read returns whatever
@@ -260,9 +274,10 @@ Definitions in [`pkg/proto`](pkg/proto/). Three services:
 
 | RPC | Message | Notes |
 |---|---|---|
-| `Put` | `PutRequest{ key, value }` | `value` = bytes of a non-empty JSON object. |
+| `Put` | `PutRequest{ key, value }` | Replace; `value` = bytes of a non-empty JSON object. Omitted fields are removed (add-wins). |
+| `Patch` | `PatchRequest{ key, value, delete_fields }` | Partial update; sets `value`'s fields and removes `delete_fields`. `value` may be empty. A field may not be in both. |
 | `Get` | `GetRequest{ key }` → `GetResponse{ found, value, context_hash }` | `value` is the rendered JSON. |
-| `Delete` | `DeleteRequest{ key }` | |
+| `Delete` | `DeleteRequest{ key }` | Removes the whole document. |
 
 **`Node`** (peer-to-peer, served on `NODE_ADDR`): `Forward`, `ApplyDelta`,
 `MerkleRoot`, `MerkleLeaves`, `SyncBucket` (stream), `Snapshot` (stream). The

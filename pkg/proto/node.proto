@@ -72,6 +72,7 @@ message ForwardRequest {
     PutRequest put = 2;
     DeleteRequest delete = 3;
     GetRequest get = 4;
+    PatchRequest patch = 5;
   }
 }
 

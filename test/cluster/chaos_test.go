@@ -121,7 +121,7 @@ func TestChaos(t *testing.T) {
 					_, err = client.Delete(cctx, &pb.DeleteRequest{Key: k})
 				case 1, 2, 3, 4:
 					_, err = client.Put(cctx, &pb.PutRequest{
-						Key:      k,
+						Key:   k,
 						Value: fmt.Appendf(nil, `{"w": %d, "v": %d, "nested": {"deep": [%d]}}`, seed, rng.Int63(), rng.Intn(100)),
 					})
 				default:

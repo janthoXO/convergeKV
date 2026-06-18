@@ -69,7 +69,7 @@ What you get in practice:
 | **Self-healing replication** | A periodic Merkle-tree comparison repairs divergence in the background — the single, simple repair mechanism. |
 | **Durable storage** | Each write is persisted to an embedded LSM engine (Pebble) before it is acknowledged. |
 | **JSON documents** | Values are JSON objects; each top-level field is tracked independently, so concurrent edits to different fields never conflict. |
-| **gRPC API** | A small, typed client API: `Get`, `Put`, `Delete`. |
+| **gRPC API** | A small, typed client API: `Get`, `Put` (replace), `Patch` (partial update), `Delete`. |
 | **Observability** | Built-in Prometheus metrics and Go pprof endpoints. |
 | **Container-ready** | Ships as a tiny static binary and a minimal Docker image. |
 
@@ -130,13 +130,19 @@ existing one.
 
 ## Talking to the cluster
 
-convergeKV exposes a gRPC service `convergekv.KV` with three methods:
+convergeKV exposes a gRPC service `convergekv.KV`:
 
 | Method | Request | Notes |
 |---|---|---|
-| `Put`    | `{ key, value }` | `value` is the **bytes of a non-empty JSON object**. |
+| `Put`    | `{ key, value }` | **Replace.** `value` is the **bytes of a non-empty JSON object**; any field the document currently has that `value` omits is removed. |
+| `Patch`  | `{ key, value, delete_fields }` | **Partial update.** Sets the fields in `value` and removes those named in `delete_fields`; fields you don't mention are kept. `value` may be empty when only deleting. |
 | `Get`    | `{ key }`        | Returns `{ found, value, context_hash }`. |
-| `Delete` | `{ key }`        | Removes the key (leaves an internal tombstone, reclaimed automatically). |
+| `Delete` | `{ key }`        | Removes the whole key (leaves an internal tombstone, reclaimed automatically). |
+
+> **Replace is add-wins, not authoritative.** `Put` (and `Patch`'s deletes) only
+> remove fields the chosen owner has already observed. A field added concurrently
+> on another node that this owner hasn't seen yet survives the merge — there is no
+> hard whole-document replace under concurrency.
 
 Any node accepts any request; if it isn't an owner of the key, it forwards
 internally (at most one extra hop). You can connect to **any** node.
@@ -158,6 +164,11 @@ grpcurl -plaintext -import-path pkg/proto -proto kv.proto \
 grpcurl -plaintext -import-path pkg/proto -proto kv.proto \
   -d '{"key":"user:1"}' \
   127.0.0.1:7000 convergekv.KV/Get
+
+# Patch: set "tier", remove "name"  ({"tier":"gold"} → eyJ0aWVyIjoiZ29sZCJ9)
+grpcurl -plaintext -import-path pkg/proto -proto kv.proto \
+  -d '{"key":"user:1","value":"eyJ0aWVyIjoiZ29sZCJ9","delete_fields":["name"]}' \
+  127.0.0.1:7000 convergekv.KV/Patch
 
 # Delete
 grpcurl -plaintext -import-path pkg/proto -proto kv.proto \
@@ -195,15 +206,23 @@ startup loudly.
 ## Data model
 
 - A **value is a JSON object**, e.g. `{"name":"Alice","tier":"gold"}`.
-- Each **top-level field is tracked independently**. Two clients concurrently
-  setting `name` on one node and `tier` on another will both survive the merge.
+- Each **top-level field is tracked independently**, so concurrent edits to
+  *different* fields merge without conflict.
+- **`Put` replaces** the document (it drops fields the new object omits);
+  **`Patch`** sets the fields you provide and deletes the ones you list, leaving
+  the rest untouched. Two clients using `Patch` to set different fields on the
+  same key both survive the merge.
 - If two clients concurrently write the **same field**, the write with the later
   timestamp wins (last-writer-wins), resolved deterministically so every replica
   picks the same winner.
 - Field **values are opaque** — strings, numbers, arrays, and nested objects are
   stored verbatim and replaced as a whole (no deep/recursive merge within a
   field).
-- Empty objects (`{}`) are rejected; a document must have at least one field.
+- Field removal (`Put`'s implicit drops, `Patch`'s `delete_fields`) is
+  **add-wins**: only fields the owner has already observed are removed, so a
+  concurrent add it hasn't seen survives.
+- A `Put` value must be a **non-empty** JSON object (use `Delete` to remove a
+  whole key); a `Patch` may omit `value` when it only deletes fields.
 
 ## How it works (in brief)
 

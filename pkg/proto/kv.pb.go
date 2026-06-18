@@ -130,7 +130,9 @@ func (x *GetResponse) GetContextHash() []byte {
 type PutRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	// A JSON object; each top-level field becomes an independent register.
+	// A non-empty JSON object; each top-level field becomes an independent
+	// register. Fields the document currently has but this object omits are
+	// removed (replace semantics — add-wins under concurrency).
 	Value         []byte `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -216,6 +218,105 @@ func (*PutResponse) Descriptor() ([]byte, []int) {
 	return file_kv_proto_rawDescGZIP(), []int{3}
 }
 
+type PatchRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// A JSON object whose fields are set (upserted). May be empty/omitted when
+	// the patch only deletes fields.
+	Value []byte `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	// Top-level field names to remove. A name may not also appear in value.
+	DeleteFields  []string `protobuf:"bytes,3,rep,name=delete_fields,json=deleteFields,proto3" json:"delete_fields,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PatchRequest) Reset() {
+	*x = PatchRequest{}
+	mi := &file_kv_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PatchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PatchRequest) ProtoMessage() {}
+
+func (x *PatchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_kv_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PatchRequest.ProtoReflect.Descriptor instead.
+func (*PatchRequest) Descriptor() ([]byte, []int) {
+	return file_kv_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *PatchRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *PatchRequest) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *PatchRequest) GetDeleteFields() []string {
+	if x != nil {
+		return x.DeleteFields
+	}
+	return nil
+}
+
+type PatchResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PatchResponse) Reset() {
+	*x = PatchResponse{}
+	mi := &file_kv_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PatchResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PatchResponse) ProtoMessage() {}
+
+func (x *PatchResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_kv_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PatchResponse.ProtoReflect.Descriptor instead.
+func (*PatchResponse) Descriptor() ([]byte, []int) {
+	return file_kv_proto_rawDescGZIP(), []int{5}
+}
+
 type DeleteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -225,7 +326,7 @@ type DeleteRequest struct {
 
 func (x *DeleteRequest) Reset() {
 	*x = DeleteRequest{}
-	mi := &file_kv_proto_msgTypes[4]
+	mi := &file_kv_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -237,7 +338,7 @@ func (x *DeleteRequest) String() string {
 func (*DeleteRequest) ProtoMessage() {}
 
 func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_kv_proto_msgTypes[4]
+	mi := &file_kv_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -250,7 +351,7 @@ func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRequest) Descriptor() ([]byte, []int) {
-	return file_kv_proto_rawDescGZIP(), []int{4}
+	return file_kv_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *DeleteRequest) GetKey() string {
@@ -268,7 +369,7 @@ type DeleteResponse struct {
 
 func (x *DeleteResponse) Reset() {
 	*x = DeleteResponse{}
-	mi := &file_kv_proto_msgTypes[5]
+	mi := &file_kv_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -280,7 +381,7 @@ func (x *DeleteResponse) String() string {
 func (*DeleteResponse) ProtoMessage() {}
 
 func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kv_proto_msgTypes[5]
+	mi := &file_kv_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -293,7 +394,7 @@ func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteResponse.ProtoReflect.Descriptor instead.
 func (*DeleteResponse) Descriptor() ([]byte, []int) {
-	return file_kv_proto_rawDescGZIP(), []int{5}
+	return file_kv_proto_rawDescGZIP(), []int{7}
 }
 
 var File_kv_proto protoreflect.FileDescriptor
@@ -313,13 +414,19 @@ const file_kv_proto_rawDesc = "" +
 	"PutRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\"\r\n" +
-	"\vPutResponse\"!\n" +
+	"\vPutResponse\"[\n" +
+	"\fPatchRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12#\n" +
+	"\rdelete_fields\x18\x03 \x03(\tR\fdeleteFields\"\x0f\n" +
+	"\rPatchResponse\"!\n" +
 	"\rDeleteRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\"\x10\n" +
-	"\x0eDeleteResponse2\xb5\x01\n" +
+	"\x0eDeleteResponse2\xf3\x01\n" +
 	"\x02KV\x126\n" +
 	"\x03Get\x12\x16.convergekv.GetRequest\x1a\x17.convergekv.GetResponse\x126\n" +
-	"\x03Put\x12\x16.convergekv.PutRequest\x1a\x17.convergekv.PutResponse\x12?\n" +
+	"\x03Put\x12\x16.convergekv.PutRequest\x1a\x17.convergekv.PutResponse\x12<\n" +
+	"\x05Patch\x12\x18.convergekv.PatchRequest\x1a\x19.convergekv.PatchResponse\x12?\n" +
 	"\x06Delete\x12\x19.convergekv.DeleteRequest\x1a\x1a.convergekv.DeleteResponseB0Z.github.com/janthoXO/convergeKV/pkg/proto;protob\x06proto3"
 
 var (
@@ -334,24 +441,28 @@ func file_kv_proto_rawDescGZIP() []byte {
 	return file_kv_proto_rawDescData
 }
 
-var file_kv_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_kv_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_kv_proto_goTypes = []any{
 	(*GetRequest)(nil),     // 0: convergekv.GetRequest
 	(*GetResponse)(nil),    // 1: convergekv.GetResponse
 	(*PutRequest)(nil),     // 2: convergekv.PutRequest
 	(*PutResponse)(nil),    // 3: convergekv.PutResponse
-	(*DeleteRequest)(nil),  // 4: convergekv.DeleteRequest
-	(*DeleteResponse)(nil), // 5: convergekv.DeleteResponse
+	(*PatchRequest)(nil),   // 4: convergekv.PatchRequest
+	(*PatchResponse)(nil),  // 5: convergekv.PatchResponse
+	(*DeleteRequest)(nil),  // 6: convergekv.DeleteRequest
+	(*DeleteResponse)(nil), // 7: convergekv.DeleteResponse
 }
 var file_kv_proto_depIdxs = []int32{
 	0, // 0: convergekv.KV.Get:input_type -> convergekv.GetRequest
 	2, // 1: convergekv.KV.Put:input_type -> convergekv.PutRequest
-	4, // 2: convergekv.KV.Delete:input_type -> convergekv.DeleteRequest
-	1, // 3: convergekv.KV.Get:output_type -> convergekv.GetResponse
-	3, // 4: convergekv.KV.Put:output_type -> convergekv.PutResponse
-	5, // 5: convergekv.KV.Delete:output_type -> convergekv.DeleteResponse
-	3, // [3:6] is the sub-list for method output_type
-	0, // [0:3] is the sub-list for method input_type
+	4, // 2: convergekv.KV.Patch:input_type -> convergekv.PatchRequest
+	6, // 3: convergekv.KV.Delete:input_type -> convergekv.DeleteRequest
+	1, // 4: convergekv.KV.Get:output_type -> convergekv.GetResponse
+	3, // 5: convergekv.KV.Put:output_type -> convergekv.PutResponse
+	5, // 6: convergekv.KV.Patch:output_type -> convergekv.PatchResponse
+	7, // 7: convergekv.KV.Delete:output_type -> convergekv.DeleteResponse
+	4, // [4:8] is the sub-list for method output_type
+	0, // [0:4] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -368,7 +479,7 @@ func file_kv_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_kv_proto_rawDesc), len(file_kv_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

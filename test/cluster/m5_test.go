@@ -57,6 +57,8 @@ func TestWriteSucceedsWithTwoOfThreeOwnersDown(t *testing.T) {
 	}
 }
 
+// Patch is the additive op: setting different fields never removes the others,
+// so two clients patching distinct fields both survive (Put would replace).
 func TestConcurrentDifferentFieldsBothSurvive(t *testing.T) {
 	h := Start(t, 4)
 	ctx := context.Background()
@@ -68,15 +70,15 @@ func TestConcurrentDifferentFieldsBothSurvive(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, err1 = c1.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"a": "from-c1"}`)})
+		_, err1 = c1.Patch(ctx, &pb.PatchRequest{Key: key, Value: []byte(`{"a": "from-c1"}`)})
 	}()
 	go func() {
 		defer wg.Done()
-		_, err2 = c2.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"b": "from-c2"}`)})
+		_, err2 = c2.Patch(ctx, &pb.PatchRequest{Key: key, Value: []byte(`{"b": "from-c2"}`)})
 	}()
 	wg.Wait()
 	if err1 != nil || err2 != nil {
-		t.Fatalf("puts failed: %v / %v", err1, err2)
+		t.Fatalf("patches failed: %v / %v", err1, err2)
 	}
 	h.WaitOwnersConverged(key, time.Second)
 
@@ -90,6 +92,74 @@ func TestConcurrentDifferentFieldsBothSurvive(t *testing.T) {
 	}
 	if doc["a"] != "from-c1" || doc["b"] != "from-c2" {
 		t.Fatalf("concurrent fields lost: %s", got.GetValue())
+	}
+}
+
+// Put replaces: fields omitted from a later Put are removed.
+func TestPutReplacesOmittedFields(t *testing.T) {
+	h := Start(t, 4)
+	ctx := context.Background()
+
+	const key = "replace-me"
+	client := h.Client(0)
+	if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"a": 1, "b": 2}`)}); err != nil {
+		t.Fatal(err)
+	}
+	h.WaitOwnersConverged(key, time.Second)
+	if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"a": 9}`)}); err != nil {
+		t.Fatal(err)
+	}
+	h.WaitOwnersConverged(key, time.Second)
+
+	got, err := h.Client(1).Get(ctx, &pb.GetRequest{Key: key})
+	if err != nil || !got.GetFound() {
+		t.Fatalf("get: %v found=%v", err, got.GetFound())
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(got.GetValue(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["a"] != float64(9) {
+		t.Fatalf("a not replaced: %s", got.GetValue())
+	}
+	if _, ok := doc["b"]; ok {
+		t.Fatalf("omitted field b not removed by Put: %s", got.GetValue())
+	}
+}
+
+// Patch removes only the named fields and keeps the rest; it may set and delete
+// in one call.
+func TestPatchSetsAndDeletes(t *testing.T) {
+	h := Start(t, 4)
+	ctx := context.Background()
+
+	const key = "patch-me"
+	client := h.Client(0)
+	if _, err := client.Put(ctx, &pb.PutRequest{Key: key, Value: []byte(`{"a": 1, "b": 2, "c": 3}`)}); err != nil {
+		t.Fatal(err)
+	}
+	h.WaitOwnersConverged(key, time.Second)
+	// Set d, drop b — a and c are untouched.
+	if _, err := client.Patch(ctx, &pb.PatchRequest{
+		Key: key, Value: []byte(`{"d": 4}`), DeleteFields: []string{"b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.WaitOwnersConverged(key, time.Second)
+
+	got, err := h.Client(1).Get(ctx, &pb.GetRequest{Key: key})
+	if err != nil || !got.GetFound() {
+		t.Fatalf("get: %v found=%v", err, got.GetFound())
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(got.GetValue(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["a"] != float64(1) || doc["c"] != float64(3) || doc["d"] != float64(4) {
+		t.Fatalf("patch lost a/c or did not set d: %s", got.GetValue())
+	}
+	if _, ok := doc["b"]; ok {
+		t.Fatalf("named delete b not removed by Patch: %s", got.GetValue())
 	}
 }
 

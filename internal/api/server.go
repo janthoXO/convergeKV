@@ -39,6 +39,13 @@ func (s *KVServer) Put(ctx context.Context, req *pb.PutRequest) (*pb.PutResponse
 	return &pb.PutResponse{}, nil
 }
 
+func (s *KVServer) Patch(ctx context.Context, req *pb.PatchRequest) (*pb.PatchResponse, error) {
+	if err := s.Coord.Patch(ctx, req.GetKey(), req.GetValue(), req.GetDeleteFields()); err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.PatchResponse{}, nil
+}
+
 func (s *KVServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteResponse, error) {
 	if err := s.Coord.Delete(ctx, req.GetKey()); err != nil {
 		return nil, toStatus(err)
@@ -66,6 +73,23 @@ func (s *NodeServer) Forward(ctx context.Context, req *pb.ForwardRequest) (*pb.F
 			return nil, status.Error(codes.InvalidArgument, "document must be a non-empty JSON object")
 		}
 		if err := s.Coord.ApplyPut(pid, req.GetKey(), fields); err != nil {
+			return nil, toStatus(err)
+		}
+		return &pb.ForwardResponse{}, nil
+
+	case *pb.ForwardRequest_Patch:
+		if err := s.Coord.CheckWriteEligible(pid); err != nil {
+			return nil, toStatus(err)
+		}
+		var fields map[string][]byte
+		if v := op.Patch.GetValue(); len(v) > 0 {
+			fs, err := codec.SplitFields(v)
+			if err != nil {
+				return nil, status.Error(codes.InvalidArgument, "patch value must be a JSON object")
+			}
+			fields = fs
+		}
+		if err := s.Coord.ApplyPatch(pid, req.GetKey(), fields, op.Patch.GetDeleteFields()); err != nil {
 			return nil, toStatus(err)
 		}
 		return &pb.ForwardResponse{}, nil
