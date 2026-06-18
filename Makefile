@@ -1,6 +1,6 @@
 PROTO_FILES = $(wildcard pkg/proto/*.proto)
 
-.PHONY: proto build lint format test docker-up docker-down
+.PHONY: proto build lint format test e2e docker-up docker-down
 
 proto:
 	protoc --go_out=pkg/proto --go-grpc_out=pkg/proto \
@@ -22,6 +22,11 @@ format:
 
 test:
 	go test ./... -race -count=1
+
+# Black-box Docker end-to-end test (spins up a real cluster; needs Docker).
+# Pass ARGS=-keep to leave the cluster running afterwards.
+e2e:
+	go run ./cmd/e2e $(ARGS)
 
 N ?= 3
 
