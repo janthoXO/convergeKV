@@ -8,6 +8,8 @@ services:
       - seed-data:/data
     ports:
       - "7000:7000"
+    networks:
+      - convergekv
 
   node:
     build: .
@@ -15,12 +17,16 @@ services:
       CONVERGEKV_DATA_DIR: /data
       CONVERGEKV_GOSSIP_ADDR: ":7946"
       CONVERGEKV_SEEDS: "seed:7946"
+    ports:
+      - "7000"
     depends_on:
       - seed
     # The node service is horizontally scalable: bump the replica count (or
     # override it with `docker compose up --scale node=N`).
     deploy:
       replicas: 3
+    networks:
+    - convergekv
 
   # Monitoring stack: opt in with `docker compose --profile monitoring up`.
   prometheus:
@@ -49,6 +55,10 @@ services:
       - "3000:3000"
     depends_on:
       - prometheus
+
+networks:
+  convergekv:
+    driver: bridge
 
 volumes:
   seed-data:
