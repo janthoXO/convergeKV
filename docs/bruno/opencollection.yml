@@ -19,6 +19,11 @@ config:
         username: ""
         password: ""
       bypassProxy: ""
+
+request:
+  variables:
+    - name: seed_port
+      value: "7000"
 bundled: false
 extensions:
   bruno:

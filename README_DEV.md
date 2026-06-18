@@ -3,8 +3,9 @@
 This document is for developers who want to understand how convergeKV works
 internally or contribute to it. For a product/user-level overview, see
 [`README.md`](README.md). For the full design rationale (the "why" behind each
-decision), see the chapter-by-chapter docs in [`docs/concepts/`](docs/concepts/);
-this guide is self-contained and does not depend on them.
+decision), start at the [concepts overview](docs/concepts/01-overview.md), which
+links to a chapter for every subsystem; this guide is self-contained and does not
+depend on them.
 
 - [System summary](#system-summary)
 - [The load-bearing design decisions](#the-load-bearing-design-decisions)

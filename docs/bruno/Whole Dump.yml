@@ -8,4 +8,7 @@ grpc:
   method: /convergekv.Debug/DumpDocuments
   methodType: server-streaming
   protoFilePath: ../../pkg/proto/debug.proto
+  metadata:
+    - name: ""
+      value: ""
   auth: inherit

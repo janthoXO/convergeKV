@@ -1,0 +1,16 @@
+info:
+  name: Patch Item
+  type: grpc
+  seq: 2
+
+grpc:
+  url: "{{seed}}"
+  method: ""
+  protoFilePath: ../../pkg/proto/kv.proto
+  message: |-
+    {
+      "key": "user:1",
+      "value": "eyJ0aWVyIjoiZ29sZCJ9",
+      "delete_fields": ["name"]
+    }
+  auth: inherit

@@ -301,9 +301,10 @@ Put latency is dominated by the per-write `fsync` that makes "acknowledged" mean
 
 ## Project status
 
-convergeKV is an educational/research implementation of a causal δ-CRDT store. It is feature-complete against that
-plan and exercised by property, fuzz, chaos, and integration test suites.
+convergeKV is an educational/research implementation of a causal δ-CRDT store. It
+is exercised by property, fuzz, chaos, and integration test suites.
 
 For the architecture and contribution guide, see
 [`README_DEV.md`](README_DEV.md). A deep, chapter-by-chapter explanation of the
-design lives in [`docs/concepts/`](docs/concepts/).
+design starts at the [concepts overview](docs/concepts/01-overview.md), which
+links to a chapter for every subsystem.
