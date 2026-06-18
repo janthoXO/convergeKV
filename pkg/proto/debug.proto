@@ -63,4 +63,19 @@ message DebugDoc {
   bytes  document     = 3; // rendered JSON; empty when tombstone
   bytes  context_hash = 4; // hash of the causal context (diagnostics)
   bool   tombstone    = 5; // deleted residual: empty fields, non-empty context
+
+  // Per-field current superseding register (the LWW winner from Document.Get):
+  // its dot and HLC, so the dump shows why each value currently wins and lets
+  // two nodes' dumps be compared at the register level. Empty for tombstones.
+  repeated DebugField fields = 6;
+}
+
+message DebugField {
+  string name        = 1; // field name
+  bytes  value       = 2; // winning register's raw JSON value
+  bytes  dot_actor   = 3; // 16 raw UUID bytes of the winning register's actor
+  uint64 dot_seq     = 4; // winning register's dot sequence number
+  uint64 hlc         = 5; // packed HLC (phys_ms << 16 | logical)
+  uint64 hlc_phys_ms = 6; // decomposed: physical milliseconds
+  uint32 hlc_logical = 7; // decomposed: logical counter
 }

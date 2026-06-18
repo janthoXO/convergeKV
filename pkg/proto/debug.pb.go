@@ -370,12 +370,16 @@ func (*DumpRequest) Descriptor() ([]byte, []int) {
 }
 
 type DebugDoc struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Partition     uint32                 `protobuf:"varint,1,opt,name=partition,proto3" json:"partition,omitempty"`
-	Key           []byte                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	Document      []byte                 `protobuf:"bytes,3,opt,name=document,proto3" json:"document,omitempty"`                          // rendered JSON; empty when tombstone
-	ContextHash   []byte                 `protobuf:"bytes,4,opt,name=context_hash,json=contextHash,proto3" json:"context_hash,omitempty"` // hash of the causal context (diagnostics)
-	Tombstone     bool                   `protobuf:"varint,5,opt,name=tombstone,proto3" json:"tombstone,omitempty"`                       // deleted residual: empty fields, non-empty context
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Partition   uint32                 `protobuf:"varint,1,opt,name=partition,proto3" json:"partition,omitempty"`
+	Key         []byte                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Document    []byte                 `protobuf:"bytes,3,opt,name=document,proto3" json:"document,omitempty"`                          // rendered JSON; empty when tombstone
+	ContextHash []byte                 `protobuf:"bytes,4,opt,name=context_hash,json=contextHash,proto3" json:"context_hash,omitempty"` // hash of the causal context (diagnostics)
+	Tombstone   bool                   `protobuf:"varint,5,opt,name=tombstone,proto3" json:"tombstone,omitempty"`                       // deleted residual: empty fields, non-empty context
+	// Per-field current superseding register (the LWW winner from Document.Get):
+	// its dot and HLC, so the dump shows why each value currently wins and lets
+	// two nodes' dumps be compared at the register level. Empty for tombstones.
+	Fields        []*DebugField `protobuf:"bytes,6,rep,name=fields,proto3" json:"fields,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -445,6 +449,105 @@ func (x *DebugDoc) GetTombstone() bool {
 	return false
 }
 
+func (x *DebugDoc) GetFields() []*DebugField {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
+type DebugField struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                                // field name
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`                              // winning register's raw JSON value
+	DotActor      []byte                 `protobuf:"bytes,3,opt,name=dot_actor,json=dotActor,proto3" json:"dot_actor,omitempty"`        // 16 raw UUID bytes of the winning register's actor
+	DotSeq        uint64                 `protobuf:"varint,4,opt,name=dot_seq,json=dotSeq,proto3" json:"dot_seq,omitempty"`             // winning register's dot sequence number
+	Hlc           uint64                 `protobuf:"varint,5,opt,name=hlc,proto3" json:"hlc,omitempty"`                                 // packed HLC (phys_ms << 16 | logical)
+	HlcPhysMs     uint64                 `protobuf:"varint,6,opt,name=hlc_phys_ms,json=hlcPhysMs,proto3" json:"hlc_phys_ms,omitempty"`  // decomposed: physical milliseconds
+	HlcLogical    uint32                 `protobuf:"varint,7,opt,name=hlc_logical,json=hlcLogical,proto3" json:"hlc_logical,omitempty"` // decomposed: logical counter
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugField) Reset() {
+	*x = DebugField{}
+	mi := &file_debug_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugField) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugField) ProtoMessage() {}
+
+func (x *DebugField) ProtoReflect() protoreflect.Message {
+	mi := &file_debug_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugField.ProtoReflect.Descriptor instead.
+func (*DebugField) Descriptor() ([]byte, []int) {
+	return file_debug_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *DebugField) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *DebugField) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *DebugField) GetDotActor() []byte {
+	if x != nil {
+		return x.DotActor
+	}
+	return nil
+}
+
+func (x *DebugField) GetDotSeq() uint64 {
+	if x != nil {
+		return x.DotSeq
+	}
+	return 0
+}
+
+func (x *DebugField) GetHlc() uint64 {
+	if x != nil {
+		return x.Hlc
+	}
+	return 0
+}
+
+func (x *DebugField) GetHlcPhysMs() uint64 {
+	if x != nil {
+		return x.HlcPhysMs
+	}
+	return 0
+}
+
+func (x *DebugField) GetHlcLogical() uint32 {
+	if x != nil {
+		return x.HlcLogical
+	}
+	return 0
+}
+
 var File_debug_proto protoreflect.FileDescriptor
 
 const file_debug_proto_rawDesc = "" +
@@ -479,13 +582,24 @@ const file_debug_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\rR\x06status\x12\x12\n" +
 	"\x04dead\x18\x03 \x01(\bR\x04dead\"\r\n" +
-	"\vDumpRequest\"\x97\x01\n" +
+	"\vDumpRequest\"\xc7\x01\n" +
 	"\bDebugDoc\x12\x1c\n" +
 	"\tpartition\x18\x01 \x01(\rR\tpartition\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\fR\x03key\x12\x1a\n" +
 	"\bdocument\x18\x03 \x01(\fR\bdocument\x12!\n" +
 	"\fcontext_hash\x18\x04 \x01(\fR\vcontextHash\x12\x1c\n" +
-	"\ttombstone\x18\x05 \x01(\bR\ttombstone2\x8d\x01\n" +
+	"\ttombstone\x18\x05 \x01(\bR\ttombstone\x12.\n" +
+	"\x06fields\x18\x06 \x03(\v2\x16.convergekv.DebugFieldR\x06fields\"\xbf\x01\n" +
+	"\n" +
+	"DebugField\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12\x1b\n" +
+	"\tdot_actor\x18\x03 \x01(\fR\bdotActor\x12\x17\n" +
+	"\adot_seq\x18\x04 \x01(\x04R\x06dotSeq\x12\x10\n" +
+	"\x03hlc\x18\x05 \x01(\x04R\x03hlc\x12\x1e\n" +
+	"\vhlc_phys_ms\x18\x06 \x01(\x04R\thlcPhysMs\x12\x1f\n" +
+	"\vhlc_logical\x18\a \x01(\rR\n" +
+	"hlcLogical2\x8d\x01\n" +
 	"\x05Debug\x12B\n" +
 	"\aInspect\x12\x1a.convergekv.InspectRequest\x1a\x1b.convergekv.InspectResponse\x12@\n" +
 	"\rDumpDocuments\x12\x17.convergekv.DumpRequest\x1a\x14.convergekv.DebugDoc0\x01B0Z.github.com/janthoXO/convergeKV/pkg/proto;protob\x06proto3"
@@ -502,7 +616,7 @@ func file_debug_proto_rawDescGZIP() []byte {
 	return file_debug_proto_rawDescData
 }
 
-var file_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_debug_proto_goTypes = []any{
 	(*InspectRequest)(nil),  // 0: convergekv.InspectRequest
 	(*InspectResponse)(nil), // 1: convergekv.InspectResponse
@@ -511,20 +625,22 @@ var file_debug_proto_goTypes = []any{
 	(*Owner)(nil),           // 4: convergekv.Owner
 	(*DumpRequest)(nil),     // 5: convergekv.DumpRequest
 	(*DebugDoc)(nil),        // 6: convergekv.DebugDoc
+	(*DebugField)(nil),      // 7: convergekv.DebugField
 }
 var file_debug_proto_depIdxs = []int32{
 	2, // 0: convergekv.InspectResponse.members:type_name -> convergekv.Member
 	3, // 1: convergekv.InspectResponse.partitions_table:type_name -> convergekv.PartitionOwners
 	4, // 2: convergekv.PartitionOwners.owners:type_name -> convergekv.Owner
-	0, // 3: convergekv.Debug.Inspect:input_type -> convergekv.InspectRequest
-	5, // 4: convergekv.Debug.DumpDocuments:input_type -> convergekv.DumpRequest
-	1, // 5: convergekv.Debug.Inspect:output_type -> convergekv.InspectResponse
-	6, // 6: convergekv.Debug.DumpDocuments:output_type -> convergekv.DebugDoc
-	5, // [5:7] is the sub-list for method output_type
-	3, // [3:5] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	7, // 3: convergekv.DebugDoc.fields:type_name -> convergekv.DebugField
+	0, // 4: convergekv.Debug.Inspect:input_type -> convergekv.InspectRequest
+	5, // 5: convergekv.Debug.DumpDocuments:input_type -> convergekv.DumpRequest
+	1, // 6: convergekv.Debug.Inspect:output_type -> convergekv.InspectResponse
+	6, // 7: convergekv.Debug.DumpDocuments:output_type -> convergekv.DebugDoc
+	6, // [6:8] is the sub-list for method output_type
+	4, // [4:6] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_debug_proto_init() }
@@ -538,7 +654,7 @@ func file_debug_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_debug_proto_rawDesc), len(file_debug_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

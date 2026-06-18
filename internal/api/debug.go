@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"encoding/binary"
+	"sort"
 
 	"github.com/cespare/xxhash/v2"
 
 	"github.com/janthoXO/convergeKV/internal/cluster"
 	"github.com/janthoXO/convergeKV/internal/codec"
 	"github.com/janthoXO/convergeKV/internal/crdt"
+	"github.com/janthoXO/convergeKV/internal/hlc"
 	"github.com/janthoXO/convergeKV/internal/nodeid"
 	"github.com/janthoXO/convergeKV/internal/placement"
 	"github.com/janthoXO/convergeKV/internal/storage"
@@ -77,6 +79,7 @@ func (s *DebugServer) DumpDocuments(_ *pb.DumpRequest, stream pb.Debug_DumpDocum
 					return err
 				}
 				dd.Document = rendered
+				dd.Fields = debugFields(doc)
 			}
 			return stream.Send(dd)
 		})
@@ -98,4 +101,34 @@ func memberPB(m cluster.Member, dead bool) *pb.Member {
 
 func debugContextHash(doc *crdt.Document) []byte {
 	return binary.BigEndian.AppendUint64(nil, xxhash.Sum64(doc.Context.Canonical()))
+}
+
+// debugFields emits, per field, the current superseding register (the LWW
+// winner from Document.Get) with its dot and HLC. Fields are walked in sorted
+// order for deterministic output, mirroring codec.RenderDocument.
+func debugFields(doc *crdt.Document) []*pb.DebugField {
+	names := make([]string, 0, len(doc.Fields))
+	for f := range doc.Fields {
+		names = append(names, f)
+	}
+	sort.Strings(names)
+
+	out := make([]*pb.DebugField, 0, len(names))
+	for _, f := range names {
+		reg, ok := doc.Get(f)
+		if !ok {
+			continue
+		}
+		actor := reg.Dot.Actor // copy to take a slice of the array
+		out = append(out, &pb.DebugField{
+			Name:       f,
+			Value:      reg.Value,
+			DotActor:   actor[:],
+			DotSeq:     reg.Dot.Seq,
+			Hlc:        reg.HLC,
+			HlcPhysMs:  hlc.PhysMs(reg.HLC),
+			HlcLogical: uint32(hlc.Logical(reg.HLC)),
+		})
+	}
+	return out
 }
