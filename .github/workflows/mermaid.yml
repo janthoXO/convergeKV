@@ -36,7 +36,7 @@ jobs:
             -u "$(id -u):$(id -g)" \
             -v "$PWD:/data" \
             --entrypoint sh \
-            ghcr.io/mermaid-js/mermaid-cli/mermaid-cli:11 \
+            ghcr.io/mermaid-js/mermaid-cli/mermaid-cli:11.15.0 \
             -c 'tail -f /dev/null'
 
       - name: Compile .mermaid files to .svg
