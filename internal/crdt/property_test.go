@@ -15,8 +15,8 @@ type history struct {
 	replicas []*Document
 	minters  []*Minter
 	deltas   []*Document
-	// removedDots are dots of registers that some op removed; per invariant 3
-	// they must never reappear as a field's dot after convergence.
+	// removedDots are dots of registers that some op removed; they must never
+	// reappear as a field's dot after convergence (the no-resurrection property).
 	removedDots map[Dot]struct{}
 	ts          HLC
 }
@@ -90,8 +90,8 @@ func (h *history) converge(t interface {
 	}
 }
 
-// Invariants 1, 3, 5 (convergence, no resurrection, LWW determinism) under
-// rapid-generated op sequences and delivery orders.
+// Convergence, no resurrection, and LWW determinism under rapid-generated op
+// sequences and delivery orders.
 func TestPropertyConvergence(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		h := newHistory(3)
@@ -110,7 +110,7 @@ func TestPropertyConvergence(t *testing.T) {
 	})
 }
 
-// Spec M1 acceptance: 10k randomized op sequences across 3 simulated replicas.
+// TestConvergence10k runs 10k randomized op sequences across 3 simulated replicas.
 func TestConvergence10k(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	for iter := 0; iter < 10_000; iter++ {
@@ -123,7 +123,7 @@ func TestConvergence10k(t *testing.T) {
 	}
 }
 
-// Invariant 4: concurrent puts to different fields both survive everywhere.
+// Concurrent puts to different fields both survive everywhere.
 func TestPropertyConcurrentFieldsSurvive(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		h := newHistory(3)
@@ -142,8 +142,8 @@ func TestPropertyConcurrentFieldsSurvive(t *testing.T) {
 	})
 }
 
-// Invariant 2: merge is commutative, associative, idempotent over documents
-// generated from consistent op histories.
+// Merge is commutative, associative, and idempotent over documents generated
+// from consistent op histories.
 func TestPropertyMergeLaws(t *testing.T) {
 	genDoc := func(t *rapid.T, label string, actorByte byte) *Document {
 		d := NewDocument()
@@ -198,7 +198,7 @@ func TestPropertyMergeLaws(t *testing.T) {
 	})
 }
 
-// Invariant 7 across many keys: with per-document minting (the applier's
+// Bounded context growth across many keys: with per-document minting (the applier's
 // scheme — seq = Context.Next(self) on the document being mutated), every
 // document's cloud compacts to empty after full delivery even though each
 // actor's writes interleave across documents. A node-wide counter fails
@@ -257,7 +257,7 @@ func TestPropertyPerDocumentMintingCloudBounded(t *testing.T) {
 	})
 }
 
-// Invariant 7 (steady-state shape): context VV never has more entries than
+// Bounded context (steady-state shape): context VV never has more entries than
 // actors that ever wrote, and the cloud is empty once all deltas from all
 // actors are delivered contiguously.
 func TestPropertyContextBounded(t *testing.T) {

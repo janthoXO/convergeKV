@@ -32,7 +32,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // Node is the node-facing service: request forwarding, delta replication,
-// and (from M6/M7) anti-entropy and partition transfer streams.
+// anti-entropy, and partition transfer streams.
 type NodeClient interface {
 	// Forward executes a client op on this node, which must be an eligible
 	// owner of the key's partition (applier-eligible for writes, read-set
@@ -145,7 +145,7 @@ type Node_SnapshotClient = grpc.ServerStreamingClient[SyncDoc]
 // for forward compatibility.
 //
 // Node is the node-facing service: request forwarding, delta replication,
-// and (from M6/M7) anti-entropy and partition transfer streams.
+// anti-entropy, and partition transfer streams.
 type NodeServer interface {
 	// Forward executes a client op on this node, which must be an eligible
 	// owner of the key's partition (applier-eligible for writes, read-set

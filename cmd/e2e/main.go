@@ -11,7 +11,7 @@
 //  4. delayed / out-of-order delivery,
 //  5. eventual convergence after a temporary partition heals.
 //
-// How it works (see docs/concepts and CLAUDE.md for the model):
+// How it works (see docs/concepts for the model):
 //
 //   - The cluster is N=4 (seed + 3 nodes), RF=3, so every key lives on exactly
 //     3 of the 4 nodes. Verification first resolves a key's owners (partition =

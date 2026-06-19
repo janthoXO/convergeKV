@@ -2,11 +2,11 @@
 // write path (incremental leaf maintenance) and the exchange engine.
 //
 // Each partition has a fixed vector of Buckets leaf hashes. A document's
-// hash covers its key and FULL canonical encoding — spec §1 said context
-// only, but with multi-value register sets (the M1 correction) two replicas
-// can hold identical contexts with different register subsets, which a
-// context-only hash can never detect: the divergence becomes permanently
-// invisible to anti-entropy (found by TestChaos). A leaf is the XOR of its
+// hash covers its key and FULL canonical encoding rather than its context
+// alone: with multi-value register sets, two replicas can hold identical
+// contexts with different register subsets, which a context-only hash can
+// never detect, leaving the divergence permanently invisible to
+// anti-entropy. A leaf is the XOR of its
 // documents' hashes, which makes updates incremental: leaf ^= oldDocHash ^
 // newDocHash in the same batch as the document write. The root is the hash
 // of the leaf vector.

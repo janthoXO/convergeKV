@@ -7,7 +7,7 @@ option go_package = "github.com/janthoXO/convergeKV/pkg/proto;proto";
 import "kv.proto";
 
 // Node is the node-facing service: request forwarding, delta replication,
-// and (from M6/M7) anti-entropy and partition transfer streams.
+// anti-entropy, and partition transfer streams.
 service Node {
   // Forward executes a client op on this node, which must be an eligible
   // owner of the key's partition (applier-eligible for writes, read-set

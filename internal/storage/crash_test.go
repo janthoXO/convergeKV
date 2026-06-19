@@ -16,8 +16,8 @@ const crashDirEnv = "CONVERGEKV_CRASH_HELPER_DIR"
 var crashActor = crdt.ActorID{0xCC}
 
 // TestCrashRestart spawns a child process that hammers the store with synced
-// writes, SIGKILLs it mid-storm, reopens the store, and verifies the two M2
-// acceptance properties: no torn documents (every stored doc decodes — done
+// writes, SIGKILLs it mid-storm, reopens the store, and verifies two
+// crash-safety properties: no torn documents (every stored doc decodes — done
 // implicitly by ScanPartition) and no dot reuse. Dots are minted per document
 // from its own persisted context (seq = Context.Next(self)), so the document
 // itself is the checkpoint: after a crash, every surviving doc's context must

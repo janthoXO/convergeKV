@@ -72,8 +72,8 @@ func TestResidualContextsPurged(t *testing.T) {
 	}
 }
 
-// The core correctness claim of M8: a replica that was offline through a
-// delete AND the subsequent GC must not resurrect the key when it returns.
+// A replica that was offline through a delete AND the subsequent GC must not
+// resurrect the key when it returns.
 func TestNoResurrectionAfterOfflineReplicaReturns(t *testing.T) {
 	h := Start(t, 4)
 	ctx := context.Background()

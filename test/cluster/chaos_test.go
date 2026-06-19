@@ -65,9 +65,9 @@ func (c *chaosClients) close() {
 }
 
 // TestChaos runs randomized load while crashing and restarting nodes, then
-// checks the section-5 invariants: every owner of every key converges to a
-// byte-identical document (or identical absence). Duration defaults to 30s;
-// set CONVERGEKV_CHAOS_DURATION (e.g. "1h") for the full acceptance run.
+// checks the core convergence invariant: every owner of every key converges
+// to a byte-identical document (or identical absence). Duration defaults to
+// 30s; set CONVERGEKV_CHAOS_DURATION (e.g. "1h") for a longer soak run.
 func TestChaos(t *testing.T) {
 	if testing.Short() {
 		t.Skip("chaos run skipped in -short mode")
@@ -167,7 +167,7 @@ func TestChaos(t *testing.T) {
 		t.Fatal("load generator produced no operations")
 	}
 
-	// Invariant 1/5: all owners byte-identical per key (or identically
+	// Convergence: all owners byte-identical per key (or identically
 	// absent) once anti-entropy settles.
 	for i := 0; i < keyCount; i++ {
 		k := key(i)

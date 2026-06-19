@@ -98,7 +98,7 @@ func (r *Reaper) OnCleanRound(pid uint16) {
 }
 
 // OnDirtyRound voids every key's certification progress for the partition:
-// the plan requires two CONSECUTIVE clean rounds per key, and the durable
+// certification requires two CONSECUTIVE clean rounds per key, and the durable
 // counters would otherwise survive a dirty round in between (two adjacent
 // clean rounds can be as little as interval/2 apart — less than a stale
 // delta can sit in a peer's retry queue).

@@ -6,7 +6,7 @@ import "sort"
 // context of every event ever observed. Empty Fields with a non-empty
 // Context means the document is deleted (a residual context, GC'd later).
 //
-// Spec correction (to sections 2.1–2.3): each field holds the SET of
+// Each field holds the SET of
 // concurrent registers (a multi-value leaf), not a single one. Collapsing
 // concurrency to one register at merge time via LWW is not convergent under
 // op-delta delivery — an LWW loser's dot is recorded only in the origin's
@@ -15,7 +15,7 @@ import "sort"
 // TestPropertyConvergence). Instead the dot store keeps every concurrent
 // register, merge is the standard dotted-store join (provably a lattice),
 // and LWW arbitration happens at read time via Get. Client-visible semantics
-// are exactly the spec's: one whole winner per field, no partial mixing.
+// are one whole winner per field, no partial mixing.
 // Any subsequent Put covers the whole set, collapsing it again.
 //
 // Invariant: for every register r in Fields, Context.Contains(r.Dot).

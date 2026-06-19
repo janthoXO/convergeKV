@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// The crdt package must stay pure: stdlib imports only (spec section 4).
+// The crdt package must stay pure: stdlib imports only.
 // Stdlib import paths never contain a dot in their first path element.
 func TestStdlibOnly(t *testing.T) {
 	entries, err := os.ReadDir(".")

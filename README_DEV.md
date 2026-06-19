@@ -399,8 +399,9 @@ even slower) outside China.
 - **`test/cluster`** — an in-process multi-node harness (`harness.go`) runs many
   real nodes in one process on `:0` ports with `Partitions = 16` (fast
   convergence, same code paths). Suites:
-  - `m5`–`m8_test.go` — integration tests, named after milestones (writes,
-    failure tolerance, anti-entropy, transfer, GC).
+  - `operations_test.go`, `antientropy_test.go`, `membership_test.go`,
+    `gc_test.go` — integration tests for writes and failure tolerance,
+    anti-entropy, membership and transfer, and garbage collection.
   - `chaos_test.go` — randomized kill/restart churn.
   - `bench_test.go` — latency benchmarks (`docs/BENCHMARKS.md`).
   - `leak_test.go` — zero goroutine leaks via `go.uber.org/goleak`.

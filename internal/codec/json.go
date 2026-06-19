@@ -1,9 +1,9 @@
 // Package codec sits at the system boundaries: it splits client JSON into
 // opaque top-level field values (the CRDT merge granularity) and renders the
 // merged document back to JSON. Values — scalars, arrays, nested objects —
-// are kept verbatim and never inspected (spec: nested values are opaque LWW
+// are kept verbatim and never inspected: nested values are opaque LWW
 // wholes; deep merge would later become a recursive register variant, so this
-// package must not flatten that possibility away).
+// package must not flatten that possibility away.
 package codec
 
 import (

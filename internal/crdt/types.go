@@ -1,7 +1,6 @@
 // Package crdt implements the causal CRDT document model: per-document
 // causal contexts (dots), an OR-Map of top-level fields, and LWW-over-HLC
-// registers at the leaves. Deltas and merge follow sections 2.2 and 2.3 of
-// docs/IMPLEMENTATION_PLAN.md exactly.
+// registers at the leaves.
 //
 // This package is pure: stdlib imports only, no I/O.
 package crdt

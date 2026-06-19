@@ -96,14 +96,14 @@ func (e *Engine) SetGC(gc GC) { e.gc = gc }
 func (e *Engine) KeysRepaired() uint64 { return e.keysRepaired.Load() }
 
 // LeafFetches returns how many leaf vectors were fetched (zero across clean
-// rounds — the acceptance bound for clean-round traffic).
+// rounds, which bounds clean-round traffic).
 func (e *Engine) LeafFetches() uint64 { return e.leafFetches.Load() }
 
 // RootChecks returns the number of root comparisons performed.
 func (e *Engine) RootChecks() uint64 { return e.rootChecks.Load() }
 
 // CleanRounds returns how many consecutive clean rounds the partition has
-// had (the M8 GC trigger).
+// had (the GC trigger).
 func (e *Engine) CleanRounds(pid uint16) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()

@@ -1,6 +1,6 @@
-// Package storage wraps Pebble with the key layout of spec section 3.4
-// (amended: the merkle bucket sits inside the document key, so bucket scans
-// are bounded range scans instead of partition scans with a filter):
+// Package storage wraps Pebble with the following key layout. The merkle
+// bucket sits inside the document key, so bucket scans are bounded range
+// scans instead of partition scans with a filter:
 //
 //	'd' ‖ partitionID(uint16 BE) ‖ bucket(uint16 BE) ‖ userKey -> canonical Document
 //	'm' ‖ partitionID ‖ treePath                               -> merkle node hash

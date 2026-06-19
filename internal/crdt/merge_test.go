@@ -19,7 +19,7 @@ func docEqual(t *testing.T, got, want *Document) {
 	}
 }
 
-// --- 2.3 case: L present, R absent ------------------------------------------
+// --- merge case: L present, R absent ----------------------------------------
 
 func TestMergeRemoteSawAndRemoved(t *testing.T) {
 	local := NewDocument()
@@ -52,7 +52,7 @@ func TestMergeRemoteNeverSawKeepsLocal(t *testing.T) {
 	}
 }
 
-// --- 2.3 case: L absent, R present ------------------------------------------
+// --- merge case: L absent, R present ----------------------------------------
 
 func TestMergeWeRemovedStaysAbsent(t *testing.T) {
 	reg := Register{Dot: dot(actorB, 3), HLC: 50, Value: []byte("old")}
@@ -83,7 +83,7 @@ func TestMergeNewFieldAdopted(t *testing.T) {
 	}
 }
 
-// --- 2.3 case: both present --------------------------------------------------
+// --- merge case: both present ------------------------------------------------
 
 func TestMergeSameDotKeepsLocal(t *testing.T) {
 	local := NewDocument()
@@ -173,7 +173,7 @@ func TestMergeTrueConcurrencyHLCTieActorBytesBreak(t *testing.T) {
 	}
 }
 
-// --- 2.2 delta semantics ------------------------------------------------------
+// --- delta semantics ----------------------------------------------------------
 
 func TestPutDeltaConveysWrite(t *testing.T) {
 	src := NewDocument()

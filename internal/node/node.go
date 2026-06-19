@@ -256,7 +256,7 @@ func (n *Node) AdminAddr() string  { return n.adminAddr }
 // View returns the current placement view.
 func (n *Node) View() *placement.View { return n.view.Load() }
 
-// Cluster exposes the membership layer (harness and later milestones).
+// Cluster exposes the membership layer.
 func (n *Node) Cluster() *cluster.Cluster { return n.cluster }
 
 // Transfer exposes the bootstrap manager (test assertions).
