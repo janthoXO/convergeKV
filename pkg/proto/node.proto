@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package convergekv;
+
+option go_package = "github.com/janthoXO/convergeKV/pkg/proto;proto";
+
+import "kv.proto";
+
+// Node is the node-facing service: request forwarding, delta replication,
+// anti-entropy, and partition transfer streams.
+service Node {
+  // Forward executes a client op on this node, which must be an eligible
+  // owner of the key's partition (applier-eligible for writes, read-set
+  // member for reads). It never re-forwards.
+  rpc Forward(ForwardRequest) returns (ForwardResponse);
+
+  // ApplyDelta merges a replicated delta into local state. Accepted while
+  // active or bootstrapping.
+  rpc ApplyDelta(ApplyDeltaRequest) returns (ApplyDeltaResponse);
+
+  // MerkleRoot returns the partition's anti-entropy tree root.
+  rpc MerkleRoot(MerkleRootRequest) returns (MerkleRootResponse);
+
+  // MerkleLeaves returns the partition's full leaf vector (only fetched
+  // when roots differ).
+  rpc MerkleLeaves(MerkleLeavesRequest) returns (MerkleLeavesResponse);
+
+  // SyncBucket streams the full documents of one merkle bucket.
+  rpc SyncBucket(SyncBucketRequest) returns (stream SyncDoc);
+
+  // Snapshot streams every document of a partition from a consistent
+  // storage snapshot (bootstrap transfer; overlapping live deltas are
+  // handled by merge).
+  rpc Snapshot(SnapshotRequest) returns (stream SyncDoc);
+}
+
+message SnapshotRequest {
+  uint32 partition = 1;
+}
+
+message MerkleRootRequest {
+  uint32 partition = 1;
+}
+
+message MerkleRootResponse {
+  bytes root = 1;
+}
+
+message MerkleLeavesRequest {
+  uint32 partition = 1;
+}
+
+message MerkleLeavesResponse {
+  // Buckets × 32 bytes, concatenated in bucket order.
+  bytes leaves = 1;
+}
+
+message SyncBucketRequest {
+  uint32 partition = 1;
+  uint32 bucket = 2;
+}
+
+message SyncDoc {
+  bytes key = 1;
+  // Canonical encoding of the full document.
+  bytes document = 2;
+}
+
+message ForwardRequest {
+  string key = 1;
+  oneof op {
+    PutRequest put = 2;
+    DeleteRequest delete = 3;
+    GetRequest get = 4;
+    PatchRequest patch = 5;
+  }
+}
+
+message ForwardResponse {
+  GetResponse get = 1; // set for get ops
+}
+
+message ApplyDeltaRequest {
+  uint32 partition = 1;
+  bytes key = 2;
+  // Canonical encoding of the delta document.
+  bytes delta = 3;
+}
+
+message ApplyDeltaResponse {}

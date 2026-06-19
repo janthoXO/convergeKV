@@ -1,13 +1,13 @@
 info:
   name: Delete Item
   type: grpc
-  seq: 4
+  seq: 3
 
 grpc:
   url: "{{seed}}"
-  method: /kv.KVService/Delete
+  method: /convergekv.KV/Delete
   methodType: unary
-  protoFilePath: ../../proto/kv/kv.proto
+  protoFilePath: ../../pkg/proto/kv.proto
   message: |-
     {
       "key": "user:1"

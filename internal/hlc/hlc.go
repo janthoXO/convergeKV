@@ -1,129 +1,90 @@
-// Package hlc implements a Hybrid Logical Clock for distributed timestamping.
-// It provides total ordering of events across nodes by combining physical
-// wall-clock time with a logical counter for tie-breaking.
+// Package hlc implements a hybrid logical clock packed into a uint64:
+// 48 bits of physical milliseconds followed by a 16-bit logical counter.
+// Comparing two timestamps as plain integers therefore orders them
+// physical-first, logical-second.
 package hlc
 
 import (
-	"errors"
 	"sync"
 	"time"
 )
 
-// ErrClockDrift is returned when a clock value is more than MAX_CLOCK_DRIFT_MS
-// from local wall time: by Send when the HLC is stuck that far in the future,
-// or by Receive when a remote timestamp is that far in the future.
-var ErrClockDrift = errors.New("hlc: clock value exceeds max drift from wall time")
+// Timestamp is a packed HLC value: physical ms << 16 | logical.
+type Timestamp = uint64
 
-// Timestamp is a Hybrid Logical Clock value.
-// It is totally ordered: compare PhysicalMs first, then Logical.
-type Timestamp struct {
-	PhysicalMs uint64
-	Logical    uint32
+const logicalBits = 16
+
+func Pack(physMs uint64, logical uint16) Timestamp {
+	return physMs<<logicalBits | uint64(logical)
 }
 
-// HLC is a thread-safe Hybrid Logical Clock.
-type HLC struct {
-	mu               sync.Mutex
-	currentTimestamp Timestamp
+func PhysMs(t Timestamp) uint64 { return t >> logicalBits }
+
+func Logical(t Timestamp) uint16 { return uint16(t & (1<<logicalBits - 1)) }
+
+// Clock is a thread-safe HLC. The zero value is not usable; construct with
+// New (or NewWithClock in tests to inject a wall clock).
+type Clock struct {
+	mu      sync.Mutex
+	last    Timestamp
+	wallNow func() time.Time
 }
 
-// New returns an HLC initialised to the current wall time.
-func New() *HLC { return &HLC{} }
+func New() *Clock { return NewWithClock(time.Now) }
 
-// Send is called before originating a local event (a write).
-// It advances the clock and returns the new timestamp.
-// Returns ErrClockDrift if the HLC's physical time is more than
-// MAX_CLOCK_DRIFT_MS ahead of local wall time — meaning the clock is stuck in
-// the future after a forward wall-clock jump that was later corrected. The
-// clock is left unchanged so the caller can retry or surface the error.
-func (h *HLC) Send() (Timestamp, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	pt := wallNow()
+func NewWithClock(now func() time.Time) *Clock {
+	return &Clock{wallNow: now}
+}
 
-	if h.currentTimestamp.PhysicalMs > pt+MAX_CLOCK_DRIFT_MS {
-		return h.currentTimestamp, ErrClockDrift
-	}
-
-	if pt > h.currentTimestamp.PhysicalMs {
-		h.currentTimestamp = Timestamp{PhysicalMs: pt, Logical: 0}
+// Now advances the clock for a local or send event and returns the new
+// timestamp. Strictly monotonic: if the wall clock has not advanced (or went
+// backwards) the logical counter increments instead; logical overflow carries
+// into the physical part, which keeps ordering correct.
+func (c *Clock) Now() Timestamp {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if pt := c.wallTS(); pt > c.last {
+		c.last = pt
 	} else {
-		h.currentTimestamp.Logical++
+		c.last++
 	}
-	return h.currentTimestamp, nil
+	return c.last
 }
 
-const MAX_CLOCK_DRIFT_MS = 10 * 60 * 1000 // 10 minutes
-
-// Receive is called when a message carrying remote timestamp r arrives.
-// It advances the local clock to be strictly greater than both the local
-// state and the remote timestamp, then returns the new timestamp.
-// Returns ErrClockDrift if the remote physical time is more than
-// MAX_CLOCK_DRIFT_MS ahead of local wall time.
-func (h *HLC) Receive(remoteTimestamp Timestamp) (Timestamp, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	pt := wallNow()
-
-	if remoteTimestamp.PhysicalMs > pt+MAX_CLOCK_DRIFT_MS {
-		return h.currentTimestamp, ErrClockDrift
+// Update applies the HLC receive rule for a remote timestamp and returns the
+// new local timestamp, which is strictly greater than both the previous local
+// value and the remote value unless the wall clock is already ahead of both.
+func (c *Clock) Update(remote Timestamp) Timestamp {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pt := c.wallTS()
+	m := max(c.last, remote)
+	if pt > m {
+		c.last = pt
+	} else {
+		c.last = m + 1
 	}
-
-	maxPhys := max(pt, h.currentTimestamp.PhysicalMs, remoteTimestamp.PhysicalMs)
-
-	switch {
-	case maxPhys > h.currentTimestamp.PhysicalMs && maxPhys > remoteTimestamp.PhysicalMs:
-		h.currentTimestamp = Timestamp{PhysicalMs: maxPhys, Logical: 0}
-
-	case maxPhys == h.currentTimestamp.PhysicalMs && maxPhys > remoteTimestamp.PhysicalMs:
-		h.currentTimestamp.Logical++
-
-	case maxPhys == remoteTimestamp.PhysicalMs && maxPhys > h.currentTimestamp.PhysicalMs:
-		h.currentTimestamp = Timestamp{PhysicalMs: maxPhys, Logical: remoteTimestamp.Logical + 1}
-
-	default: // maxPhys == both physical parts
-		if h.currentTimestamp.Logical >= remoteTimestamp.Logical {
-			h.currentTimestamp.Logical++
-		} else {
-			h.currentTimestamp = Timestamp{PhysicalMs: maxPhys, Logical: remoteTimestamp.Logical + 1}
-		}
-	}
-
-	return h.currentTimestamp, nil
+	return c.last
 }
 
-// Seed advances the clock so that future Send calls will never return a
-// timestamp below floor. Call once at startup with the highest timestamp
-// found in durable storage to restore monotonicity after a crash or a
-// backwards NTP correction.
-func (h *HLC) Seed(floor Timestamp) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if Less(h.currentTimestamp, floor) {
-		h.currentTimestamp = floor
+// Last returns the current timestamp without advancing the clock
+// (for checkpointing).
+func (c *Clock) Last() Timestamp {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.last
+}
+
+// SetAtLeast raises the clock to at least t (for restart recovery from a
+// checkpoint). It never lowers the clock.
+func (c *Clock) SetAtLeast(t Timestamp) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if t > c.last {
+		c.last = t
 	}
 }
 
-// Now returns the current clock value without advancing it.
-func (h *HLC) Now() Timestamp {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.currentTimestamp
+func (c *Clock) wallTS() Timestamp {
+	return Pack(uint64(c.wallNow().UnixMilli()), 0)
 }
-
-// Less returns true if a is strictly less than b.
-func Less(a, b Timestamp) bool {
-	if a.PhysicalMs != b.PhysicalMs {
-		return a.PhysicalMs < b.PhysicalMs
-	}
-
-	return a.Logical < b.Logical
-}
-
-// Equal returns true if a and b represent the same instant.
-func Equal(a, b Timestamp) bool {
-	return a.PhysicalMs == b.PhysicalMs && a.Logical == b.Logical
-}
-
-// wallNow returns the current wall time in milliseconds.
-func wallNow() uint64 { return uint64(time.Now().UnixMilli()) }

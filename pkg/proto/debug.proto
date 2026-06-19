@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package convergekv;
+
+option go_package = "github.com/janthoXO/convergeKV/pkg/proto;proto";
+
+// Debug is an introspection service for tooling (the debug client). It is
+// not part of the production data path: Inspect exposes a node's identity and
+// its local placement view, DumpDocuments streams every document the node
+// physically holds, rendered to JSON. Both are read-only.
+service Debug {
+  // Inspect returns this node's identity plus the membership and owners table
+  // as it currently sees them. Views diverge across nodes during churn or a
+  // network partition, so callers should inspect every node and compare.
+  rpc Inspect(InspectRequest) returns (InspectResponse);
+
+  // DumpDocuments streams every document this node holds (across all
+  // partitions), each rendered to JSON, with tombstones flagged.
+  rpc DumpDocuments(DumpRequest) returns (stream DebugDoc);
+}
+
+message InspectRequest {}
+
+message InspectResponse {
+  bytes  node_id     = 1; // 16 raw UUID bytes (= CRDT ActorID)
+  uint64 generation  = 2; // node start time (ms); orders restarts
+  uint32 partitions  = 3; // cluster-wide P
+  string client_addr = 4; // client-facing gRPC listen address
+  string node_addr   = 5; // advertised node-facing gRPC address peers dial
+
+  // Membership as THIS node sees it (alive set including self, plus
+  // dead-within-grace phantoms).
+  repeated Member members = 6;
+
+  // The computed owners table, one entry per partition. Two nodes share an
+  // edge in the graph when both appear in the same partition's owners.
+  repeated PartitionOwners partitions_table = 7;
+}
+
+message Member {
+  bytes  id         = 1;
+  string addr       = 2; // node-facing gRPC address
+  bool   dead       = 3; // dead-within-grace phantom
+  uint64 generation = 4;
+}
+
+message PartitionOwners {
+  uint32 partition = 1;
+  repeated Owner owners = 2; // HRW rank order
+}
+
+message Owner {
+  bytes  id     = 1;
+  uint32 status = 2; // 0 none, 1 bootstrapping, 2 active, 3 draining
+  bool   dead   = 3;
+}
+
+message DumpRequest {}
+
+message DebugDoc {
+  uint32 partition    = 1;
+  bytes  key          = 2;
+  bytes  document     = 3; // rendered JSON; empty when tombstone
+  bytes  context_hash = 4; // hash of the causal context (diagnostics)
+  bool   tombstone    = 5; // deleted residual: empty fields, non-empty context
+
+  // Per-field current superseding register (the LWW winner from Document.Get):
+  // its dot and HLC, so the dump shows why each value currently wins and lets
+  // two nodes' dumps be compared at the register level. Empty for tombstones.
+  repeated DebugField fields = 6;
+}
+
+message DebugField {
+  string name        = 1; // field name
+  bytes  value       = 2; // winning register's raw JSON value
+  bytes  dot_actor   = 3; // 16 raw UUID bytes of the winning register's actor
+  uint64 dot_seq     = 4; // winning register's dot sequence number
+  uint64 hlc         = 5; // packed HLC (phys_ms << 16 | logical)
+  uint64 hlc_phys_ms = 6; // decomposed: physical milliseconds
+  uint32 hlc_logical = 7; // decomposed: logical counter
+}

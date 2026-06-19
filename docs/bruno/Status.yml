@@ -1,12 +1,11 @@
 info:
   name: Status
   type: grpc
-  seq: 1
+  seq: 4
 
 grpc:
   url: "{{seed}}"
-  method: /kv.KVService/Status
+  method: /convergekv.Debug/Inspect
   methodType: unary
-  protoFilePath: ../../proto/kv/kv.proto
-  message: "{}"
+  protoFilePath: ../../pkg/proto/debug.proto
   auth: inherit

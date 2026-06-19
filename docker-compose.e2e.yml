@@ -1,0 +1,100 @@
+# Topology for the Docker end-to-end test (cmd/e2e). Driven by `make e2e`.
+#
+# Two networks, deliberately:
+#   - cluster (internal): carries ALL inter-node traffic — SWIM gossip (:7946)
+#     and the Node gRPC service (:7001). Nodes advertise their STATIC IP on this
+#     network (CONVERGEKV_ADVERTISE_ADDR), so peers only ever reach each other
+#     here. The test creates a partition by disconnecting a node from THIS
+#     network. `internal: true` means it has no host/gateway route, which also
+#     forces Docker to publish ports on the `edge` network instead.
+#   - edge: carries only host -> client gRPC (:7000) via published ports. It is
+#     never disconnected, so the host can read/write every node even while that
+#     node is partitioned off the cluster network. This is what makes the
+#     "disconnect, then read each node locally" verification possible.
+#
+# Nodes are explicit (not scaled) so each gets a fixed cluster IP — required to
+# pin its advertised address and to restore it on heal (docker network connect
+# --ip). N=4, RF=3: every key lives on exactly 3 of the 4 nodes.
+#
+# Small P and short timings (like the in-process test harness) so the cluster
+# settles in seconds.
+
+x-node: &node
+  build: .
+  environment: &node-env
+    CONVERGEKV_DATA_DIR: /data
+    CONVERGEKV_GOSSIP_ADDR: ":7946"
+    CONVERGEKV_ANTI_ENTROPY_INTERVAL: "5s"
+    CONVERGEKV_REPLICATION_MAX_AGE: "2s"
+    CONVERGEKV_PARTITIONS: "16"
+
+services:
+  seed:
+    <<: *node
+    environment:
+      <<: *node-env
+      CONVERGEKV_ADVERTISE_ADDR: "172.31.8.2:7946"
+    ports:
+      - "7000"
+    networks:
+      cluster:
+        ipv4_address: 172.31.8.2
+      edge:
+
+  node1:
+    <<: *node
+    environment:
+      <<: *node-env
+      CONVERGEKV_SEEDS: "172.31.8.2:7946"
+      CONVERGEKV_ADVERTISE_ADDR: "172.31.8.3:7946"
+    depends_on:
+      - seed
+    ports:
+      - "7000"
+    networks:
+      cluster:
+        ipv4_address: 172.31.8.3
+      edge:
+
+  node2:
+    <<: *node
+    environment:
+      <<: *node-env
+      CONVERGEKV_SEEDS: "172.31.8.2:7946"
+      CONVERGEKV_ADVERTISE_ADDR: "172.31.8.4:7946"
+    depends_on:
+      - seed
+    ports:
+      - "7000"
+    networks:
+      cluster:
+        ipv4_address: 172.31.8.4
+      edge:
+
+  node3:
+    <<: *node
+    environment:
+      <<: *node-env
+      CONVERGEKV_SEEDS: "172.31.8.2:7946"
+      CONVERGEKV_ADVERTISE_ADDR: "172.31.8.5:7946"
+    depends_on:
+      - seed
+    ports:
+      - "7000"
+    networks:
+      cluster:
+        ipv4_address: 172.31.8.5
+      edge:
+
+networks:
+  cluster:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.8.0/24
+  edge:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.7.0/24

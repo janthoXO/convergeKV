@@ -1,0 +1,30 @@
+flowchart TD
+    main["cmd/kvnode<br/>binary: config + lifecycle"] --> node["internal/node<br/>assembles everything"]
+
+    node --> coordinator["internal/coordinator<br/>request handling"]
+    node --> antientropy["internal/antientropy<br/>Merkle repair"]
+    node --> transfer["internal/transfer<br/>bootstrap data movement"]
+    node --> gc["internal/gc<br/>garbage collection"]
+    node --> cluster["internal/cluster<br/>gossip membership"]
+    node --> api["internal/api<br/>gRPC servers + pool"]
+    node --> metrics["internal/metrics"]
+
+    coordinator --> placement["internal/placement<br/>HRW ownership"]
+    coordinator --> replication["internal/replication<br/>async fan-out"]
+    coordinator --> storage["internal/storage<br/>Pebble wrapper"]
+    coordinator --> codec["internal/codec<br/>JSON boundary"]
+    coordinator --> hlc["internal/hlc<br/>hybrid logical clock"]
+
+    antientropy --> merkle["internal/merkle"]
+    antientropy --> coordinator
+    transfer --> coordinator
+    gc --> storage
+    placement --> cluster
+    api --> coordinator
+
+    storage --> crdt
+    storage --> merkle
+    codec --> crdt
+    merkle --> crdt
+
+    crdt["internal/crdt<br/>PURE CRDT logic - stdlib only"]

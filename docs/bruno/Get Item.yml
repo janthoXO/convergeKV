@@ -1,13 +1,13 @@
 info:
   name: Get Item
   type: grpc
-  seq: 3
+  seq: 2
 
 grpc:
   url: "{{seed}}"
-  method: /kv.KVService/Get
+  method: /convergekv.KV/Get
   methodType: unary
-  protoFilePath: ../../proto/kv/kv.proto
+  protoFilePath: ../../pkg/proto/kv.proto
   message: |-
     {
       "key": "user:1"

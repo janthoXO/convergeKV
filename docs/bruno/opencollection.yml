@@ -6,11 +6,9 @@ config:
   protobuf:
     protoFiles:
       - type: file
-        path: ../../proto/kv/kv.proto
+        path: ../../pkg/proto/kv.proto
       - type: file
-        path: ../../proto/replication/replication.proto
-    importPaths:
-      - path: ../../proto
+        path: ../../pkg/proto/debug.proto
   proxy:
     inherit: true
     config:
@@ -21,6 +19,11 @@ config:
         username: ""
         password: ""
       bypassProxy: ""
+
+request:
+  variables:
+    - name: seed_port
+      value: "7000"
 bundled: false
 extensions:
   bruno:

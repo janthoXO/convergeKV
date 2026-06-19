@@ -1,127 +1,310 @@
-# ConvergeKV
+# convergeKV
 
-ConvergeKV is a distributed, eventually-consistent key-value store written in Go. Nodes form a cluster via gossip, route writes by rendezvous hashing, and continuously reconcile state using Invertible Bloom Lookup Tables (IBLTs). Values are JSON objects merged field-by-field by a last-write-wins CRDT keyed on a Hybrid Logical Clock — so concurrent partial updates from any replica converge without coordination.
+**A distributed key-value store that never says no.**
+
+convergeKV is an **AP** (available + partition-tolerant) key-value database. It
+keeps accepting reads and writes even when the network splits or machines die,
+and it reconciles any divergence automatically — no manual conflict resolution,
+no lost updates, no human in the loop. Every node runs the same code and is an
+equal peer: there is no leader, no coordinator, and no single point of failure.
+
+It is built for workloads that value **uptime and low write latency** over strict
+read-after-write consistency: session stores, user profiles, shopping carts,
+feature flags, device/IoT state, and similar "always writable" data.
+
+> Trade-off in one sentence: convergeKV chooses to stay online during failures
+> and let replicas briefly disagree, using a conflict-free data model that
+> guarantees they converge to the same state once they can talk again.
+
+---
 
 ## Table of contents
 
-- [Highlights](#highlights)
-- [Quick start](#quick-start)
-- [Data and consistency model](#data-and-consistency-model)
-- [Component overview](#component-overview)
-- [Write path (PUT / DELETE)](#write-path-put--delete)
-- [Anti-entropy sync](#anti-entropy-sync)
-- [Cluster membership (gossip)](#cluster-membership-gossip)
-- [Bootstrap and lifecycle](#bootstrap-and-lifecycle)
+- [Why convergeKV](#why-convergekv)
+- [Feature overview](#feature-overview)
+- [Quickstart](#quickstart)
+  - [Run a cluster with Docker](#run-a-cluster-with-docker)
+  - [Run a single binary](#run-a-single-binary)
+- [Talking to the cluster](#talking-to-the-cluster)
 - [Configuration](#configuration)
-- [Developer guide](#developer-guide)
+- [Data model](#data-model)
+- [How it works (in brief)](#how-it-works-in-brief)
+- [Operations](#operations)
+- [Performance](#performance)
+- [When to use it (and when not to)](#when-to-use-it-and-when-not-to)
+- [Project status](#project-status)
 
-## Highlights
+---
 
-- **Eventually consistent** with quorum-of-one writes. Any replica in the HRW set for a key can serve reads and writes.
-- **CRDT semantics at field granularity.** Concurrent partial updates from multiple writers don't clobber each other; deletes are tombstones that obey the same LWW order.
-- **IBLT anti-entropy.** Pairwise reconciliation transmits O(diff) bytes for small divergences, with a transparent full-state fallback when the diff is too large to decode.
-- **Hybrid Logical Clock** with bounded skew (rejects timestamps more than 10 minutes off wall time) and persistent floor seeding on restart.
-- **No in-memory CRDT cache.** BadgerDB is the source of truth; the only derived in-memory state is the IBLT used for sync.
+## Why convergeKV
 
-## Quick start
+Most databases force a choice when the network misbehaves: stop serving (to stay
+correct) or keep serving (and risk conflicts). convergeKV is unapologetically in
+the second camp, but removes the usual downside — conflicts — by storing data as
+a **conflict-free replicated data type (CRDT)**. Concurrent writes to the same
+key on different nodes don't clobber each other or require a tie-break you have to
+think about; the system merges them deterministically and every replica ends up
+identical.
 
-Three-node local cluster via Docker Compose:
+What you get in practice:
+
+- **Writes don't wait.** A write is acknowledged as soon as **one** replica has
+  durably stored it — no waiting for a quorum or for slow/dead peers.
+- **Survives partitions and node loss.** Each key is replicated to 3 nodes; the
+  cluster keeps serving as long as one of them is reachable.
+- **Self-healing.** A background reconciliation process continuously repairs any
+  replica that fell behind. You never run a repair tool by hand.
+- **No operator babysitting.** Nodes join and leave by gossip; data placement is
+  computed identically by every node with no central registry to configure.
+
+## Feature overview
+
+| Capability | What it means for you |
+|---|---|
+| **Always available** | Reads and writes continue during network partitions and node failures. |
+| **Automatic conflict resolution** | Concurrent updates merge deterministically (per-field last-writer-wins); replicas always converge. |
+| **No quorum on the write path** | Low, predictable write latency: one durable local write, then asynchronous replication. |
+| **Symmetric, leaderless nodes** | Every node is identical. Add capacity by adding nodes; remove nodes freely. |
+| **Automatic data placement** | Keys are sharded across partitions and replicated to 3 owners, recomputed automatically as membership changes. |
+| **Self-healing replication** | A periodic Merkle-tree comparison repairs divergence in the background — the single, simple repair mechanism. |
+| **Durable storage** | Each write is persisted to an embedded LSM engine (Pebble) before it is acknowledged. |
+| **JSON documents** | Values are JSON objects; each top-level field is tracked independently, so concurrent edits to different fields never conflict. |
+| **gRPC API** | A small, typed client API: `Get`, `Put` (replace), `Patch` (partial update), `Delete`. |
+| **Observability** | Built-in Prometheus metrics and Go pprof endpoints. |
+| **Container-ready** | Ships as a tiny static binary and a minimal Docker image. |
+
+## Quickstart
+
+### Run a cluster with Docker
+
+The repository includes a Docker Compose setup that starts a seed node plus
+scalable peers.
 
 ```bash
-make docker-up      # builds the image and starts replica1/2/3
-# replica1 → localhost:50051, replica2 → localhost:50052, replica3 → localhost:50053
-make docker-down    # tear down + remove volumes
+# Start a 3-node cluster (1 seed + 2 peers)
+make docker-up N=3
+
+# Scale to any size
+make docker-up N=5
+
+# Tear it down (and remove volumes)
+make docker-down
 ```
 
-The gRPC surface is defined in [proto/kv/kv.proto](proto/kv/kv.proto) (client API: `Put`, `Get`, `Delete`, `Status`). Any replica accepts any key — internally the request is forwarded to an HRW replica if the receiving node isn't itself one.
+The seed node's client API is published on **`localhost:7000`**.
 
-For local builds, tests, and the full developer workflow see [README_DEV.md](README_DEV.md).
+Optional monitoring stack (Prometheus + Grafana):
 
-## Data and consistency model
+```bash
+docker compose --profile monitoring up
+# Grafana:    http://localhost:3000  (anonymous admin)
+# Prometheus: http://localhost:9090
+```
 
-A value is a JSON object stored at a string key. Internally, each `(key, field)` pair is an independent **Add-Wins Last-Write-Wins Map (AWLWWMap)** entry: a `FieldEntry` carrying the value, an HLC timestamp, the originating replica ID, and a `Deleted` tombstone flag. Two replicas that disagree on a `(key, field)` resolve the conflict by picking the higher HLC (with replica-ID as the deterministic tiebreaker) — so partial updates and deletes commute and converge.
+### Run a single binary
 
-- **Storage key encoding:** `key + "\x00" + field`. Client-supplied keys containing `\x00` are rejected at the API boundary.
-- **Replication factor `RF`:** each key is placed on the top `RF` replicas by HRW score over the live gossip membership. No central placement table.
-- **Quorum:** writes ack after one local persist; the other replicas receive the entry via fire-and-forget push and, on failure, reconcile in the next anti-entropy round.
+Requires Go 1.26+.
 
-## Component overview
+```bash
+make build            # produces ./dist/kvnode
 
-| Package | Responsibility |
-|---|---|
-| `cmd/server` | Process entry point; wires every subsystem together. |
-| `internal/api` | gRPC handler for the client-facing `KVService` (and the internal `ForwardService`). |
-| `internal/coordinator` | Routes PUT/GET/DELETE via HRW; forwards or serves locally; launches push goroutines. |
-| `internal/node` | Central state holder. Owns the HLC, the per-key lock table, and the storage handle. |
-| `internal/storage` | BadgerDB wrapper. Atomic `SaveBatch`, paginated `IterateAll`, encoded key layout. |
-| `internal/crdt` | `FieldEntry`, AWLWW merge rules, `WinsOver` predicate. |
-| `internal/hlc` | Hybrid Logical Clock with `Send`/`Receive`/`Seed` and bounded skew detection. |
-| `internal/hrw` | Stateless rendezvous hashing (xxhash) over the gossip membership. |
-| `internal/gossip` | HashiCorp memberlist wrapper with a buffered change channel + worker. |
-| `internal/connpool` | Shared, evict-on-leave gRPC connection pool used by both syncer and forwarder. |
-| `internal/iblt` | General-purpose IBLT (3-hash, length-prefixed, XOR-folded cells) with `Decode` and `Subtract`. |
-| `internal/syncer` | IBLT-based anti-entropy loop, the `SyncService` server handler, and IBLT state. |
+# Node 1 — bootstrap a brand-new cluster (no seeds)
+CONVERGEKV_DATA_DIR=./data/n1 \
+CONVERGEKV_CLIENT_ADDR=:7000 \
+CONVERGEKV_NODE_ADDR=:7001 \
+CONVERGEKV_GOSSIP_ADDR=:7946 \
+./dist/kvnode
 
-## Write path (PUT / DELETE)
+# Node 2 — join via node 1's gossip address (distinct ports on the same host)
+CONVERGEKV_DATA_DIR=./data/n2 \
+CONVERGEKV_CLIENT_ADDR=:7100 \
+CONVERGEKV_NODE_ADDR=:7101 \
+CONVERGEKV_GOSSIP_ADDR=:7947 \
+CONVERGEKV_ADMIN_ADDR=:7102 \
+CONVERGEKV_SEEDS=127.0.0.1:7946 \
+./dist/kvnode
+```
 
-A client request is validated at the API boundary, routed by HRW, served locally if this node owns the key, and asynchronously fanned out to the other replicas. If the local node is not in the HRW replica set, the coordinator forwards to the highest-scoring replica (with fall-through to the next on failure). The push is fire-and-forget; any replica that misses an update will reconcile on the next anti-entropy round — that part is covered by the [sync diagram](#anti-entropy-sync).
+A node with an empty `SEEDS` starts a new cluster; a node with `SEEDS` joins an
+existing one.
 
-![PUT workflow](docs/put.svg)
+## Talking to the cluster
 
-Key invariants:
+convergeKV exposes a gRPC service `convergekv.KV`:
 
-- The per-key mutex is acquired *before* `HLC.Send`, so timestamps on the same key are issued in the order they will be persisted.
-- `SaveBatch` wraps every batch in a single Badger `db.Update` transaction, so a multi-field PUT is all-or-nothing.
-- `Put`/`Delete` return the exact entries written; the coordinator pushes those bytes directly without a second Badger read.
+| Method | Request | Notes |
+|---|---|---|
+| `Put`    | `{ key, value }` | **Replace.** `value` is the **bytes of a non-empty JSON object**; any field the document currently has that `value` omits is removed. |
+| `Patch`  | `{ key, value, delete_fields }` | **Partial update.** Sets the fields in `value` and removes those named in `delete_fields`; fields you don't mention are kept. `value` may be empty when only deleting. |
+| `Get`    | `{ key }`        | Returns `{ found, value, context_hash }`. |
+| `Delete` | `{ key }`        | Removes the whole key (leaves an internal tombstone, reclaimed automatically). |
 
-## Anti-entropy sync
+> **Replace is add-wins, not authoritative.** `Put` (and `Patch`'s deletes) only
+> remove fields the chosen owner has already observed. A field added concurrently
+> on another node that this owner hasn't seen yet survives the merge — there is no
+> hard whole-document replace under concurrency.
 
-Every `SYNC_MS` milliseconds, each node walks its gossip membership and runs an initiator-driven three-step reconciliation with every other peer. Per peer the whole protocol is bounded by a 30 s timeout.
+Any node accepts any request; if it isn't an owner of the key, it forwards
+internally (at most one extra hop). You can connect to **any** node.
 
-1. **`GetIBLT`** (unary) — fetch the peer's IBLT snapshot.
-2. **Diff locally** — subtract the two IBLTs and decode the result into `onlyLocal` / `onlyRemote` item sets.
-3. **`PushEntries` + `PullEntries`** (concurrent streams) — push what the peer is missing while pulling what we are missing.
+> **Encoding note:** `value` is a protobuf `bytes` field. In native gRPC clients
+> (e.g. Go, Node.js) you pass the raw JSON bytes directly. In JSON-based gRPC
+> tools (grpcurl, Bruno, Postman), a `bytes` field must be a **base64 string**.
 
-If `Decode` fails (typically when the symmetric difference exceeds ~250 items for the default 512-cell IBLT, or any cell remains impure) the protocol falls back to a full-state exchange: stream the entire local store via `PushEntries` while concurrently pulling the peer's full store via `PullEntries` with an empty identifier list. Both sides iterate Badger lazily in 1000-record pages so neither buffers the dataset.
+Example with [`grpcurl`](https://github.com/fullstorydev/grpcurl) (the document
+`{"name":"Alice"}` base64-encodes to `eyJuYW1lIjoiQWxpY2UifQ==`):
 
-![Sync workflow](docs/sync.svg)
+```bash
+# Put
+grpcurl -plaintext -import-path pkg/proto -proto kv.proto \
+  -d '{"key":"user:1","value":"eyJuYW1lIjoiQWxpY2UifQ=="}' \
+  127.0.0.1:7000 convergekv.KV/Put
 
-Each IBLT item is a fixed binary encoding of `(key, field, HLC, replicaID, deleted)`, so an entry that's been superseded since the IBLT snapshot no longer matches and the next round naturally re-reconciles the new version.
+# Get  ->  { "found": true, "value": "eyJuYW1lIjoiQWxpY2UifQ==", ... }
+grpcurl -plaintext -import-path pkg/proto -proto kv.proto \
+  -d '{"key":"user:1"}' \
+  127.0.0.1:7000 convergekv.KV/Get
 
-## Cluster membership (gossip)
+# Patch: set "tier", remove "name"  ({"tier":"gold"} → eyJ0aWVyIjoiZ29sZCJ9)
+grpcurl -plaintext -import-path pkg/proto -proto kv.proto \
+  -d '{"key":"user:1","value":"eyJ0aWVyIjoiZ29sZCJ9","delete_fields":["name"]}' \
+  127.0.0.1:7000 convergekv.KV/Patch
 
-Cluster membership is handled by HashiCorp memberlist over UDP. Nodes join via the `SEEDS` env var with exponential-backoff retries; `gossip.Start` blocks until the first successful join, so a node never starts serving without a cluster view.
+# Delete
+grpcurl -plaintext -import-path pkg/proto -proto kv.proto \
+  -d '{"key":"user:1"}' \
+  127.0.0.1:7000 convergekv.KV/Delete
+```
 
-Memberlist's event callbacks fire while it holds its own lock, so the gossip layer signals through a buffered channel and a dedicated `changeWorker` rebuilds the membership view *outside* that lock. This is what avoids AB-BA deadlocks with any consumer that calls back into `gossip.Members()`. The `OnChange` callback in turn fires `pool.EvictAbsent(keep)` in a fresh goroutine so the eviction's `Close()` calls can't stall the notification path either.
-
-![Gossip workflow](docs/gossip.svg)
-
-The shared `connpool.Pool` is the single source of gRPC connections used by both the coordinator (client forwarding) and the syncer (anti-entropy + write-path push), so evicting a departed peer removes it from every code path at once.
-
-## Bootstrap and lifecycle
-
-The server entry point ([cmd/server/main.go](cmd/server/main.go)) wires the subsystems in dependency order, blocks on a successful gossip join, then starts the gRPC server and the anti-entropy loop. The HLC is seeded from the highest persisted timestamp in BadgerDB so a backwards NTP correction or a fresh-process restart can never issue a timestamp that loses to data already on disk.
-
-![Bootstrap workflow](docs/bootstrap.svg)
-
-Shutdown is signal-driven (SIGINT/SIGTERM) and ordered: stop new RPCs, drain in-flight push goroutines, close the connection pool, leave gossip, then flush Badger.
+A ready-made [Bruno](https://www.usebruno.com/) collection lives in
+[`docs/bruno/`](docs/bruno/).
 
 ## Configuration
 
-All configuration is via environment variables, parsed at startup:
+convergeKV is configured **entirely through environment variables** (prefix
+`CONVERGEKV_`). There are no command-line flags. A bad configuration fails
+startup loudly.
 
 | Variable | Default | Description |
 |---|---|---|
-| `REPLICA_ID` | required | Unique node identifier. |
-| `GRPC_PORT` | `50051` | gRPC listen port. |
-| `GOSSIP_PORT` | `7946` | memberlist UDP port. |
-| `GOSSIP_BIND` | `0.0.0.0` | memberlist bind address. |
-| `SEEDS` | `""` | Comma-separated `host:port` peers to join. |
-| `DATA_DIR` | `/data` | BadgerDB data directory. |
-| `RF` | `3` | Replication factor (keys placed on `RF` nodes via HRW). |
-| `SYNC_MS` | `2000` | Anti-entropy sync interval in milliseconds. |
-| `IBLT_CELLS` | `512` | IBLT cell count (tune for expected divergence size). |
+| `CONVERGEKV_DATA_DIR` | `data` | Directory for the node's identity and on-disk data. |
+| `CONVERGEKV_CLIENT_ADDR` | `:7000` | Listen address for the client gRPC API. |
+| `CONVERGEKV_NODE_ADDR` | `:7001` | Listen address for node-to-node gRPC. |
+| `CONVERGEKV_GOSSIP_ADDR` | `:7946` | Bind address for cluster membership gossip. |
+| `CONVERGEKV_ADMIN_ADDR` | `:7002` | Prometheus metrics + pprof. Empty disables it. |
+| `CONVERGEKV_ADVERTISE_ADDR` | _(derived)_ | Address other nodes use to reach this one. |
+| `CONVERGEKV_SEEDS` | _(empty)_ | Comma-separated gossip addresses to join. Empty = bootstrap a new cluster. |
+| `CONVERGEKV_PARTITIONS` | `256` | Cluster-wide shard count. Power of two, ≤ 1024. **Fixed at cluster birth.** |
+| `CONVERGEKV_CRASH_GRACE_PERIOD` | `10m` | How long a dead node keeps its data slot before successors take over. |
+| `CONVERGEKV_ANTI_ENTROPY_INTERVAL` | `45s` | How often replicas reconcile via Merkle comparison. |
+| `CONVERGEKV_REPLICATION_MAX_AGE` | `20s` | Max age a queued replication update may reach before it's dropped to the anti-entropy backstop. Must be < `ANTI_ENTROPY_INTERVAL / 2`. |
+| `CONVERGEKV_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error`. Logs are JSON. |
 
-## Developer guide
+> `PARTITIONS` is chosen once when the cluster is created and **cannot change**.
+> A node that tries to join with a different value is rejected.
 
-See [README_DEV.md](README_DEV.md) for build, test, protobuf regeneration, the package-by-package source map, and the conventions to follow when changing the wire protocol or storage encoding.
+## Data model
+
+- A **value is a JSON object**, e.g. `{"name":"Alice","tier":"gold"}`.
+- Each **top-level field is tracked independently**, so concurrent edits to
+  *different* fields merge without conflict.
+- **`Put` replaces** the document (it drops fields the new object omits);
+  **`Patch`** sets the fields you provide and deletes the ones you list, leaving
+  the rest untouched. Two clients using `Patch` to set different fields on the
+  same key both survive the merge.
+- If two clients concurrently write the **same field**, the write with the later
+  timestamp wins (last-writer-wins), resolved deterministically so every replica
+  picks the same winner.
+- Field **values are opaque** — strings, numbers, arrays, and nested objects are
+  stored verbatim and replaced as a whole (no deep/recursive merge within a
+  field).
+- Field removal (`Put`'s implicit drops, `Patch`'s `delete_fields`) is
+  **add-wins**: only fields the owner has already observed are removed, so a
+  concurrent add it hasn't seen survives.
+- A `Put` value must be a **non-empty** JSON object (use `Delete` to remove a
+  whole key); a `Patch` may omit `value` when it only deletes fields.
+
+## How it works (in brief)
+
+Clients connect to **any** node; nodes are symmetric peers that gossip about
+membership and replicate data to each other.
+
+![Cluster overview: clients talk to any node; nodes gossip and replicate](docs/readme/overview.svg)
+
+1. **Placement.** Each key hashes to one of `P` partitions. Each partition is
+   owned by 3 nodes, chosen by a shared ranking function (rendezvous hashing)
+   that every node computes identically. No central placement service.
+2. **Writes.** Your request lands on any node, which routes it to one owner (the
+   *applier*). The applier stores the change durably and immediately acknowledges
+   you — **without** waiting for the other two owners.
+3. **Replication.** The applier then forwards the change to the other owners in
+   the background (best-effort, fire-and-forget).
+4. **Self-healing.** Periodically, owners of a partition compare compact
+   fingerprints (a Merkle tree) and exchange whatever one is missing. This is the
+   single mechanism that guarantees every replica eventually converges, and it's
+   what makes the best-effort replication safe.
+5. **Membership.** Nodes discover each other and detect failures via a gossip
+   protocol. Placement is recomputed automatically as nodes come and go.
+
+The write path makes the "no quorum" trade-off concrete — the client is
+acknowledged after one durable local write, and replication happens afterward:
+
+![Write path: client acknowledged after one durable write; replication is asynchronous](docs/readme/write-path.svg)
+
+## Operations
+
+- **Scaling out:** start more nodes pointing at existing seeds. Data rebalances
+  automatically (new owners bootstrap their partitions from current owners).
+- **Scaling in / planned removal:** stop a node gracefully; it hands its data
+  responsibilities to successors before leaving, preserving the replication
+  factor.
+- **Node restart:** a node that restarts quickly resumes its data with no
+  re-transfer. A node that was gone longer than `CRASH_GRACE_PERIOD` rejoins as a
+  fresh member and re-syncs cleanly.
+- **Monitoring:** scrape `CONVERGEKV_ADMIN_ADDR` (`/metrics`). Useful series
+  include replication backlog/drops, anti-entropy repairs, data-transfer
+  activity, and membership size. Go pprof is served on the same address.
+
+## Performance
+
+Indicative latencies from the in-repo benchmark (5-node cluster, 16 partitions,
+RF=3, 1 KB JSON documents, single sequential client; Apple Silicon, synced
+writes):
+
+| Operation | p50 | p99 |
+|---|---|---|
+| Put (durable, single owner) | ~12 ms | ~21 ms |
+| Get (local read from an owner) | ~59 µs | ~205 µs |
+| Convergence (write byte-equal on all 3 owners) | ~30 ms | ~42 ms |
+
+Put latency is dominated by the per-write `fsync` that makes "acknowledged" mean
+"durable." Reads that hit an owner never touch the network. See
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) to reproduce.
+
+## When to use it (and when not to)
+
+**Good fit:**
+
+- High write availability matters more than reading your own write instantly.
+- Data naturally tolerates eventual consistency: profiles, sessions, carts,
+  preferences, presence, device state, counters-as-registers.
+- You want operational simplicity: no leader election, no quorum tuning, no
+  manual conflict handling.
+
+**Not a fit:**
+
+- You need strict linearizable / read-after-write consistency or transactions
+  across keys.
+- You need uniqueness constraints, secondary indexes, or range/SQL queries.
+- A field's value requires *merging* concurrent edits rather than
+  last-writer-wins (convergeKV treats each field value as an opaque whole).
+
+## Project status
+
+convergeKV is an educational/research implementation of a causal δ-CRDT store. It
+is exercised by property, fuzz, chaos, and integration test suites.
+
+For the architecture and contribution guide, see
+[`README_DEV.md`](README_DEV.md). A deep, chapter-by-chapter explanation of the
+design starts at the [concepts overview](docs/concepts/01-overview.md), which
+links to a chapter for every subsystem.

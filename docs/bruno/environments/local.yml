@@ -1,4 +1,6 @@
 name: local
 variables:
+  - name: seed_port
+    value: "7000"
   - name: seed
-    value: http://localhost:50051
+    value: http://localhost:{{seed_port}}

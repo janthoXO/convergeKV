@@ -1,16 +1,16 @@
 info:
   name: Put Item
   type: grpc
-  seq: 2
+  seq: 1
 
 grpc:
   url: "{{seed}}"
-  method: /kv.KVService/Put
+  method: /convergekv.KV/Put
   methodType: unary
-  protoFilePath: ../../proto/kv/kv.proto
+  protoFilePath: ../../pkg/proto/kv.proto
   message: |-
     {
       "key": "user:1",
-      "value_json": "{\"name\":30}"
+      "value": "eyJuYW1lIjoiQWxpY2UifQ=="
     }
   auth: inherit

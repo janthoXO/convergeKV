@@ -1,0 +1,118 @@
+# Production-oriented compose for convergeKV.
+#
+# Differences from docker-compose.yml (the dev/e2e file):
+#   - No host-published worker ports. The cluster talks to itself over the
+#     internal `convergekv` network; clients reach it by joining that network
+#     (e.g. an app container / reverse proxy on the same network) rather than via
+#     the host. Nothing is exposed to the host by default.
+#   - Default convergence timings (the dev file shortens them for fast tests).
+#   - Hardened runtime: dropped Linux capabilities, no privilege escalation,
+#     read-only root filesystem, resource limits, restart policy, log rotation,
+#     a TCP health check, and a stop grace period long enough for the graceful
+#     drain (node.Stop drains up to ~15s before leaving the cluster).
+#
+# Bring up with: docker compose -f docker-compose.prod.yml up -d --scale node=N
+#
+# Note on read_only + volume: the node only needs to write under DATA_DIR, which
+# is a named volume; the rest of the root filesystem is read-only, with a small
+# tmpfs for /tmp.
+
+x-hardening: &hardening
+  restart: unless-stopped
+  stop_grace_period: 30s
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  healthcheck:
+    # BusyBox `nc` ships in the alpine runtime image.
+    test: ["CMD", "nc", "-z", "localhost", "7000"]
+    interval: 15s
+    timeout: 3s
+    retries: 5
+    start_period: 20s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  seed:
+    <<: *hardening
+    image: ghcr.io/janthoxo/convergekv/convergekv:latest
+    environment:
+      CONVERGEKV_DATA_DIR: /data
+      CONVERGEKV_GOSSIP_ADDR: ":7946"
+    volumes:
+      - seed-data:/data
+    networks:
+      - convergekv
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  node:
+    <<: *hardening
+    image: ghcr.io/janthoxo/convergekv/convergekv:latest
+    environment:
+      CONVERGEKV_DATA_DIR: /data
+      CONVERGEKV_GOSSIP_ADDR: ":7946"
+      CONVERGEKV_SEEDS: "seed:7946"
+    volumes:
+      - node-data:/data
+    depends_on:
+      - seed
+    # Horizontally scalable: `docker compose -f docker-compose.prod.yml up --scale node=N`.
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    networks:
+      - convergekv
+
+  # Monitoring stack: opt in with `--profile monitoring`. Not host-exposed;
+  # reach it in-network or via your own ingress.
+  prometheus:
+    image: prom/prometheus:latest
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - convergekv
+    depends_on:
+      - seed
+      - node
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./deploy/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - grafana-data:/var/lib/grafana
+    networks:
+      - convergekv
+    depends_on:
+      - prometheus
+
+networks:
+  convergekv:
+    driver: bridge
+
+volumes:
+  seed-data:
+  node-data:
+  grafana-data:

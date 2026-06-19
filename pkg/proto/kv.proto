@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package convergekv;
+
+option go_package = "github.com/janthoXO/convergeKV/pkg/proto;proto";
+
+// KV is the client-facing service. Any node accepts any request and
+// forwards internally when it is not an owner of the key's partition.
+service KV {
+  rpc Get(GetRequest) returns (GetResponse);
+  // Put replaces the document: it sets the provided fields and removes every
+  // field the applier currently holds that the request omits.
+  rpc Put(PutRequest) returns (PutResponse);
+  // Patch partially updates the document: it sets the provided fields and
+  // removes the fields named in delete_fields. Fields not mentioned are kept.
+  rpc Patch(PatchRequest) returns (PatchResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+message GetRequest {
+  string key = 1;
+}
+
+message GetResponse {
+  bool found = 1;
+  // The merged document rendered as a JSON object.
+  bytes value = 2;
+  // Hash of the document's causal context (diagnostics only).
+  bytes context_hash = 3;
+}
+
+message PutRequest {
+  string key = 1;
+  // A non-empty JSON object; each top-level field becomes an independent
+  // register. Fields the document currently has but this object omits are
+  // removed (replace semantics — add-wins under concurrency).
+  bytes value = 2;
+}
+
+message PutResponse {}
+
+message PatchRequest {
+  string key = 1;
+  // A JSON object whose fields are set (upserted). May be empty/omitted when
+  // the patch only deletes fields.
+  bytes value = 2;
+  // Top-level field names to remove. A name may not also appear in value.
+  repeated string delete_fields = 3;
+}
+
+message PatchResponse {}
+
+message DeleteRequest {
+  string key = 1;
+}
+
+message DeleteResponse {}

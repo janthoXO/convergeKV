@@ -1,48 +1,77 @@
 x-shared-env: &shared-env
-  GRPC_PORT:   "50051"
-  GOSSIP_PORT: "7946"
-  GOSSIP_BIND: "0.0.0.0"
-  DATA_DIR:    "/data"
-  RF:          "3"
-  SYNC_MS:     "20000"
-  IBLT_CELLS:  "512"
+  CONVERGEKV_DATA_DIR: "${CONVERGEKV_DATA_DIR:-/data}"
+  CONVERGEKV_CLIENT_ADDR: "${CONVERGEKV_CLIENT_ADDR:-:7000}"
+  CONVERGEKV_NODE_ADDR: "${CONVERGEKV_NODE_ADDR:-:7001}"
+  CONVERGEKV_GOSSIP_ADDR: "${CONVERGEKV_GOSSIP_ADDR:-:7946}"
+  CONVERGEKV_ADMIN_ADDR: "${CONVERGEKV_ADMIN_ADDR:-:7002}"
+  CONVERGEKV_ADVERTISE_ADDR: "${CONVERGEKV_ADVERTISE_ADDR:-}"
+  CONVERGEKV_PARTITIONS: "${CONVERGEKV_PARTITIONS:-256}"
+  CONVERGEKV_CRASH_GRACE_PERIOD: "${CONVERGEKV_CRASH_GRACE_PERIOD:-10m}"
+  CONVERGEKV_ANTI_ENTROPY_INTERVAL: "${CONVERGEKV_ANTI_ENTROPY_INTERVAL:-45s}"
+  CONVERGEKV_REPLICATION_MAX_AGE: "${CONVERGEKV_REPLICATION_MAX_AGE:-20s}"
+  CONVERGEKV_LOG_LEVEL: "${CONVERGEKV_LOG_LEVEL:-info}"
 
-x-node-defaults: &node-defaults
-  build: .
-  restart: unless-stopped
-  networks:
+services:
+  seed:
+    build: .
+    environment:
+      # Bootstraps a new cluster: no SEEDS set.
+      <<: *shared-env
+    volumes:
+      - seed-data:/data
+    ports:
+      - "7000:7000"
+    networks:
+      - convergekv
+
+  node:
+    build: .
+    environment:
+      <<: *shared-env
+      CONVERGEKV_SEEDS: "${CONVERGEKV_SEEDS:-seed:7946}"
+    ports:
+      - "7000"
+    depends_on:
+      - seed
+    # The node service is horizontally scalable: bump the replica count (or
+    # override it with `docker compose up --scale node=N`).
+    deploy:
+      replicas: 3
+    networks:
     - convergekv
-  volumes:
-    - /data  # anonymous volume — each container gets its own, replicas don't share data
+
+  # Monitoring stack: opt in with `docker compose --profile monitoring up`.
+  prometheus:
+    image: prom/prometheus:latest
+    profiles:
+      - monitoring
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - seed
+      - node
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles:
+      - monitoring
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./deploy/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
 
 networks:
   convergekv:
     driver: bridge
 
-services:
-  # Static bootstrap node. Workers discover the cluster through it.
-  seed:
-    <<: *node-defaults
-    container_name: seed
-    hostname: seed
-    environment:
-      <<: *shared-env
-      REPLICA_ID:  "seed"
-      SEEDS:       ""  # bootstrap node; no seeds needed
-    ports:
-      - "50051:50051"
-
-  # Scalable workers. Change replicas here, or override with --scale worker=N.
-  # REPLICA_ID is unset — each container falls back to $HOSTNAME (auto-assigned
-  # by Docker as <project>-worker-<index>, unique per replica).
-  worker:
-    <<: *node-defaults
-    depends_on:
-      - seed
-    deploy:
-      replicas: 5
-    environment:
-      <<: *shared-env
-      SEEDS:       "seed:7946"
-    ports:
-      - "50051"  # random host port per replica; find with: docker compose port worker 50051 --index N
+volumes:
+  seed-data:
+  grafana-data:

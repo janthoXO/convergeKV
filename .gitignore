@@ -17,6 +17,9 @@ coverage.*
 *.coverprofile
 profile.cov
 
+# rapid property-test failure reproductions (regenerated on failure)
+**/testdata/rapid/
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
@@ -35,3 +38,6 @@ go.work.sum
 # .vscode/
 
 .DS_Store
+
+# node runtime state
+/data

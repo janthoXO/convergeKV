@@ -1,174 +1,129 @@
 package hlc
 
 import (
-	"sync"
+	"math/rand"
 	"testing"
+	"time"
 )
 
-// TestSendMonotonicallyIncreasing verifies Send() always returns a strictly
-// greater timestamp than the previous Send() result.
-func TestSendMonotonicallyIncreasing(t *testing.T) {
-	h := New()
-	prev, err := h.Send()
-	if err != nil {
-		t.Fatalf("Send: %v", err)
+// fakeWall is a controllable wall clock.
+type fakeWall struct{ ms int64 }
+
+func (f *fakeWall) now() time.Time { return time.UnixMilli(f.ms) }
+
+func TestPackUnpack(t *testing.T) {
+	ts := Pack(0x123456789ABC, 0xDEF0)
+	if PhysMs(ts) != 0x123456789ABC {
+		t.Fatalf("PhysMs = %x", PhysMs(ts))
 	}
-	for i := range 1000 {
-		cur, err := h.Send()
-		if err != nil {
-			t.Fatalf("iteration %d: Send: %v", i, err)
+	if Logical(ts) != 0xDEF0 {
+		t.Fatalf("Logical = %x", Logical(ts))
+	}
+}
+
+func TestNowMonotonicWithFrozenWall(t *testing.T) {
+	w := &fakeWall{ms: 1000}
+	c := NewWithClock(w.now)
+	prev := c.Now()
+	for i := 0; i < 100; i++ {
+		ts := c.Now()
+		if ts <= prev {
+			t.Fatalf("not strictly monotonic: %d <= %d", ts, prev)
 		}
-		if !Less(prev, cur) {
-			t.Fatalf("iteration %d: expected prev < cur, got prev=%+v cur=%+v", i, prev, cur)
+		if PhysMs(ts) != 1000 {
+			t.Fatalf("physical advanced unexpectedly: %d", PhysMs(ts))
 		}
-		prev = cur
+		prev = ts
+	}
+	if Logical(prev) != 100 {
+		t.Fatalf("logical = %d, want 100", Logical(prev))
 	}
 }
 
-// TestReceiveAdvancesBeyondBoth verifies that Receive with a remote timestamp
-// greater than local produces a result greater than both inputs.
-func TestReceiveAdvancesBeyondBoth(t *testing.T) {
-	h := New()
-	local, err := h.Send()
-	if err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-
-	// Create a remote timestamp well ahead of local but within drift limit.
-	remote := Timestamp{PhysicalMs: local.PhysicalMs + 1000, Logical: 5}
-	result, err := h.Receive(remote)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !Less(local, result) {
-		t.Errorf("result %+v should be > local %+v", result, local)
-	}
-	if !Less(remote, result) {
-		t.Errorf("result %+v should be > remote %+v", result, remote)
-	}
-}
-
-// TestReceiveWithOlderRemote verifies that Receive with a remote timestamp
-// older than local still advances the local clock.
-func TestReceiveWithOlderRemote(t *testing.T) {
-	h := New()
-	if _, err := h.Send(); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-	if _, err := h.Send(); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-	local := h.Now()
-
-	// Remote is far in the past.
-	remote := Timestamp{PhysicalMs: 1, Logical: 0}
-	result, err := h.Receive(remote)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !Less(local, result) {
-		t.Errorf("result %+v should be > local %+v after Receive with old remote", result, local)
-	}
-}
-
-// TestReceiveFutureDriftRejected verifies that a remote timestamp beyond
-// MAX_CLOCK_DRIFT_MS in the future is rejected and the local clock is unchanged.
-func TestReceiveFutureDriftRejected(t *testing.T) {
-	h := New()
-	before, err := h.Send()
-	if err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-
-	// Remote timestamp is way in the future (simulates a broken/malicious peer).
-	remote := Timestamp{PhysicalMs: before.PhysicalMs + MAX_CLOCK_DRIFT_MS + 1, Logical: 0}
-	result, err := h.Receive(remote)
-	if err != ErrClockDrift {
-		t.Fatalf("expected ErrClockDrift, got err=%v result=%+v", err, result)
-	}
-	// Local clock must be unchanged.
-	if !Equal(result, before) {
-		t.Errorf("clock advanced despite drift rejection: before=%+v after=%+v", before, result)
-	}
-}
-
-// TestSendHLCStuckInFutureRejected verifies that Send returns ErrClockDrift
-// when the HLC's PhysicalMs is more than MAX_CLOCK_DRIFT_MS ahead of the
-// current wall time, and that the clock is left unchanged.
-// The stuck value is seeded 1 s beyond the drift limit so scheduler jitter
-// during the test cannot push wall time past the boundary.
-func TestSendHLCStuckInFutureRejected(t *testing.T) {
-	h := New()
-	stuck := Timestamp{PhysicalMs: wallNow() + MAX_CLOCK_DRIFT_MS + 1_000}
-	h.Seed(stuck)
-	before := h.Now()
-
-	result, err := h.Send()
-	if err != ErrClockDrift {
-		t.Fatalf("expected ErrClockDrift, got err=%v result=%+v", err, result)
-	}
-	if !Equal(result, before) {
-		t.Errorf("clock advanced despite drift rejection: before=%+v after=%+v", before, result)
-	}
-}
-
-// TestLessAndEqual verifies Less and Equal are consistent.
-func TestLessAndEqual(t *testing.T) {
-	a := Timestamp{PhysicalMs: 10, Logical: 0}
-	b := Timestamp{PhysicalMs: 10, Logical: 1}
-	c := Timestamp{PhysicalMs: 11, Logical: 0}
-	d := Timestamp{PhysicalMs: 10, Logical: 0}
-
-	cases := []struct {
-		name string
-		fn   func() bool
-		want bool
-	}{
-		{"a < b (same phys, lower logical)", func() bool { return Less(a, b) }, true},
-		{"b < a (same phys, higher logical)", func() bool { return Less(b, a) }, false},
-		{"a < c (lower phys)", func() bool { return Less(a, c) }, true},
-		{"c < a (higher phys)", func() bool { return Less(c, a) }, false},
-		{"a == d", func() bool { return Equal(a, d) }, true},
-		{"a == b (should be false)", func() bool { return Equal(a, b) }, false},
-		{"!Less(a, a) (irreflexive)", func() bool { return !Less(a, a) }, true},
-	}
-
-	for _, tc := range cases {
-		if got := tc.fn(); got != tc.want {
-			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+func TestNowMonotonicWithBackwardsWall(t *testing.T) {
+	w := &fakeWall{ms: 5000}
+	c := NewWithClock(w.now)
+	prev := c.Now()
+	w.ms = 0 // wall clock jumps back 5s
+	for i := 0; i < 10; i++ {
+		ts := c.Now()
+		if ts <= prev {
+			t.Fatalf("not monotonic under backwards wall: %d <= %d", ts, prev)
 		}
+		prev = ts
 	}
 }
 
-// TestConcurrentSendAllDistinct verifies 100 concurrent goroutines each get
-// a unique timestamp (race-free).
-func TestConcurrentSendAllDistinct(t *testing.T) {
-	h := New()
-	const n = 100
-	results := make([]Timestamp, n)
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for i := range n {
-		go func() {
-			defer wg.Done()
-			ts, err := h.Send()
-			if err != nil {
-				t.Errorf("goroutine %d: Send: %v", i, err)
-				return
+func TestNowTracksAdvancingWall(t *testing.T) {
+	w := &fakeWall{ms: 1000}
+	c := NewWithClock(w.now)
+	c.Now()
+	w.ms = 2000
+	ts := c.Now()
+	if PhysMs(ts) != 2000 || Logical(ts) != 0 {
+		t.Fatalf("got phys=%d logical=%d, want 2000/0", PhysMs(ts), Logical(ts))
+	}
+}
+
+func TestUpdateExceedsRemoteAndLocal(t *testing.T) {
+	w := &fakeWall{ms: 1000}
+	c := NewWithClock(w.now)
+	local := c.Now()
+	remote := Pack(6000, 7) // remote 5s ahead (allowed skew)
+	ts := c.Update(remote)
+	if ts <= remote || ts <= local {
+		t.Fatalf("Update result %d not greater than remote %d and local %d", ts, remote, local)
+	}
+	// Next local event must stay above the inherited remote time.
+	if next := c.Now(); next <= ts {
+		t.Fatalf("Now after Update not monotonic: %d <= %d", next, ts)
+	}
+}
+
+func TestUpdateWithStaleRemoteUsesWall(t *testing.T) {
+	w := &fakeWall{ms: 10_000}
+	c := NewWithClock(w.now)
+	ts := c.Update(Pack(2000, 9))
+	if PhysMs(ts) != 10_000 || Logical(ts) != 0 {
+		t.Fatalf("got phys=%d logical=%d, want 10000/0", PhysMs(ts), Logical(ts))
+	}
+}
+
+func TestSetAtLeast(t *testing.T) {
+	w := &fakeWall{ms: 1000}
+	c := NewWithClock(w.now)
+	c.SetAtLeast(Pack(9000, 3))
+	if c.Last() != Pack(9000, 3) {
+		t.Fatalf("Last = %d", c.Last())
+	}
+	c.SetAtLeast(Pack(1, 0)) // must not lower
+	if c.Last() != Pack(9000, 3) {
+		t.Fatalf("SetAtLeast lowered the clock")
+	}
+}
+
+// Random interleaving of Now/Update with ±5s wall skew must stay monotonic
+// per clock and Update must always dominate the remote timestamp.
+func TestRandomSkewMonotonic(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+	w := &fakeWall{ms: 1_000_000}
+	c := NewWithClock(w.now)
+	prev := c.Now()
+	for i := 0; i < 10_000; i++ {
+		w.ms += rng.Int63n(10_001) - 5000 // ±5s jitter
+		var ts Timestamp
+		if rng.Intn(2) == 0 {
+			ts = c.Now()
+		} else {
+			remote := Pack(uint64(w.ms+rng.Int63n(10_001)-5000), uint16(rng.Intn(8)))
+			ts = c.Update(remote)
+			if ts <= remote {
+				t.Fatalf("Update %d <= remote %d", ts, remote)
 			}
-			results[i] = ts
-		}()
-	}
-	wg.Wait()
-
-	// Check all timestamps are distinct.
-	seen := make(map[Timestamp]int)
-	for i, ts := range results {
-		if prev, ok := seen[ts]; ok {
-			t.Fatalf("duplicate timestamp %+v at indices %d and %d", ts, prev, i)
 		}
-		seen[ts] = i
+		if ts <= prev {
+			t.Fatalf("monotonicity violated at step %d: %d <= %d", i, ts, prev)
+		}
+		prev = ts
 	}
 }

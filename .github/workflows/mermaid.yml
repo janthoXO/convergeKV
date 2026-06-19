@@ -25,27 +25,48 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-
-      - name: Install Mermaid CLI
-        run: npm install -g @mermaid-js/mermaid-cli
+      - name: Start mermaid-cli container
+        # The official mermaid-cli image bundles Chrome and its system libraries,
+        # so there is no Node/npm setup or Puppeteer browser-install needed.
+        # Pin the major tag for reproducible diagram output. Start once, detached,
+        # overriding the mmdc entrypoint with a shell that idles so later steps can
+        # exec into the same container instead of paying startup per diagram.
+        run: |
+          docker run -d --name mermaid \
+            -u "$(id -u):$(id -g)" \
+            -v "$PWD:/data" \
+            --entrypoint sh \
+            ghcr.io/mermaid-js/mermaid-cli/mermaid-cli:11.15.0 \
+            -c 'tail -f /dev/null'
 
       - name: Compile .mermaid files to .svg
+        # mmdc is a symlink in the image's node_modules and is NOT on PATH, so call
+        # it by full path. The image's real entrypoint also passes the bundled
+        # Puppeteer config (sets Chromium's executablePath + --no-sandbox); since we
+        # overrode the entrypoint with a shell, we must re-supply it via -p here.
         run: |
-          # 1. Create a Puppeteer config to disable the sandbox
-          echo '{"args": ["--no-sandbox"]}' > puppeteer-config.json
+          docker exec mermaid sh -c '
+            mmdc=/home/mermaidcli/node_modules/.bin/mmdc
+            rc=0
+            # Read from a file (not a pipe) so rc set inside the loop survives.
+            find /data/docs -type f -name "*.mermaid" -print > /tmp/diagrams.txt
+            while read -r file; do
+              if [ ! -s "$file" ]; then
+                echo "Skipping empty file: $file"
+                continue
+              fi
+              echo "Compiling $file..."
+              if ! "$mmdc" -p /puppeteer-config.json -i "$file" -o "${file%.mermaid}.svg"; then
+                echo "ERROR: failed to render $file"
+                rc=1
+              fi
+            done < /tmp/diagrams.txt
+            exit $rc
+          '
 
-          # 2. Recursively find all .mermaid files inside the /docs folder
-          find ./docs -type f -name "*.mermaid" | while read -r file; do
-            echo "Compiling $file..."
-            outfile="${file%.mermaid}.svg"
-
-            # 3. Pass the config using the -p flag
-            mmdc -p puppeteer-config.json -i "$file" -o "$outfile"
-          done
+      - name: Stop mermaid-cli container
+        if: always()
+        run: docker rm -f mermaid 2>/dev/null || true
 
       - name: Check for changes
         id: check_changes

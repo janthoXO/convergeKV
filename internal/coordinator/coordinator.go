@@ -1,180 +1,560 @@
+// Package coordinator implements the identical request-handling logic every
+// node runs: route a client op to the partition's applier (the first healthy
+// active owner in HRW rank order), execute local ops under the partition
+// lock, and fan replicated deltas out asynchronously. No quorums: a write
+// succeeds once the applier has applied and persisted locally.
 package coordinator
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
+	"sort"
+	"sync"
 
-	kvpb "github.com/janthoXO/convergeKV/gen/kv"
-	repb "github.com/janthoXO/convergeKV/gen/replication"
-	"github.com/janthoXO/convergeKV/internal/gossip"
-	"github.com/janthoXO/convergeKV/internal/hrw"
-	"github.com/janthoXO/convergeKV/internal/node"
+	"github.com/cespare/xxhash/v2"
+	"github.com/janthoXO/convergeKV/internal/codec"
+	"github.com/janthoXO/convergeKV/internal/crdt"
+	"github.com/janthoXO/convergeKV/internal/hlc"
+	"github.com/janthoXO/convergeKV/internal/merkle"
+	"github.com/janthoXO/convergeKV/internal/nodeid"
+	"github.com/janthoXO/convergeKV/internal/placement"
+	"github.com/janthoXO/convergeKV/internal/replication"
 	"github.com/janthoXO/convergeKV/internal/storage"
+	pb "github.com/janthoXO/convergeKV/pkg/proto"
 )
 
-// PushSyncer is the minimal interface the coordinator needs from the syncer
-// for write-path push. Avoids a direct import of the syncer package.
-type PushSyncer interface {
-	PushToPeers(ctx context.Context, entries []*repb.DeltaEntry, replicas []gossip.MemberInfo, localID string)
+var (
+	// ErrNoOwnerAvailable: no healthy owner reachable — retryable UNAVAILABLE.
+	ErrNoOwnerAvailable = errors.New("coordinator: no healthy owner reachable")
+	// ErrNotEligible: this node may not execute the forwarded op (stale view
+	// at the sender) — FAILED_PRECONDITION, sender retries elsewhere.
+	ErrNotEligible = errors.New("coordinator: node not an eligible owner")
+	// ErrInvalidDocument: the client value is not a JSON object.
+	ErrInvalidDocument = errors.New("coordinator: value must be a JSON object")
+)
+
+// Forwarder sends a forward request to a peer node (gRPC in production).
+type Forwarder interface {
+	Forward(ctx context.Context, addr string, req *pb.ForwardRequest) (*pb.ForwardResponse, error)
 }
 
-// Coordinator routes client requests using Rendezvous Hashing (HRW).
-// Any replica in the HRW set for a key serves reads and writes (quorum=1).
-// If the local node is not a replica, the request is forwarded to the
-// highest-scoring HRW member for deterministic routing.
 type Coordinator struct {
-	node      *node.Node
-	gossip    *gossip.Gossip
-	forwarder *Forwarder
-	syncer    PushSyncer
-	rf        int
+	self   nodeid.ID
+	p      uint16
+	store  *storage.Store
+	clock  *hlc.Clock
+	view   func() *placement.View
+	peers  Forwarder
+	fanout *replication.Fanout
+	locks  []sync.Mutex // one per partition
+	log    *slog.Logger
 }
 
-// New returns a Coordinator.
-func New(n *node.Node, g *gossip.Gossip, f *Forwarder, syncer PushSyncer, rf int) *Coordinator {
-	c := &Coordinator{node: n, gossip: g, forwarder: f, syncer: syncer, rf: rf}
-	return c
-}
-
-// Put handles a put request.
-// If the local node is an HRW replica for the key, it writes locally and
-// asynchronously pushes to the other HRW replicas.
-// Otherwise it forwards to the highest-scoring HRW member.
-func (c *Coordinator) Put(ctx context.Context, req *kvpb.PutRequest) (*kvpb.PutResponse, error) {
-	members := c.gossip.Members()
-	replicas := hrw.Replicas(req.GetKey(), members, c.rf)
-	localID := c.node.ReplicaID()
-
-	if containsID(replicas, localID) {
-		resp, updates, err := c.handleLocalPut(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		c.pushWriteToPeers(ctx, updates, replicas, localID)
-		return resp, nil
+func New(self nodeid.ID, p uint16, store *storage.Store, clock *hlc.Clock,
+	view func() *placement.View, peers Forwarder,
+	fanout *replication.Fanout, log *slog.Logger) *Coordinator {
+	if log == nil {
+		log = slog.Default()
 	}
-
-	return forwardWithRetry(ctx, replicas, func(addr string) (*kvpb.PutResponse, error) {
-		return c.forwarder.ForwardPut(ctx, addr, req)
-	})
-}
-
-// Get handles a get request.
-// Serves locally if the local node is an HRW replica; otherwise forwards.
-func (c *Coordinator) Get(ctx context.Context, req *kvpb.GetRequest) (*kvpb.GetResponse, error) {
-	members := c.gossip.Members()
-	replicas := hrw.Replicas(req.GetKey(), members, c.rf)
-	localID := c.node.ReplicaID()
-
-	if containsID(replicas, localID) {
-		v, found, err := c.node.Get(req.GetKey())
-		if err != nil {
-			return nil, fmt.Errorf("coordinator: local get: %w", err)
-		}
-		return &kvpb.GetResponse{ValueJson: v, Found: found}, nil
+	return &Coordinator{
+		self:   self,
+		p:      p,
+		store:  store,
+		clock:  clock,
+		view:   view,
+		peers:  peers,
+		fanout: fanout,
+		locks:  make([]sync.Mutex, p),
+		log:    log,
 	}
-
-	return forwardWithRetry(ctx, replicas, func(addr string) (*kvpb.GetResponse, error) {
-		return c.forwarder.ForwardGet(ctx, addr, req)
-	})
 }
 
-// Delete handles a delete request. Same routing logic as Put.
-func (c *Coordinator) Delete(ctx context.Context, req *kvpb.DeleteRequest) (*kvpb.DeleteResponse, error) {
-	members := c.gossip.Members()
-	replicas := hrw.Replicas(req.GetKey(), members, c.rf)
-	localID := c.node.ReplicaID()
-
-	if containsID(replicas, localID) {
-		resp, updates, err := c.handleLocalDelete(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		c.pushWriteToPeers(ctx, updates, replicas, localID)
-		return resp, nil
-	}
-
-	return forwardWithRetry(ctx, replicas, func(addr string) (*kvpb.DeleteResponse, error) {
-		return c.forwarder.ForwardDelete(ctx, addr, req)
-	})
+// GetResult is a read response before JSON rendering at the API layer.
+type GetResult struct {
+	Found       bool
+	Document    []byte // rendered JSON object
+	ContextHash []byte
 }
 
-// ── local write helpers ───────────────────────────────────────────────────────
+// --- client entry points (any node) ------------------------------------------
 
-func (c *Coordinator) handleLocalPut(_ context.Context, req *kvpb.PutRequest) (*kvpb.PutResponse, []storage.FieldUpdate, error) {
-	ts, updates, err := c.node.Put(req.GetKey(), req.GetValueJson())
+// Put routes a client replace write to the applier and returns once it has
+// applied and persisted (replication to the other owners is asynchronous). The
+// applier sets the provided fields and removes every field it currently holds
+// that the request omits — add-wins, so a concurrently added field the applier
+// has not yet observed survives (no hard whole-document replace under
+// concurrency).
+func (c *Coordinator) Put(ctx context.Context, key string, jsonDoc []byte) error {
+	fields, err := codec.SplitFields(jsonDoc)
 	if err != nil {
-		return nil, nil, fmt.Errorf("coordinator: local put: %w", err)
+		return ErrInvalidDocument
 	}
-	return &kvpb.PutResponse{
-		Timestamp: &kvpb.HLCTimestamp{PhysicalMs: ts.PhysicalMs, Logical: ts.Logical},
-	}, updates, nil
+	if len(fields) == 0 {
+		// An empty object would persist an empty document with an empty
+		// context that peers' MergeDelta absorbing rule drops — a permanent
+		// divergence AE would churn on. Reject before minting anything.
+		return ErrInvalidDocument
+	}
+
+	pid := placement.Partition([]byte(key), c.p)
+	req := &pb.ForwardRequest{
+		Key: key,
+		Op:  &pb.ForwardRequest_Put{Put: &pb.PutRequest{Key: key, Value: jsonDoc}},
+	}
+
+	return c.routeWrite(ctx, pid, req, func() error {
+		return c.ApplyPut(pid, key, fields)
+	})
 }
 
-func (c *Coordinator) handleLocalDelete(_ context.Context, req *kvpb.DeleteRequest) (*kvpb.DeleteResponse, []storage.FieldUpdate, error) {
-	ts, updates, err := c.node.Delete(req.GetKey())
+// Patch routes a client partial write to the applier: it sets the provided
+// fields (jsonDoc may be empty when only deleting) and removes the named
+// fields. Fields not mentioned are left untouched.
+func (c *Coordinator) Patch(ctx context.Context, key string, jsonDoc []byte, deleteFields []string) error {
+	var fields map[string][]byte
+	if len(jsonDoc) > 0 {
+		var err error
+		fields, err = codec.SplitFields(jsonDoc)
+		if err != nil {
+			return ErrInvalidDocument
+		}
+	}
+	if err := validatePatch(fields, deleteFields); err != nil {
+		return err
+	}
+
+	pid := placement.Partition([]byte(key), c.p)
+	req := &pb.ForwardRequest{
+		Key: key,
+		Op:  &pb.ForwardRequest_Patch{Patch: &pb.PatchRequest{Key: key, Value: jsonDoc, DeleteFields: deleteFields}},
+	}
+
+	return c.routeWrite(ctx, pid, req, func() error {
+		return c.ApplyPatch(pid, key, fields, deleteFields)
+	})
+}
+
+// Delete routes a client delete to the applier.
+func (c *Coordinator) Delete(ctx context.Context, key string) error {
+	pid := placement.Partition([]byte(key), c.p)
+	req := &pb.ForwardRequest{
+		Key: key,
+		Op:  &pb.ForwardRequest_Delete{Delete: &pb.DeleteRequest{Key: key}},
+	}
+
+	return c.routeWrite(ctx, pid, req, func() error {
+		return c.ApplyDelete(pid, key)
+	})
+}
+
+// Get serves a read from one active owner: locally when this node is one,
+// otherwise forwarded to the first healthy active owner.
+func (c *Coordinator) Get(ctx context.Context, key string) (GetResult, error) {
+	pid := placement.Partition([]byte(key), c.p)
+	v := c.view()
+	for _, o := range v.ReadSet(pid) {
+		if o.ID == c.self {
+			return c.ReadLocal(pid, key)
+		}
+	}
+
+	req := &pb.ForwardRequest{
+		Key: key,
+		Op:  &pb.ForwardRequest_Get{Get: &pb.GetRequest{Key: key}},
+	}
+	for _, o := range v.ReadSet(pid) {
+		resp, err := c.peers.Forward(ctx, o.Addr, req)
+		if err != nil {
+			c.log.Debug("read forward failed, trying next owner", "peer", o.Addr, "err", err)
+			continue
+		}
+		g := resp.GetGet()
+		return GetResult{Found: g.GetFound(), Document: g.GetValue(), ContextHash: g.GetContextHash()}, nil
+	}
+
+	return GetResult{}, ErrNoOwnerAvailable
+}
+
+// routeWrite executes the op locally if this node is the first healthy
+// active owner, otherwise forwards along the rank order.
+func (c *Coordinator) routeWrite(ctx context.Context, pid uint16, req *pb.ForwardRequest, local func() error) error {
+	v := c.view()
+	for _, o := range v.Owners(pid) {
+		if o.Dead || !o.Status.Serving() {
+			continue
+		}
+		if o.ID == c.self {
+			return local()
+		}
+		if _, err := c.peers.Forward(ctx, o.Addr, req); err == nil {
+			return nil
+		} else { //nolint:revive // try the next-ranked owner
+			c.log.Debug("write forward failed, trying next owner", "peer", o.Addr, "err", err)
+		}
+	}
+
+	return ErrNoOwnerAvailable
+}
+
+// --- local execution (this node must be an eligible owner) --------------------
+
+// CheckWriteEligible reports whether this node may act as applier for pid.
+func (c *Coordinator) CheckWriteEligible(pid uint16) error {
+	v := c.view()
+	for _, o := range v.Owners(pid) {
+		if o.ID == c.self && o.Status.Serving() {
+			return nil
+		}
+	}
+
+	return ErrNotEligible
+}
+
+// CheckReadEligible reports whether this node may serve reads for pid.
+func (c *Coordinator) CheckReadEligible(pid uint16) error {
+	return c.CheckWriteEligible(pid) // read set == active owners
+}
+
+// ApplyPut is the applier path for a replace write: set the provided fields and
+// remove every locally-observed field the request omits, under the partition
+// lock, then fan out the delta.
+func (c *Coordinator) ApplyPut(pid uint16, key string, fields map[string][]byte) error {
+	return c.applyWrite(pid, key, fields, nil, true)
+}
+
+// ApplyPatch is the applier path for a partial write: set the provided fields
+// and remove the named fields (those present locally), under the partition
+// lock, then fan out the delta.
+func (c *Coordinator) ApplyPatch(pid uint16, key string, fields map[string][]byte, deleteFields []string) error {
+	if err := validatePatch(fields, deleteFields); err != nil {
+		return err
+	}
+	return c.applyWrite(pid, key, fields, deleteFields, false)
+}
+
+// applyWrite is the shared upsert+remove core. It mints one dot per mutated
+// field from the document's own context, applies the changes (producing one
+// combined delta), persists doc + merkle leaf in one synced batch, and fans the
+// delta out. When replace is set, every observed field absent from upserts is
+// also removed. Removal is add-wins: only fields the applier currently holds are
+// removed, so an unobserved concurrent add survives the merge.
+func (c *Coordinator) applyWrite(pid uint16, key string, upserts map[string][]byte, deletes []string, replace bool) error {
+	c.locks[pid].Lock()
+	defer c.locks[pid].Unlock()
+
+	doc, err := c.store.GetDocument(pid, []byte(key))
 	if err != nil {
-		return nil, nil, fmt.Errorf("coordinator: local delete: %w", err)
+		return err
 	}
-	return &kvpb.DeleteResponse{
-		Timestamp: &kvpb.HLCTimestamp{PhysicalMs: ts.PhysicalMs, Logical: ts.Logical},
-	}, updates, nil
+	oldHash := docHashOf(key, doc) // nil for an absent document
+	if doc == nil {
+		doc = crdt.NewDocument()
+	}
+
+	if replace {
+		for f := range doc.Fields {
+			if _, keep := upserts[f]; !keep {
+				deletes = append(deletes, f)
+			}
+		}
+	}
+
+	mint := doc.Minter(crdt.ActorID(c.self))
+	delta := doc.PutMulti(upserts, mint, c.clock.Now())
+	sort.Strings(deletes) // deterministic dot assignment across replicas
+	for _, f := range deletes {
+		if len(doc.Fields[f]) == 0 {
+			continue // nothing observed to remove (a removal here is pure context churn)
+		}
+		delta.Merge(doc.RemoveField(f, mint()))
+	}
+
+	if delta.Context.Empty() {
+		return nil // no-op (e.g. a patch naming only absent fields)
+	}
+	if err := c.persist(pid, key, oldHash, doc); err != nil {
+		return err
+	}
+
+	c.replicate(pid, key, delta)
+	return nil
 }
 
-// pushWriteToPeers converts the written FieldUpdates to DeltaEntries and fans
-// them out to the other HRW replicas. The syncer owns goroutine tracking and timeouts.
-func (c *Coordinator) pushWriteToPeers(ctx context.Context, updates []storage.FieldUpdate, replicas []gossip.MemberInfo, localID string) {
-	if len(updates) == 0 {
-		return
+// validatePatch rejects a patch that would do nothing or contradicts itself.
+func validatePatch(fields map[string][]byte, deleteFields []string) error {
+	if len(fields) == 0 && len(deleteFields) == 0 {
+		return ErrInvalidDocument
 	}
-	entries := make([]*repb.DeltaEntry, 0, len(updates))
-	for _, u := range updates {
-		entries = append(entries, &repb.DeltaEntry{
-			Key:       u.Key,
-			Field:     u.Field,
-			ValueJson: u.Entry.Value,
-			Timestamp: &kvpb.HLCTimestamp{
-				PhysicalMs: u.Entry.Timestamp.PhysicalMs,
-				Logical:    u.Entry.Timestamp.Logical,
-			},
-			ReplicaId: u.Entry.ReplicaID,
-			Deleted:   u.Entry.Deleted,
+	for _, f := range deleteFields {
+		if _, ok := fields[f]; ok {
+			return ErrInvalidDocument // a field may not be both set and deleted
+		}
+	}
+	return nil
+}
+
+// ApplyDelete is the applier path for document deletion.
+func (c *Coordinator) ApplyDelete(pid uint16, key string) error {
+	c.locks[pid].Lock()
+	defer c.locks[pid].Unlock()
+
+	doc, err := c.store.GetDocument(pid, []byte(key))
+	if err != nil {
+		return err
+	}
+
+	oldHash := docHashOf(key, doc) // nil for an absent document
+	if doc == nil {
+		doc = crdt.NewDocument()
+	}
+
+	delta := doc.Delete(doc.Minter(crdt.ActorID(c.self))())
+	if err := c.persist(pid, key, oldHash, doc); err != nil {
+		return err
+	}
+
+	c.replicate(pid, key, delta)
+	return nil
+}
+
+// ReadLocal serves a read from local storage.
+func (c *Coordinator) ReadLocal(pid uint16, key string) (GetResult, error) {
+	doc, err := c.store.GetDocument(pid, []byte(key))
+	if err != nil {
+		return GetResult{}, err
+	}
+
+	if doc == nil || len(doc.Fields) == 0 {
+		return GetResult{Found: false}, nil
+	}
+
+	rendered, err := codec.RenderDocument(doc)
+	if err != nil {
+		return GetResult{}, err
+	}
+
+	return GetResult{Found: true, Document: rendered, ContextHash: contextHash(doc)}, nil
+}
+
+// MergeDelta applies a replicated delta (accepted while active or
+// bootstrapping — eligibility is NOT checked here; deltas must never be
+// refused by an owner). It reports whether local state changed, which the
+// anti-entropy engine uses to count repairs.
+func (c *Coordinator) MergeDelta(pid uint16, key, deltaBytes []byte) (bool, error) {
+	delta, err := crdt.DecodeDocument(deltaBytes)
+	if err != nil {
+		return false, fmt.Errorf("coordinator: bad delta: %w", err)
+	}
+
+	// HLC receive rule: fold the delta's largest timestamp into our clock.
+	var maxTS crdt.HLC
+	for _, regs := range delta.Fields {
+		for _, r := range regs {
+			if r.HLC > maxTS {
+				maxTS = r.HLC
+			}
+		}
+	}
+	if maxTS > 0 {
+		c.clock.Update(maxTS)
+	}
+
+	c.locks[pid].Lock()
+	defer c.locks[pid].Unlock()
+
+	doc, err := c.store.GetDocument(pid, key)
+	if err != nil {
+		return false, err
+	}
+	if doc == nil && len(delta.Fields) == 0 {
+		// Absorbing GC rule: we hold nothing and the delta carries only a
+		// residual context. Recreating a residual we already garbage-
+		// collected would ping-pong with peers' GC forever. The cost: a
+		// node that never saw the document loses the context's protection
+		// against a stale put still in flight (bounded by the retry
+		// queue's max age) — anti-entropy repairs that transient.
+		return false, nil
+	}
+
+	// Serialize the pre-merge document once: reuse the bytes for both the old
+	// leaf hash and the idempotent-redelivery equality check below.
+	var oldHash *merkle.Hash
+	var before []byte
+	if doc == nil {
+		doc = crdt.NewDocument()
+	} else {
+		before = doc.Canonical()
+		h := merkle.DocHash(key, before)
+		oldHash = &h
+	}
+	doc.Merge(delta)
+
+	after := doc.Canonical()
+	if before != nil && bytes.Equal(before, after) {
+		return false, nil // idempotent redelivery: nothing to persist
+	}
+	if err := c.persistCanonical(pid, string(key), oldHash, after); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+// RecomputeMerkleLeaf rebuilds one leaf from the documents themselves
+// (anti-entropy self-healing after repairs: XOR leaves drift permanently if
+// docs and leaves ever disagree, e.g. after corruption).
+func (c *Coordinator) RecomputeMerkleLeaf(pid uint16, bucket uint16) error {
+	c.locks[pid].Lock()
+	defer c.locks[pid].Unlock()
+
+	var leaf merkle.Hash
+	err := c.store.ScanBucket(pid, bucket, func(key []byte, doc *crdt.Document) error {
+		merkle.XOR(&leaf, merkle.DocHash(key, doc.Canonical()))
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	b := c.store.NewBatch()
+	b.SetMerkleNode(pid, merkle.BucketPath(bucket), leaf[:])
+
+	return c.store.Commit(b)
+}
+
+// --- garbage collection (called by internal/gc under AE certification) ----------
+
+// GCDocument removes a residual-context document outright, with its GC
+// counter and leaf contribution, iff it is still empty.
+func (c *Coordinator) GCDocument(pid uint16, key []byte) error {
+	c.locks[pid].Lock()
+	defer c.locks[pid].Unlock()
+
+	doc, err := c.store.GetDocument(pid, key)
+	if err != nil {
+		return err
+	}
+	if doc == nil || len(doc.Fields) > 0 {
+		return nil // re-created or already gone
+	}
+
+	bucket := merkle.Bucket(key)
+	leaf, err := c.store.MerkleLeaf(pid, bucket)
+	if err != nil {
+		return err
+	}
+
+	merkle.XOR(&leaf, merkle.DocHash(key, doc.Canonical()))
+	b := c.store.NewBatch()
+	b.DeleteDocument(pid, key)
+	b.DeleteGCCounter(pid, key)
+	b.SetMerkleNode(pid, merkle.BucketPath(bucket), leaf[:])
+
+	return c.store.Commit(b)
+}
+
+// RetireActors drops version-vector entries of retired actors from one
+// document's context, provided the actor has no live register in it. Safe
+// because retirement is only certified once the actor is dead past grace and
+// the owners are in sync — no event from that actor can ever arrive again.
+func (c *Coordinator) RetireActors(pid uint16, key []byte, retired func(crdt.ActorID) bool) error {
+	c.locks[pid].Lock()
+	defer c.locks[pid].Unlock()
+
+	doc, err := c.store.GetDocument(pid, key)
+	if err != nil || doc == nil {
+		return err
+	}
+
+	live := map[crdt.ActorID]bool{}
+	for _, regs := range doc.Fields {
+		for _, r := range regs {
+			live[r.Dot.Actor] = true
+		}
+	}
+
+	oldHash := docHashOf(string(key), doc)
+	changed := false
+	for a := range doc.Context.VV {
+		if retired(a) && !live[a] {
+			delete(doc.Context.VV, a)
+			changed = true
+		}
+	}
+
+	for d := range doc.Context.Cloud {
+		if retired(d.Actor) && !live[d.Actor] {
+			delete(doc.Context.Cloud, d)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+
+	return c.persist(pid, string(key), oldHash, doc)
+}
+
+// --- internals -----------------------------------------------------------------
+
+// persist writes the document and its incremental merkle-leaf update in one
+// synced atomic batch. Callers hold the partition lock.
+func (c *Coordinator) persist(pid uint16, key string, oldHash *merkle.Hash, doc *crdt.Document) error {
+	return c.persistCanonical(pid, key, oldHash, doc.Canonical())
+}
+
+// persistCanonical is persist for callers that already hold the document's
+// canonical bytes, so the document is serialized once (not once for the leaf
+// hash and again inside SetDocument). Callers hold the partition lock.
+func (c *Coordinator) persistCanonical(pid uint16, key string, oldHash *merkle.Hash, canonical []byte) error {
+	keyB := []byte(key)
+	bucket := merkle.Bucket(keyB)
+	leaf, err := c.store.MerkleLeaf(pid, bucket)
+	if err != nil {
+		return err
+	}
+
+	if oldHash != nil {
+		merkle.XOR(&leaf, *oldHash)
+	}
+	merkle.XOR(&leaf, merkle.DocHash(keyB, canonical))
+
+	b := c.store.NewBatch()
+	b.SetDocumentRaw(pid, keyB, canonical)
+	b.SetMerkleNode(pid, merkle.BucketPath(bucket), leaf[:])
+
+	return c.store.Commit(b)
+}
+
+func docHashOf(key string, doc *crdt.Document) *merkle.Hash {
+	if doc == nil {
+		return nil
+	}
+
+	h := merkle.DocHash([]byte(key), doc.Canonical())
+	return &h
+}
+
+// replicate enqueues the delta for every other write-set owner.
+func (c *Coordinator) replicate(pid uint16, key string, delta *crdt.Document) {
+	v := c.view()
+	enc := delta.Canonical()
+	for _, o := range v.WriteSet(pid) {
+		if o.ID == c.self {
+			continue
+		}
+		c.fanout.Enqueue(o.Addr, replication.Delta{
+			Partition: pid,
+			Key:       []byte(key),
+			Delta:     enc,
 		})
 	}
-	c.syncer.PushToPeers(ctx, entries, replicas, localID)
 }
 
-// containsID reports whether any member in the slice has ReplicaID == id.
-func containsID(members []gossip.MemberInfo, id string) bool {
-	for _, m := range members {
-		if m.ReplicaID == id {
-			return true
-		}
-	}
-	return false
-}
-
-// forwardWithRetry tries each replica in HRW-score order, returning on the
-// first success. If all attempts fail, the last error is returned.
-// This tolerates peers that gossip has not yet evicted after a crash.
-func forwardWithRetry[R any](ctx context.Context, replicas []gossip.MemberInfo, fn func(addr string) (R, error)) (R, error) {
-	var lastErr error
-	for _, m := range replicas {
-		if ctx.Err() != nil {
-			break
-		}
-		if result, err := fn(m.GRPCAddr); err == nil {
-			return result, nil
-		} else {
-			log.Printf("[coordinator] forward to %s failed, trying next replica: %v", m.GRPCAddr, err)
-			lastErr = err
-		}
-	}
-
-	var zero R
-	if err := ctx.Err(); err != nil {
-		return zero, err
-	}
-	return zero, lastErr
+func contextHash(doc *crdt.Document) []byte {
+	return binary.BigEndian.AppendUint64(nil, xxhash.Sum64(doc.Context.Canonical()))
 }
