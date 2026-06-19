@@ -43,8 +43,7 @@ x-hardening: &hardening
 services:
   seed:
     <<: *hardening
-    build: .
-    image: convergekv:latest
+    image: ghcr.io/janthoxo/convergekv/convergekv:latest
     environment:
       CONVERGEKV_DATA_DIR: /data
       CONVERGEKV_GOSSIP_ADDR: ":7946"
@@ -60,8 +59,7 @@ services:
 
   node:
     <<: *hardening
-    build: .
-    image: convergekv:latest
+    image: ghcr.io/janthoxo/convergekv/convergekv:latest
     environment:
       CONVERGEKV_DATA_DIR: /data
       CONVERGEKV_GOSSIP_ADDR: ":7946"
