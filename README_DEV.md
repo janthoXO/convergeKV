@@ -347,6 +347,49 @@ go test ./test/cluster/ -run TestWriteSucceedsWithTwoOfThreeOwnersDown -race -co
 Always run with `-race -count=1` (the Makefile does); concurrency correctness is
 a primary concern, and `-count=1` disables the test cache.
 
+### Building behind the Great Firewall (China)
+
+A Docker build from inside mainland China usually fails in two distinct places,
+so the fix has two parts. First, the Go module download (`go mod download` in the
+build stage) cannot reach `proxy.golang.org` or `sum.golang.org`; point the
+toolchain at a domestic mirror by setting these in the `builder` stage of the
+`Dockerfile`, after the `WORKDIR` and **before** the `COPY go.mod`/`go mod
+download` step that needs them (or pass them as build args):
+
+```dockerfile
+FROM golang:1.26-alpine AS builder
+WORKDIR /src
+
+# ← add the two ENV lines here, between WORKDIR and the dependency copy
+ENV GOPROXY=https://goproxy.cn,direct \
+    GOSUMDB=off
+
+# Cache dependencies first
+COPY go.mod go.sum ./
+RUN go mod download
+```
+
+Second — independently — Docker itself often cannot pull the `golang:1.26-alpine`
+and `alpine:3.19` base images from Docker Hub. That is a daemon-level problem, not
+a Go one, so fix it on the host by configuring registry mirrors in
+`/etc/docker/daemon.json` (Linux) or **Docker Desktop → Settings → Docker Engine**,
+then restart the daemon:
+
+```json
+{
+  "registry-mirrors": [
+    "https://docker.xuanyuan.me",
+    "https://mirror.ccs.tencentyun.com",
+    "https://docker.m.daocloud.io"
+  ]
+}
+```
+
+Both changes are needed together: the `GOPROXY` env only unblocks dependency
+resolution, while the registry mirrors only unblock the base-image pulls. Neither
+is committed to the repo, since they are environment-specific and unnecessary (or
+even slower) outside China.
+
 ## Testing strategy
 
 - **`internal/crdt`** — property tests (`pgregory.net/rapid`) and fuzz tests
@@ -362,6 +405,25 @@ a primary concern, and `-count=1` disables the test cache.
   - `bench_test.go` — latency benchmarks (`docs/BENCHMARKS.md`).
   - `leak_test.go` — zero goroutine leaks via `go.uber.org/goleak`.
   - Hard crashes are modeled with `node.Stop(false)`.
+- **`cmd/e2e`** — a black-box, Docker-based end-to-end test (run with `make e2e`,
+  or `make e2e ARGS=-keep` to leave the cluster up for inspection). Unlike the
+  in-process harness, it brings up a *real* four-container cluster (seed + 3
+  nodes, `RF = 3`) with `docker compose`, drives it only over the public gRPC
+  `KV` API, and manipulates the Docker network to inject **genuine partitions**.
+  The topology (`docker-compose.e2e.yml`) uses two networks deliberately: an
+  internal `cluster` network carrying all gossip/RPC — disconnecting a node from
+  it partitions that node — and a separate `edge` network owning the published
+  client ports, which is never cut, so the host can still read a partitioned
+  node's *local* state. Verification reads go through the `Debug.DumpDocuments`
+  RPC, which returns what a node **physically holds** (never a forwarded read),
+  so an equal dump across the three owners genuinely proves replication rather
+  than read-time routing; to force *true* concurrency despite a shared applier,
+  the scenarios isolate a key's applier and write to both sides before healing.
+  It runs five scenarios, printing `PASS`/`FAIL` for each: (1) basic
+  replication, (2) concurrent writes to *different* fields of one key (both must
+  survive), (3) concurrent writes to the *same* field (LWW picks one winner,
+  identically on every owner), (4) delayed / out-of-order delivery, and (5)
+  convergence after a partition heals. It requires a working Docker daemon.
 
 ## Regenerating protobuf
 
